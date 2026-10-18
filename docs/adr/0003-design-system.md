@@ -81,5 +81,8 @@ events.
   button posts.
 - The title bar shows the repository path with `~` for the home directory;
   dialogs keep the rail's buttons visible under the scrim.
+- The repository line in the title bar starts right after the window buttons
+  (16px after their edge at x = 75) instead of being centered, so the buttons
+  and the line read as one bar. Long paths truncate with an ellipsis.
 - Where the artboards wrap a button's label for lack of room (dialog footers, the
   review footer), Berth wraps the hint text instead.
