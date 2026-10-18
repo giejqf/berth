@@ -430,6 +430,7 @@ impl Seeder<'_> {
                 title: title.to_owned(),
                 body: body.to_owned(),
                 custom_prompt: None,
+                url: None,
             },
             state: WorkflowState::Idle,
             claude_session_id: None,

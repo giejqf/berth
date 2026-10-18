@@ -135,7 +135,8 @@ pub fn secret_env(
     let mut env = SecretEnv::default();
     for connector in connectors {
         let service = connector.keychain_service();
-        for secret in &connector.secrets {
+        let optional = connector.optional_secrets.iter().map(|s| (s, false));
+        for (secret, required) in connector.secrets.iter().map(|s| (s, true)).chain(optional) {
             if env.vars.iter().any(|(k, _)| k == secret) {
                 tracing::warn!(
                     connector = %connector.name,
@@ -146,7 +147,8 @@ pub fn secret_env(
             }
             match store.get(&service, secret)? {
                 Some(value) => env.vars.push((secret.clone(), value)),
-                None => env.missing.push((connector.name.clone(), secret.clone())),
+                None if required => env.missing.push((connector.name.clone(), secret.clone())),
+                None => {}
             }
         }
     }

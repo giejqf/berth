@@ -154,6 +154,7 @@ pub fn follow_up_origin(follow_up: &FollowUp) -> Origin {
         title: follow_up.title.clone(),
         body: follow_up.description.clone(),
         custom_prompt: None,
+        url: None,
     }
 }
 
@@ -269,6 +270,7 @@ mod tests {
             title: "Crash on start".into(),
             body: "Steps…".into(),
             custom_prompt: Some("Keep it small.".into()),
+            url: None,
         };
         assert_eq!(
             origin_turn(&o),

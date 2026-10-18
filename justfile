@@ -14,15 +14,16 @@ setup:
     @node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)' || { echo "Node 22+ required"; exit 1; }
     @command -v gh >/dev/null || echo "warning: gh not found; GitHub features need it (brew install gh)"
     pnpm -C sidecar install --frozen-lockfile
+    scripts/fetch-connectors.sh
     git config core.hooksPath .githooks
     @echo "ready: just dev"
 
 # Run the app in debug with a dev sidecar (tsx). Pass a repo path to open it.
-dev *args: sidecar-build
+dev *args: sidecar-build fetch-connectors
     cargo run -p berth-app -- {{args}}
 
 # Run the app with the devtools autopilot/screenshot feature.
-dev-tools *args: sidecar-build
+dev-tools *args: sidecar-build fetch-connectors
     cargo run -p berth-app --features devtools -- {{args}}
 
 # Rust + sidecar tests.
@@ -48,6 +49,10 @@ gen-protocol:
 # Build the sidecar bundle (sidecar/dist/sidecar.mjs).
 sidecar-build:
     pnpm -C sidecar build
+
+# Fetch the CLIs behind the built-in connectors (pinned; scripts/fetch-connectors.sh).
+fetch-connectors:
+    scripts/fetch-connectors.sh
 
 # Release build + sidecar bundle into dist/Berth.app.
 bundle:

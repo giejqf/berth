@@ -13,7 +13,11 @@ ref: string, title: string, body: string,
 /**
  * Extra instructions the user typed when creating the workflow.
  */
-custom_prompt?: string, };
+custom_prompt?: string, 
+/**
+ * Where the origin lives (the issue, PR or error page), when known.
+ */
+url?: string, };
 
 export type FollowUp = { id: string, title: string, description: string, };
 

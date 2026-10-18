@@ -55,6 +55,10 @@ pub struct Origin {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub custom_prompt: Option<String>,
+    /// Where the origin lives (the issue, PR or error page), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

@@ -78,25 +78,28 @@ impl SettingsForm {
     }
 
     fn ensure_secret_inputs(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
-        let keys: Vec<(String, String)> = self
+        let keys: Vec<(String, String, bool)> = self
             .state
             .read(cx)
             .connectors
             .iter()
             .flat_map(|c| {
-                c.secrets
+                c.keys
                     .iter()
-                    .map(move |(k, _)| (c.name.clone(), k.clone()))
+                    .map(move |k| (c.name.clone(), k.name.clone(), k.optional))
             })
             .collect();
-        for key in keys {
-            self.secrets.entry(key.clone()).or_insert_with(|| {
-                cx.new(|cx| {
-                    InputState::new(window, cx)
-                        .masked(true)
-                        .placeholder(key.1.clone())
-                })
-            });
+        for (connector, key, optional) in keys {
+            self.secrets
+                .entry((connector, key.clone()))
+                .or_insert_with(|| {
+                    cx.new(|cx| {
+                        // Optional keys are settings with a default (a host), not secrets.
+                        InputState::new(window, cx)
+                            .masked(!optional)
+                            .placeholder(if optional { "Optional".to_owned() } else { key })
+                    })
+                });
         }
     }
 
@@ -327,55 +330,60 @@ impl Render for SettingsForm {
 
         let mut conn_group = group(&t);
         for c in &connectors {
-            let set = c.secrets.iter().all(|(_, s)| *s);
+            let required = c.keys.iter().filter(|k| !k.optional);
+            let missing: Vec<&str> = required
+                .clone()
+                .filter(|k| !k.set)
+                .map(|k| k.name.as_str())
+                .collect();
+            // A built-in connector nobody has set up yet is off, not broken.
+            let unset = c.builtin && required.clone().all(|k| !k.set);
             let editing = self.editing.contains(&c.name);
             let name = c.name.clone();
-            let detail = if c.secrets.is_empty() {
-                c.description.clone()
-            } else if set {
-                format!(
-                    "{} stored{}",
-                    if c.secrets.len() == 1 { "Key" } else { "Keys" },
-                    if c.description.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" · {}", c.description)
-                    }
-                )
-            } else {
-                format!(
-                    "{} missing · {}",
-                    c.secrets
-                        .iter()
-                        .filter(|(_, s)| !*s)
-                        .map(|(k, _)| k.clone())
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    c.description
-                )
+            let with_description = |lead: String| {
+                if c.description.is_empty() {
+                    lead
+                } else {
+                    format!("{lead} · {}", c.description)
+                }
             };
-            let mut r = row(&t, false)
-                .child(dot(8., if set { t.done } else { t.attention }))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(1.))
-                        .flex_1()
-                        .child(div().medium().child(name.clone()))
-                        .child(div().ty(ty::META).text_color(t.text2).child(detail)),
-                );
-            if !c.secrets.is_empty() {
+            let detail = if c.keys.is_empty() {
+                c.description.clone()
+            } else if unset {
+                with_description("Not set up".to_owned())
+            } else if missing.is_empty() {
+                let n = required.count();
+                with_description(format!("{} stored", if n == 1 { "Key" } else { "Keys" }))
+            } else {
+                with_description(format!("{} missing", missing.join(", ")))
+            };
+            let state_color = if unset {
+                t.text3
+            } else if missing.is_empty() {
+                t.done
+            } else {
+                t.attention
+            };
+            let mut r = row(&t, false).child(dot(8., state_color)).child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(1.))
+                    .flex_1()
+                    .child(div().medium().child(c.title.clone()))
+                    .child(div().ty(ty::META).text_color(t.text2).child(detail)),
+            );
+            if !c.keys.is_empty() {
                 let n = name.clone();
                 r = r.child(
                     Btn::new(SharedString::from(format!("edit-key-{name}")))
                         .size(Size::S26)
-                        .label(if editing {
-                            "Done"
-                        } else if c.secrets.len() == 1 {
-                            "Edit key…"
-                        } else {
-                            "Edit keys…"
+                        .label(match (editing, unset, c.keys.len() == 1) {
+                            (true, ..) => "Done",
+                            (false, true, true) => "Add key…",
+                            (false, true, false) => "Add keys…",
+                            (false, false, true) => "Edit key…",
+                            (false, false, false) => "Edit keys…",
                         })
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if !this.editing.remove(&n) {
@@ -395,7 +403,7 @@ impl Render for SettingsForm {
                     .pb(px(10.))
                     .border_b_1()
                     .border_color(t.border);
-                for (key, _) in &c.secrets {
+                for key in c.keys.iter().map(|k| &k.name) {
                     let Some(input) = self.secrets.get(&(c.name.clone(), key.clone())).cloned()
                     else {
                         continue;

@@ -11,6 +11,7 @@ mod slots;
 pub mod types;
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::{Context as _, Result, anyhow};
@@ -458,7 +459,10 @@ impl Shared {
     // ---- connectors ----
 
     fn reload_connectors(&self) {
-        let found = berth_connectors::discover(&berth_connectors::default_connectors_dir());
+        let found = berth_connectors::discover_layers(
+            builtin_connectors_dir().as_deref(),
+            &berth_connectors::default_connectors_dir(),
+        );
         for (path, err) in &found.errors {
             tracing::warn!(path = %path.display(), error = %err, "invalid connector");
         }
@@ -473,7 +477,8 @@ impl Shared {
         *lock(&self.connectors) = found.connectors;
     }
 
-    /// Enabled connectors (all discovered ones unless disabled in the DB).
+    /// Active connectors: discovered, not disabled in the DB, and (for
+    /// built-in ones) with their required keys stored.
     fn enabled_connectors(&self) -> Vec<Connector> {
         let disabled: Vec<String> = self
             .core()
@@ -486,28 +491,50 @@ impl Shared {
                     .collect()
             })
             .unwrap_or_default();
-        lock(&self.connectors)
-            .iter()
-            .filter(|c| !disabled.contains(&c.name))
-            .cloned()
+        let connectors = lock(&self.connectors).clone();
+        connectors
+            .into_iter()
+            .filter(|c| !disabled.contains(&c.name) && (!c.builtin || self.keys_stored(c)))
             .collect()
     }
 
+    fn secret_stored(&self, c: &Connector, key: &str) -> bool {
+        matches!(self.secrets.get(&c.keychain_service(), key), Ok(Some(_)))
+    }
+
+    /// Every required key is in the Keychain.
+    fn keys_stored(&self, c: &Connector) -> bool {
+        c.secrets.iter().all(|k| self.secret_stored(c, k))
+    }
+
     fn connector_infos(&self) -> Vec<ConnectorInfo> {
-        lock(&self.connectors)
+        let active: Vec<String> = self
+            .enabled_connectors()
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        let connectors = lock(&self.connectors).clone();
+        connectors
             .iter()
-            .map(|c| ConnectorInfo {
-                name: c.name.clone(),
-                description: c.description.clone(),
-                secrets: c
-                    .secrets
-                    .iter()
-                    .map(|s| {
-                        let set = matches!(self.secrets.get(&c.keychain_service(), s), Ok(Some(_)));
-                        (s.clone(), set)
-                    })
-                    .collect(),
-                has_origins: c.origin.is_some(),
+            .map(|c| {
+                let required = c.secrets.iter().map(|k| (k, false));
+                let optional = c.optional_secrets.iter().map(|k| (k, true));
+                ConnectorInfo {
+                    name: c.name.clone(),
+                    title: c.title.clone(),
+                    description: c.description.clone(),
+                    keys: required
+                        .chain(optional)
+                        .map(|(k, optional)| ConnectorKey {
+                            name: k.clone(),
+                            set: self.secret_stored(c, k),
+                            optional,
+                        })
+                        .collect(),
+                    builtin: c.builtin,
+                    active: active.contains(&c.name),
+                    origin_kind: c.origin.as_ref().map(|o| o.kind.clone()),
+                }
             })
             .collect()
     }
@@ -604,4 +631,15 @@ impl Shared {
     fn repo_path(&self, repo_id: &str) -> Result<std::path::PathBuf> {
         Ok(self.core().store.repo(repo_id)?.path)
     }
+}
+
+/// Berth's own connectors: the app bundle's `Contents/Resources/connectors`,
+/// else the workspace's `connectors/` (dev; `just fetch-connectors` fills
+/// their `bin/`).
+fn builtin_connectors_dir() -> Option<PathBuf> {
+    let bundled = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|d| d.join("../Resources/connectors")));
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../connectors");
+    bundled.into_iter().chain([workspace]).find(|d| d.is_dir())
 }

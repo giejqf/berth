@@ -142,6 +142,7 @@ impl OriginChoice {
             title: self.title,
             body: self.body,
             custom_prompt,
+            url: self.url,
         }
     }
 }
@@ -249,9 +250,27 @@ pub struct GhInfo {
 #[derive(Debug, Clone)]
 pub struct ConnectorInfo {
     pub name: String,
+    /// Display name.
+    pub title: String,
     pub description: String,
-    pub secrets: Vec<(String, bool)>,
-    pub has_origins: bool,
+    pub keys: Vec<ConnectorKey>,
+    /// Shipped with Berth (Linear, PostHog).
+    pub builtin: bool,
+    /// Its skill and CLI reach the agent, and its origins are offered. A
+    /// built-in connector stays off until its required keys are stored.
+    pub active: bool,
+    /// `Origin.kind` of the items it lists, if it lists any.
+    pub origin_kind: Option<String>,
+}
+
+/// One secret a connector declares.
+#[derive(Debug, Clone)]
+pub struct ConnectorKey {
+    pub name: String,
+    /// Stored in the Keychain.
+    pub set: bool,
+    /// The CLI has a default (`optional_secrets`).
+    pub optional: bool,
 }
 
 #[derive(Debug, Clone)]

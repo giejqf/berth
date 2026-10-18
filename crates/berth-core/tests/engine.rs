@@ -37,6 +37,7 @@ fn setup() -> (Store, Engine, String) {
         title: "Fix it".into(),
         body: String::new(),
         custom_prompt: None,
+        url: None,
     };
     let wf = Engine::create_workflow(&store, &slot.id, origin).unwrap();
     (store, Engine::new(), wf.id)

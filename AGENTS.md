@@ -85,6 +85,7 @@ berth/
 ├── Cargo.toml                   workspace
 ├── justfile                     dev commands
 ├── scripts/bundle.sh            `just bundle`: dist/Berth.app
+├── scripts/fetch-connectors.sh  pinned CLIs for the built-in connectors
 ├── .githooks/                   installed by `just setup`
 ├── crates/
 │   ├── berth-app/               GPUI binary: windows, views, actions, theming
@@ -113,6 +114,7 @@ berth/
 │   ├── src/protocol.ts          GENERATED from berth-protocol via ts-rs; do not edit
 │   └── test/                    vitest; SDK mocked; e2e.test.ts behind BERTH_E2E=1
 ├── slots/examples/              reference slot scripts: worktree, docker, vm
+├── connectors/                  built-in connectors: linear, posthog (bin/ fetched, §8.2)
 └── docs/                        design notes; ADRs go in docs/adr/
 ```
 
@@ -153,7 +155,7 @@ The event flow is the primary UI. It is an ordered list of **nodes** per workflo
 
 | Node | Source | Payload |
 |---|---|---|
-| `Origin` | App (user picks) or agent (`record_origin` not needed — app sets it at creation) | `{ kind: gh_issue \| gh_pr \| linear \| posthog \| thought \| follow_up, ref, title, body, custom_prompt }` |
+| `Origin` | App (user picks) or agent (`record_origin` not needed — app sets it at creation) | `{ kind: gh_issue \| gh_pr \| linear \| posthog \| thought \| follow_up, ref, title, body, custom_prompt, url? }` — `url` (from the picked item) is where it lives; the Origin node and the New workflow list link to it |
 | `Prompt` | User | `{ text, review_comments?: [ReviewComment], attachments?: [FileRef] }` |
 | `Question` | Agent (`ask_user`) or user (free-text question in a Prompt is just a Prompt) | `{ question, options?, allow_free_text, answer?, answered_at? }` |
 | `Decision` | Agent (`record_decision`) | `{ title, rationale, affects: [path], reversible }` |
@@ -447,12 +449,37 @@ from Linear issue" calls `linear-cli` to list issues).
 
 `[origin].list` makes the binary print a JSON array of `{ ref, title, body?, url? }`;
 the New Workflow dialog offers it as a source (`kind` `linear`/`posthog` map to those
-Origin kinds; anything else becomes a thought). `connector.toml` is strict: unknown
-keys are errors, the name must match `[A-Za-z0-9._-]+`, secrets must be valid env var
-names, and the binary must exist and be executable. One bad connector never hides the
-others.
+Origin kinds; anything else becomes a thought). Other shapes are mapped in
+`connector.toml`: `items = "results"` (dot path to the array) and
+`fields = { ref = "id", title = "name", … }` (dot paths in each item; numbers become
+text). `connector.toml` is strict: unknown keys are errors, the name must match
+`[A-Za-z0-9._-]+`, secrets must be valid env var names, and the binary must exist and
+be executable. One bad connector never hides the others. Optional keys: `title`
+(display name) and `optional_secrets` (Keychain values the CLI has a default for,
+e.g. a host; injected when set, never reported missing).
 
-Linear is a connector (`linear-cli`), not an integration.
+### 8.2.1 Built-in connectors
+
+Linear and PostHog are connectors, not integrations, but they ship with Berth
+(`connectors/` in the repo, `Contents/Resources/connectors/` in the app) — ADR 0004:
+
+| Connector | CLI | Keys | Origins |
+|---|---|---|---|
+| `linear` | [`linear-cli`](https://github.com/nesszer/linear-cli) (MIT), release binary | `LINEAR_API_KEY` | your open assigned issues (`api query`, GraphQL aliases give `ref/title/body/url`) |
+| `posthog` | `posthog-cli` (MIT, PostHog's official CLI), built from the published crate | `POSTHOG_CLI_API_KEY`, `POSTHOG_CLI_PROJECT_ID`; optional `POSTHOG_CLI_HOST` | active error tracking issues, last 7 days (`api call --json query-error-tracking-issues-list`) |
+
+- `scripts/fetch-connectors.sh` (`just fetch-connectors`; run by `setup`, `dev`,
+  `dev-tools` and `bundle`) puts the CLIs in `connectors/<name>/bin/` (gitignored).
+  Versions and SHA-256 checksums are pinned in the script.
+- posthog-cli is built from source because PostHog's release binaries send usage
+  events to PostHog with no opt-out; the crate's build script only adds that token
+  to debug builds, so the release build sends nothing. Its `api` command needs Node
+  (already required for the sidecar).
+- A built-in connector stays off until its required keys are stored: no skill, no
+  PATH entry, no origin tab. Settings shows it as "Not set up".
+- A user connector with the same name replaces the built-in one.
+- The CLIs are macOS binaries: they reach agents that run on the host. An `inside`
+  slot must provide its own (§6.1).
 
 ### 8.3 Secrets
 
@@ -603,12 +630,13 @@ stdin EOF stops the session; stdout carries protocol lines only (logs go to
 ## 12. Working in this repo
 
 ```
-just setup          install Rust toolchain checks, pnpm deps, git hooks
+just setup          install Rust toolchain checks, pnpm deps, connector CLIs, git hooks
 just dev [repo]     run app in debug with a dev sidecar (tsx)
 just dev-tools      same, with the devtools autopilot/screenshot feature
 just test           cargo test --workspace && pnpm -C sidecar test
 just test-e2e       sidecar round trip against a real `claude` (spends tokens)
 just lint           fmt check + clippy -D warnings (with and without devtools) + pnpm -C sidecar lint
+just fetch-connectors  pinned CLIs for the built-in connectors (connectors/*/bin/)
 just gen-protocol   regenerate sidecar/src/protocol.ts from berth-protocol
 just bundle         release build + sidecar bundle into dist/Berth.app
 ```

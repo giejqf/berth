@@ -223,6 +223,16 @@ pub fn origin_label(o: &Origin) -> String {
     }
 }
 
+/// The label for a link to where an origin lives.
+pub fn open_origin_label(kind: OriginKind) -> &'static str {
+    match kind {
+        OriginKind::GhIssue | OriginKind::GhPr => "Open on GitHub",
+        OriginKind::Linear => "Open in Linear",
+        OriginKind::Posthog => "Open in PostHog",
+        OriginKind::Thought | OriginKind::FollowUp => "Open link",
+    }
+}
+
 fn origin(t: &Tokens, node: &Node, o: &Origin, _ctx: &RowCtx, line: bool) -> Div {
     let body = if o.body.trim().is_empty() {
         o.title.clone()
@@ -249,7 +259,15 @@ fn origin(t: &Tokens, node: &Node, o: &Origin, _ctx: &RowCtx, line: bool) -> Div
                         "{} · {}",
                         origin_label(o),
                         clock(node.created_at)
-                    ))),
+                    )))
+                    .when_some(o.url.clone(), |d, url| {
+                        d.child(div().flex_1()).child(link(
+                            "open-origin",
+                            open_origin_label(o.kind),
+                            t,
+                            move |_, _, cx| cx.open_url(&url),
+                        ))
+                    }),
             )
             .child(rich(t, &body, t.text2))
             .when_some(o.custom_prompt.clone(), |d, p| {

@@ -262,6 +262,7 @@ mod tests {
                     title: "t".into(),
                     body: String::new(),
                     custom_prompt: None,
+                    url: None,
                 },
                 state: WorkflowState::Running,
                 claude_session_id: None,

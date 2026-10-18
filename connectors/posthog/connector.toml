@@ -1,0 +1,19 @@
+# Built-in: PostHog through posthog-cli (MIT; github.com/PostHog/posthog, cli/).
+# bin/posthog-cli is built from the published crate by scripts/fetch-connectors.sh
+# (`just fetch-connectors`), which leaves PostHog's usage telemetry out.
+# Its `api` command runs a bundled script with Node (already needed by Berth).
+name = "posthog"
+title = "PostHog"
+description = "error tracking issues as workflow origins"
+binary = "bin/posthog-cli"
+secrets = ["POSTHOG_CLI_API_KEY", "POSTHOG_CLI_PROJECT_ID"]
+# Defaults to US Cloud; set https://eu.posthog.com or a self-hosted URL.
+optional_secrets = ["POSTHOG_CLI_HOST"]
+
+[origin]
+kind = "posthog"
+# Active issues seen in the last 7 days, most frequent first. Each result
+# carries `_posthogUrl`, the issue's page in PostHog.
+list = ["api", "call", "--json", "query-error-tracking-issues-list", '{"limit": 50}']
+items = "results"
+fields = { ref = "id", title = "name", body = "description", url = "_posthogUrl" }

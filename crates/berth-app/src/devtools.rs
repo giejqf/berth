@@ -8,12 +8,14 @@
 //! wait_state idle 120         # until the selected workflow is idle|awaiting|closed|running (timeout s)
 //! shot flow                   # save $BERTH_DEV_SHOTS/flow.png
 //! action NewWorkflow          # dispatch a keymap action in the repo window
+//! action NewWorkflowTab 3     # … one taking a number
 //! escape                      # close the top dialog/sheet
 //! thought Title | body        # create a workflow from a thought
 //! prompt text                 # send a prompt to the selected workflow
 //! answer text                 # answer the pending question (bypasses the card)
 //! keys 2 enter                # type keystrokes into the focused element
 //! select 0                    # select the n-th slot (newest first)
+//! secret linear LINEAR_API_KEY x  # store a connector key (use BERTH_SECRETS=memory)
 //! quit
 //! ```
 
@@ -74,8 +76,22 @@ pub fn start(cx: &mut App) {
                                 title: title.trim().to_owned(),
                                 body: body.trim().to_owned(),
                                 custom_prompt: None,
+                                url: None,
                             },
                         }));
+                    }
+                }),
+                "secret" => cx.update(|cx| {
+                    let mut parts = arg.splitn(3, ' ');
+                    if let (Some(connector), Some(key), Some(value)) =
+                        (parts.next(), parts.next(), parts.next())
+                        && let Some(state) = ui::first_repo_state(cx)
+                    {
+                        state.read(cx).backend.send(Command::SetSecret {
+                            connector: connector.to_owned(),
+                            key: key.to_owned(),
+                            value: value.to_owned(),
+                        });
                     }
                 }),
                 "prompt" | "answer" => cx.update(|cx| {
@@ -451,10 +467,16 @@ fn dispatch(name: &str, cx: &mut App) {
         "FocusComposer" => Box::new(keymap::FocusComposer),
         "NextSlot" => Box::new(keymap::NextSlot),
         "PrevSlot" => Box::new(keymap::PrevSlot),
-        other => {
-            tracing::warn!(other, "unknown action");
-            return;
-        }
+        other => match other
+            .strip_prefix("NewWorkflowTab ")
+            .and_then(|n| n.trim().parse().ok())
+        {
+            Some(n) => Box::new(keymap::NewWorkflowTab(n)),
+            None => {
+                tracing::warn!(other, "unknown action");
+                return;
+            }
+        },
     };
     with_window(cx, move |window, cx| window.dispatch_action(action, cx));
 }

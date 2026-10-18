@@ -22,6 +22,8 @@ pub const SKILL_FILE: &str = "SKILL.md";
 pub struct Connector {
     /// Matches `[A-Za-z0-9._-]+`.
     pub name: String,
+    /// Display name (`title`, else `name`).
+    pub title: String,
     pub description: String,
     /// Absolute connector directory.
     pub dir: PathBuf,
@@ -29,19 +31,68 @@ pub struct Connector {
     pub binary: PathBuf,
     /// Env var names, stored in Keychain under [`Connector::keychain_service`].
     pub secrets: Vec<String>,
+    /// Like `secrets`, but the CLI has a default: never reported missing.
+    pub optional_secrets: Vec<String>,
     /// `SKILL.md`, if present.
     pub skill_md: Option<PathBuf>,
     /// How to list workflow origins, if the connector offers any.
     pub origin: Option<OriginSource>,
+    /// Shipped with Berth (see [`discover_layers`]).
+    pub builtin: bool,
 }
 
-/// `[origin]` table: the binary prints a JSON array of [`OriginItem`] when run with `list`.
+/// `[origin]` table: the binary prints JSON when run with `list`. By default
+/// that is an array of [`OriginItem`]; `items` and `fields` map other shapes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OriginSource {
     /// `Origin.kind`, e.g. `linear`.
     pub kind: String,
     /// Args passed to the binary.
     pub list: Vec<String>,
+    /// Dot path to the array in the output (`results`); `None` = the output itself.
+    pub items: Option<String>,
+    /// Dot path in each item for each [`OriginItem`] field.
+    pub fields: OriginFields,
+}
+
+/// `[origin.fields]`: where each [`OriginItem`] field is in an item.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OriginFields {
+    #[serde(rename = "ref", default = "OriginFields::default_ref")]
+    pub r#ref: String,
+    #[serde(default = "OriginFields::default_title")]
+    pub title: String,
+    #[serde(default = "OriginFields::default_body")]
+    pub body: String,
+    #[serde(default = "OriginFields::default_url")]
+    pub url: String,
+}
+
+impl OriginFields {
+    fn default_ref() -> String {
+        "ref".to_owned()
+    }
+    fn default_title() -> String {
+        "title".to_owned()
+    }
+    fn default_body() -> String {
+        "body".to_owned()
+    }
+    fn default_url() -> String {
+        "url".to_owned()
+    }
+}
+
+impl Default for OriginFields {
+    fn default() -> Self {
+        Self {
+            r#ref: Self::default_ref(),
+            title: Self::default_title(),
+            body: Self::default_body(),
+            url: Self::default_url(),
+        }
+    }
 }
 
 /// One item a connector offers as a workflow origin.
@@ -88,10 +139,14 @@ impl SkillInstall {
 struct RawConnector {
     name: String,
     #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
     description: String,
     binary: PathBuf,
     #[serde(default)]
     secrets: Vec<String>,
+    #[serde(default)]
+    optional_secrets: Vec<String>,
     #[serde(default)]
     origin: Option<RawOrigin>,
 }
@@ -102,6 +157,30 @@ struct RawOrigin {
     kind: String,
     #[serde(default)]
     list: Vec<String>,
+    #[serde(default)]
+    items: Option<String>,
+    #[serde(default)]
+    fields: OriginFields,
+}
+
+/// Built-in connectors (shipped with Berth) plus the user's own. A user
+/// connector replaces the built-in one with the same name.
+#[must_use]
+pub fn discover_layers(builtin: Option<&Path>, user: &Path) -> Discovered {
+    let mut out = discover(user);
+    if let Some(dir) = builtin {
+        let mut shipped = discover(dir);
+        for mut c in shipped.connectors {
+            if !out.connectors.iter().any(|u| u.name == c.name) {
+                c.builtin = true;
+                out.connectors.push(c);
+            }
+        }
+        out.errors.append(&mut shipped.errors);
+    }
+    out.connectors.sort_by(|a, b| a.name.cmp(&b.name));
+    out.errors.sort_by(|a, b| a.0.cmp(&b.0));
+    out
 }
 
 /// Loads every connector directory under `dir`. A missing `dir` yields nothing;
@@ -202,7 +281,7 @@ impl Connector {
         }
 
         let mut seen = HashSet::new();
-        for secret in &raw.secrets {
+        for secret in raw.secrets.iter().chain(&raw.optional_secrets) {
             if !is_env_name(secret) {
                 return Err(invalid(format!(
                     "secret {secret:?} is not a valid env var name ([A-Z_][A-Z0-9_]*)"
@@ -220,6 +299,8 @@ impl Connector {
             Some(o) => Some(OriginSource {
                 kind: o.kind,
                 list: o.list,
+                items: o.items.filter(|p| !p.trim().is_empty()),
+                fields: o.fields,
             }),
             None => None,
         };
@@ -227,13 +308,20 @@ impl Connector {
         let skill = dir.join(SKILL_FILE);
         let skill_md = skill.is_file().then_some(skill);
 
+        let title = raw
+            .title
+            .filter(|t| !t.trim().is_empty())
+            .unwrap_or_else(|| raw.name.clone());
         Ok(Self {
             name: raw.name,
+            title,
             description: raw.description,
             binary,
             secrets: raw.secrets,
+            optional_secrets: raw.optional_secrets,
             skill_md,
             origin,
+            builtin: false,
             dir,
         })
     }
@@ -275,7 +363,7 @@ impl Connector {
     }
 
     /// Runs the binary with `origin.list` (cwd = connector dir, plus `env`) and
-    /// parses its JSON array.
+    /// maps its JSON to items (see [`OriginSource`]).
     pub async fn list_origins(
         &self,
         env: &[(String, String)],
@@ -302,7 +390,60 @@ impl Connector {
                 stderr: String::from_utf8_lossy(&out.stderr).trim().to_owned(),
             });
         }
-        Ok(serde_json::from_slice(&out.stdout)?)
+        let json: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+        origin
+            .map(&json)
+            .map_err(|message| ConnectorError::Invalid {
+                path: self.dir.join(CONFIG_FILE),
+                message,
+            })
+    }
+}
+
+impl OriginSource {
+    /// Picks the items out of the binary's output.
+    pub fn map(&self, json: &serde_json::Value) -> Result<Vec<OriginItem>, String> {
+        let items = match &self.items {
+            Some(path) => at(json, path).ok_or_else(|| format!("output has no `{path}`"))?,
+            None => json,
+        };
+        let items = items
+            .as_array()
+            .ok_or_else(|| "connector output is not a JSON array".to_owned())?;
+        let f = &self.fields;
+        items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| {
+                let need = |path: &str, field: &str| {
+                    text_at(item, path)
+                        .ok_or_else(|| format!("item {i} has no `{field}` (read from `{path}`)"))
+                };
+                Ok(OriginItem {
+                    r#ref: need(&f.r#ref, "ref")?,
+                    title: need(&f.title, "title")?,
+                    body: text_at(item, &f.body),
+                    url: text_at(item, &f.url),
+                })
+            })
+            .collect()
+    }
+}
+
+/// The value at a dot path (`a.b.0.c`).
+fn at<'a>(v: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+    path.split('.').try_fold(v, |v, key| match v {
+        serde_json::Value::Array(a) => a.get(key.parse::<usize>().ok()?),
+        _ => v.get(key),
+    })
+}
+
+/// A string or number at a dot path, as text; `None` for null, empty or other types.
+fn text_at(v: &serde_json::Value, path: &str) -> Option<String> {
+    match at(v, path)? {
+        serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
     }
 }
 

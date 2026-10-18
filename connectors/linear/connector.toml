@@ -1,0 +1,18 @@
+# Built-in: Linear through linear-cli (MIT; github.com/nesszer/linear-cli).
+# bin/linear-cli is fetched by scripts/fetch-connectors.sh (`just fetch-connectors`).
+name = "linear"
+title = "Linear"
+description = "your open issues as workflow origins"
+binary = "bin/linear-cli"
+secrets = ["LINEAR_API_KEY"]
+
+[origin]
+kind = "linear"
+# Open issues assigned to you, most recently updated first. The GraphQL
+# aliases produce Berth's item shape directly: ref, title, body, url.
+list = [
+    "api", "query", "--quiet", "--compact", "--paginate",
+    "--nodes-path", "data.viewer.assignedIssues.nodes",
+    "--page-info-path", "data.viewer.assignedIssues.pageInfo",
+    'query($first: Int, $after: String) { viewer { assignedIssues(first: $first, after: $after, orderBy: updatedAt, filter: { state: { type: { nin: ["completed", "canceled"] } } }) { nodes { ref: identifier title body: description url } pageInfo { hasNextPage endCursor } } } }',
+]

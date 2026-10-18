@@ -124,15 +124,18 @@ impl NewWorkflowForm {
                 "pr",
             ),
         ];
-        for c in state.connectors.iter().filter(|c| c.has_origins) {
-            let mut label = c.name.clone();
-            if let Some(first) = label.get_mut(0..1) {
-                first.make_ascii_uppercase();
-            }
+        for c in state.connectors.iter().filter(|c| c.active) {
+            let icon = match c.origin_kind.as_deref() {
+                Some("linear") => "linear",
+                Some("posthog") => "alert",
+                // Other kinds start a Thought (`slots.rs`, `list_origins`).
+                Some(_) => "lightbulb",
+                None => continue,
+            };
             sources.push((
                 Source::List(OriginSource::Connector(c.name.clone())),
-                label,
-                "linear",
+                c.title.clone(),
+                icon,
             ));
         }
         sources
@@ -175,6 +178,7 @@ impl NewWorkflowForm {
                     title,
                     body: self.body.read(cx).value().trim().to_owned(),
                     custom_prompt: custom,
+                    url: None,
                 })
             }
             Source::List(_) => self.selected.clone().map(|c| c.into_origin(custom)),
@@ -361,9 +365,15 @@ impl Render for NewWorkflowForm {
                         let filtered: Vec<&OriginChoice> = items
                             .iter()
                             .filter(|i| {
+                                // What the row shows: a PostHog row shows the message, not the id.
+                                let shown = if i.kind == OriginKind::Posthog {
+                                    i.body.lines().next().unwrap_or_default()
+                                } else {
+                                    &i.r#ref
+                                };
                                 query.is_empty()
                                     || i.title.to_lowercase().contains(&query)
-                                    || i.r#ref.to_lowercase().contains(&query)
+                                    || shown.to_lowercase().contains(&query)
                             })
                             .collect();
                         if filtered.is_empty() {
@@ -382,9 +392,16 @@ impl Render for NewWorkflowForm {
                                 .is_some_and(|s| s.r#ref == item.r#ref);
                             let choice = item.clone();
                             let hover = t.raised;
+                            let group = SharedString::from(format!("origin-{i}"));
+                            // PostHog refs are issue ids: show the error's message instead.
+                            let error = item.kind == OriginKind::Posthog;
+                            let preview = error
+                                .then(|| item.body.lines().next().unwrap_or_default().to_owned())
+                                .filter(|p| !p.trim().is_empty());
                             col = col.child(
                                 div()
-                                    .id(SharedString::from(format!("origin-{i}")))
+                                    .id(group.clone())
+                                    .group(group.clone())
                                     .flex()
                                     .flex_none()
                                     .items_center()
@@ -408,24 +425,73 @@ impl Render for NewWorkflowForm {
                                             cx.notify();
                                         },
                                     ))
-                                    .child(
-                                        div()
-                                            .w(px(56.))
-                                            .flex_none()
-                                            .font_family(MONO)
-                                            .ty(ty::META)
-                                            .text_color(t.text3)
-                                            .child(item.r#ref.clone()),
-                                    )
+                                    .when(!error, |d| {
+                                        d.child(
+                                            div()
+                                                .min_w(px(56.))
+                                                .flex_none()
+                                                .whitespace_nowrap()
+                                                .font_family(MONO)
+                                                .ty(ty::META)
+                                                .text_color(t.text3)
+                                                .child(item.r#ref.clone()),
+                                        )
+                                    })
                                     .child(
                                         div()
                                             .flex_1()
                                             .min_w_0()
+                                            .flex()
+                                            .items_baseline()
+                                            .gap(px(8.))
                                             .whitespace_nowrap()
-                                            .overflow_hidden()
-                                            .text_ellipsis()
-                                            .child(item.title.clone()),
-                                    ),
+                                            .child(
+                                                div()
+                                                    .min_w_0()
+                                                    .overflow_hidden()
+                                                    .text_ellipsis()
+                                                    .child(item.title.clone()),
+                                            )
+                                            .when_some(preview, |d, p| {
+                                                d.child(
+                                                    div()
+                                                        .flex_1()
+                                                        .min_w_0()
+                                                        .overflow_hidden()
+                                                        .text_ellipsis()
+                                                        .ty(ty::META)
+                                                        .text_color(t.text3)
+                                                        .child(p),
+                                                )
+                                            }),
+                                    )
+                                    .when_some(item.url.clone(), |d, url| {
+                                        // Shown on hover and on the selected row.
+                                        d.child(
+                                            div()
+                                                .flex_none()
+                                                .when(!selected, |d| {
+                                                    d.opacity(0.).group_hover(group.clone(), |s| {
+                                                        s.opacity(1.)
+                                                    })
+                                                })
+                                                .child(
+                                                    Btn::new(SharedString::from(format!(
+                                                        "origin-open-{i}"
+                                                    )))
+                                                    .ghost()
+                                                    .size(Size::S22)
+                                                    .icon("external-link", 14.)
+                                                    .tooltip(super::nodes::open_origin_label(
+                                                        item.kind,
+                                                    ))
+                                                    .on_click(move |_, _, cx| {
+                                                        cx.stop_propagation();
+                                                        cx.open_url(&url);
+                                                    }),
+                                                ),
+                                        )
+                                    }),
                             );
                         }
                         col.into_any_element()

@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use berth_connectors::{
-    Connector, ConnectorError, KeychainStore, MemoryStore, OriginItem, OriginSource, SecretStore,
-    default_connectors_dir, discover, path_with_connectors, secret_env,
+    Connector, ConnectorError, KeychainStore, MemoryStore, OriginFields, OriginItem, OriginSource,
+    SecretStore, default_connectors_dir, discover, path_with_connectors, secret_env,
 };
 use tempfile::TempDir;
 
@@ -108,15 +108,20 @@ fn discovers_valid_connector() {
         d.connectors,
         vec![Connector {
             name: "linear".into(),
+            title: "linear".into(),
             description: "Linear issues".into(),
             dir: dir.clone(),
             binary: dir.join("bin/linear-cli"),
             secrets: vec!["LINEAR_API_KEY".into()],
+            optional_secrets: Vec::new(),
             skill_md: Some(dir.join("SKILL.md")),
             origin: Some(OriginSource {
                 kind: "linear".into(),
                 list: vec!["issues".into(), "list".into(), "--json".into()],
+                items: None,
+                fields: OriginFields::default(),
             }),
+            builtin: false,
         }]
     );
     let c = &d.connectors[0];
@@ -371,7 +376,202 @@ async fn list_origins_bad_json() {
     );
     let c = Connector::load(&dir).unwrap();
     let err = c.list_origins(&[]).await.unwrap_err();
+    assert!(err.to_string().contains("not a JSON array"), "{err:?}");
+
+    let dir = connector_dir(
+        tmp.path(),
+        "b",
+        "name = \"b\"\nbinary = \"bin/b\"\n[origin]\nkind = \"b\"\n",
+        Some(("b", "#!/bin/sh\necho 'not json'\n")),
+    );
+    let err = Connector::load(&dir)
+        .unwrap()
+        .list_origins(&[])
+        .await
+        .unwrap_err();
     assert!(matches!(err, ConnectorError::Json(_)), "{err:?}");
+}
+
+/// PostHog's shape: `{"results": [{"id", "name", "description"}], ...}`.
+const POSTHOG_TOML: &str = r#"
+name = "posthog"
+title = "PostHog"
+binary = "bin/posthog-cli"
+secrets = ["POSTHOG_CLI_API_KEY"]
+optional_secrets = ["POSTHOG_CLI_HOST"]
+
+[origin]
+kind = "posthog"
+list = ["issues"]
+items = "results"
+fields = { ref = "id", title = "name", body = "description", url = "links.0.href" }
+"#;
+
+const POSTHOG_BIN: &str = r#"#!/bin/sh
+echo '{"results":[{"id":"0198-a","name":"TypeError","description":"x is undefined","links":[{"href":"https://ph/1"}]},{"id":42,"name":"Panic","description":null}],"hasMore":false}'
+"#;
+
+#[tokio::test]
+async fn list_origins_maps_items_and_fields() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = connector_dir(
+        tmp.path(),
+        "posthog",
+        POSTHOG_TOML,
+        Some(("posthog-cli", POSTHOG_BIN)),
+    );
+    let c = Connector::load(&dir).unwrap();
+    assert_eq!(c.title, "PostHog");
+    assert_eq!(
+        c.list_origins(&[]).await.unwrap(),
+        vec![
+            OriginItem {
+                r#ref: "0198-a".into(),
+                title: "TypeError".into(),
+                body: Some("x is undefined".into()),
+                url: Some("https://ph/1".into()),
+            },
+            OriginItem {
+                r#ref: "42".into(),
+                title: "Panic".into(),
+                body: None,
+                url: None,
+            },
+        ]
+    );
+}
+
+#[tokio::test]
+async fn list_origins_reports_unmapped_fields() {
+    let tmp = tempfile::tempdir().unwrap();
+    let toml = POSTHOG_TOML.replace("ref = \"id\"", "ref = \"uuid\"");
+    let dir = connector_dir(
+        tmp.path(),
+        "posthog",
+        &toml,
+        Some(("posthog-cli", POSTHOG_BIN)),
+    );
+    let err = Connector::load(&dir)
+        .unwrap()
+        .list_origins(&[])
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("item 0 has no `ref` (read from `uuid`)"),
+        "{err}"
+    );
+
+    let toml = POSTHOG_TOML.replace("items = \"results\"", "items = \"data.rows\"");
+    let dir = connector_dir(
+        tmp.path(),
+        "posthog2",
+        &toml.replace("name = \"posthog\"", "name = \"posthog2\""),
+        Some(("posthog-cli", POSTHOG_BIN)),
+    );
+    let err = Connector::load(&dir)
+        .unwrap()
+        .list_origins(&[])
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("output has no `data.rows`"),
+        "{err}"
+    );
+}
+
+#[test]
+fn origin_fields_are_strict() {
+    let tmp = tempfile::tempdir().unwrap();
+    let toml = POSTHOG_TOML.replace("url = ", "link = ");
+    connector_dir(
+        tmp.path(),
+        "posthog",
+        &toml,
+        Some(("posthog-cli", POSTHOG_BIN)),
+    );
+    let (_, err) = only_error(&tmp);
+    assert!(matches!(err, ConnectorError::Toml { .. }), "{err:?}");
+}
+
+#[test]
+fn title_defaults_to_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let c = Connector::load(&linear(tmp.path())).unwrap();
+    assert_eq!(c.title, "linear");
+    assert!(!c.builtin);
+}
+
+#[test]
+fn user_connectors_replace_built_in_ones() {
+    let tmp = tempfile::tempdir().unwrap();
+    let shipped = tmp.path().join("shipped");
+    let user = tmp.path().join("user");
+    linear(&shipped);
+    simple(&shipped, "posthog", &[]);
+    connector_dir(&shipped, "broken", "name = \"broken\"\n", None);
+    simple(&user, "linear", &["MY_KEY"]);
+
+    let d = berth_connectors::discover_layers(Some(&shipped), &user);
+    let names: Vec<_> = d
+        .connectors
+        .iter()
+        .map(|c| (c.name.as_str(), c.builtin))
+        .collect();
+    assert_eq!(names, [("linear", false), ("posthog", true)]);
+    assert_eq!(d.connectors[0].secrets, ["MY_KEY"]);
+    assert_eq!(d.errors.len(), 1, "{:?}", d.errors);
+
+    let d = berth_connectors::discover_layers(None, &user);
+    assert_eq!(d.connectors.len(), 1);
+}
+
+#[test]
+fn optional_secrets_are_passed_but_never_missing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = connector_dir(
+        tmp.path(),
+        "posthog",
+        POSTHOG_TOML,
+        Some(("posthog-cli", POSTHOG_BIN)),
+    );
+    let connectors = vec![Connector::load(&dir).unwrap()];
+    let store = MemoryStore::new();
+    let env = secret_env(&connectors, &store).unwrap();
+    assert!(env.vars.is_empty());
+    assert_eq!(
+        env.missing,
+        vec![("posthog".to_owned(), "POSTHOG_CLI_API_KEY".to_owned())]
+    );
+
+    store
+        .set(
+            "com.berth.connector.posthog",
+            "POSTHOG_CLI_HOST",
+            "https://eu.posthog.com",
+        )
+        .unwrap();
+    let env = secret_env(&connectors, &store).unwrap();
+    assert_eq!(
+        env.vars,
+        vec![(
+            "POSTHOG_CLI_HOST".to_owned(),
+            "https://eu.posthog.com".to_owned()
+        )]
+    );
+}
+
+#[test]
+fn optional_secret_names_are_validated() {
+    let tmp = tempfile::tempdir().unwrap();
+    connector_dir(
+        tmp.path(),
+        "a",
+        "name = \"a\"\nbinary = \"bin/a\"\nsecrets = [\"K\"]\noptional_secrets = [\"K\"]\n",
+        Some(("a", "#!/bin/sh\n")),
+    );
+    let (_, err) = only_error(&tmp);
+    assert!(err.to_string().contains("listed twice"), "{err}");
 }
 
 #[tokio::test]
@@ -472,4 +672,59 @@ fn keychain_round_trip() {
     store.delete(service, account).unwrap();
     assert_eq!(store.get(service, account).unwrap(), None);
     store.delete(service, account).unwrap();
+}
+
+/// The built-in connectors in `connectors/` load (with a stand-in binary, since
+/// `bin/` is fetched) and map their CLIs' output shapes.
+#[test]
+fn shipped_connectors_are_valid() {
+    let shipped = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../connectors");
+    let tmp = tempfile::tempdir().unwrap();
+    for (name, bin) in [("linear", "linear-cli"), ("posthog", "posthog-cli")] {
+        let dir = tmp.path().join(name);
+        fs::create_dir_all(&dir).unwrap();
+        for file in ["connector.toml", "SKILL.md"] {
+            fs::copy(shipped.join(name).join(file), dir.join(file)).unwrap();
+        }
+        write_exe(&dir.join("bin").join(bin), "#!/bin/sh\n");
+    }
+    let d = discover(tmp.path());
+    assert!(d.errors.is_empty(), "{:?}", d.errors);
+    let [linear, posthog] = &d.connectors[..] else {
+        panic!("{:?}", d.connectors);
+    };
+    assert_eq!(
+        (linear.title.as_str(), posthog.title.as_str()),
+        ("Linear", "PostHog")
+    );
+    assert!(linear.skill_md.is_some() && posthog.skill_md.is_some());
+    assert_eq!(linear.secrets, ["LINEAR_API_KEY"]);
+    assert_eq!(posthog.optional_secrets, ["POSTHOG_CLI_HOST"]);
+
+    // linear-cli `api query --paginate` prints the aliased nodes as an array.
+    let nodes = serde_json::json!([
+        {"ref": "ENG-1", "title": "Fix login", "body": null, "url": "https://linear.app/a/issue/ENG-1"}
+    ]);
+    let items = linear.origin.as_ref().unwrap().map(&nodes).unwrap();
+    assert_eq!(items[0].r#ref, "ENG-1");
+    assert_eq!(items[0].body, None);
+
+    // posthog-cli `api call --json query-error-tracking-issues-list`.
+    let page = serde_json::json!({
+        "results": [{"id": "01963e1c-aaaa", "name": "TypeError", "description": "x is undefined",
+                     "status": "active", "aggregations": {"occurrences": 12},
+                     "_posthogUrl": "https://us.posthog.com/project/1/error_tracking/01963e1c-aaaa"}],
+        "hasMore": false,
+        "_posthogUrl": "https://us.posthog.com/project/1/error_tracking"
+    });
+    let items = posthog.origin.as_ref().unwrap().map(&page).unwrap();
+    assert_eq!(
+        items,
+        [OriginItem {
+            r#ref: "01963e1c-aaaa".into(),
+            title: "TypeError".into(),
+            body: Some("x is undefined".into()),
+            url: Some("https://us.posthog.com/project/1/error_tracking/01963e1c-aaaa".into()),
+        }]
+    );
 }

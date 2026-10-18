@@ -1,8 +1,8 @@
-//! User-defined connectors: discovery, skill install, Keychain secrets
-//! (AGENTS.md §8.2, §8.3).
+//! Connectors: discovery, skill install, Keychain secrets (AGENTS.md §8.2, §8.3).
 //!
-//! A connector is `~/.config/berth/connectors/<name>/` holding `connector.toml`,
-//! an optional `SKILL.md`, and a CLI binary.
+//! A connector is a directory holding `connector.toml`, an optional `SKILL.md`,
+//! and a CLI binary: the user's under `~/.config/berth/connectors/<name>/`, and
+//! Berth's built-in ones (Linear, PostHog) shipped with the app.
 
 mod connector;
 mod secrets;
@@ -11,8 +11,8 @@ use std::io;
 use std::path::PathBuf;
 
 pub use connector::{
-    CONFIG_FILE, Connector, Discovered, OriginItem, OriginSource, SKILL_FILE, SkillInstall,
-    discover,
+    CONFIG_FILE, Connector, Discovered, OriginFields, OriginItem, OriginSource, SKILL_FILE,
+    SkillInstall, discover, discover_layers,
 };
 pub use secrets::{
     KeychainStore, MemoryStore, SecretEnv, SecretStore, path_with_connectors, secret_env,

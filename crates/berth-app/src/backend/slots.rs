@@ -456,6 +456,7 @@ impl Shared {
             title: request.name.clone(),
             body: request.purpose.clone(),
             custom_prompt: None,
+            url: None,
         })
     }
 
