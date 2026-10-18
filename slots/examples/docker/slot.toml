@@ -1,0 +1,3 @@
+name = "docker"
+description = "Own dependencies, nothing touches your machine. Needs Docker."
+agent_placement = "inside"

@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: sidecar/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: sidecar/pnpm-lock.yaml
+      - run: pnpm -C sidecar install --frozen-lockfile
+      - name: Protocol is fresh
+        run: |
+          cargo run -q -p berth-protocol --bin gen-protocol
+          git diff --exit-code -- sidecar/src/protocol.ts
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: pnpm -C sidecar lint
+      - run: pnpm -C sidecar test

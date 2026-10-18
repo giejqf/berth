@@ -1,0 +1,121 @@
+#!/bin/sh
+# Fake `gh` for berth-gh tests. Dispatches on its args and prints canned JSON.
+#
+#   FAKE_GH_LOG    append "args: …", "env: …" and "cwd: …" lines here
+#   FAKE_GH_STDIN  write stdin here (commands that read stdin)
+#   FAKE_GH_MODE   ""        normal
+#                  unauth    behave as if not logged in
+#                  fail      exit 1 with a generic error
+#                  badjson   print invalid JSON
+set -u
+
+log() {
+  if [ -n "${FAKE_GH_LOG:-}" ]; then
+    printf '%s\n' "$*" >>"$FAKE_GH_LOG"
+  fi
+}
+
+log "args: $*"
+log "env: GH_PROMPT_DISABLED=${GH_PROMPT_DISABLED:-} NO_COLOR=${NO_COLOR:-}"
+log "cwd: $(pwd)"
+
+cmd="${1:-} ${2:-}"
+
+case "${FAKE_GH_MODE:-}" in
+  unauth)
+    if [ "$cmd" = "auth status" ]; then
+      echo "You are not logged into any GitHub hosts. To log in, run: gh auth login" >&2
+      exit 1
+    fi
+    echo "To get started with GitHub CLI, please run:  gh auth login" >&2
+    exit 4
+    ;;
+  fail)
+    echo "GraphQL: Could not resolve to an issue or pull request with the number of 999. (repository.issue)" >&2
+    exit 1
+    ;;
+  badjson)
+    echo "this is not json"
+    exit 0
+    ;;
+esac
+
+has_arg() {
+  needle="$1"
+  shift
+  for a in "$@"; do
+    [ "$a" = "$needle" ] && return 0
+  done
+  return 1
+}
+
+case "$cmd" in
+  "auth status")
+    cat <<'EOF'
+github.com
+  ✓ Logged in to github.com account octocat (keyring)
+  - Active account: true
+  - Git operations protocol: https
+  - Token: gho_************************************
+EOF
+    ;;
+
+  "repo view")
+    cat <<'EOF'
+{"defaultBranchRef":{"name":"main"},"nameWithOwner":"acme/widgets","url":"https://github.com/acme/widgets"}
+EOF
+    ;;
+
+  "issue list")
+    cat <<'EOF'
+[{"author":{"id":"MDQ6VXNlcjE=","is_bot":false,"login":"octocat","name":"The Octocat"},"createdAt":"2026-10-01T10:00:00Z","labels":[{"id":"LA_1","name":"bug","description":"","color":"d73a4a"},{"id":"LA_2","name":"p1","description":"","color":"000000"}],"number":42,"state":"OPEN","title":"Crash on start","updatedAt":"2026-10-02T10:00:00Z","url":"https://github.com/acme/widgets/issues/42"},{"author":null,"createdAt":"2026-09-01T10:00:00Z","labels":[],"number":41,"state":"OPEN","title":"Ghost issue","updatedAt":"2026-09-02T10:00:00Z","url":"https://github.com/acme/widgets/issues/41"}]
+EOF
+    ;;
+
+  "issue view")
+    cat <<'EOF'
+{"author":{"id":"MDQ6VXNlcjE=","is_bot":false,"login":"octocat","name":"The Octocat"},"body":"It crashes.\n\nSteps: open it.","comments":[{"id":"IC_kwDOA1","author":{"login":"hubot"},"authorAssociation":"MEMBER","body":"Repro'd.","createdAt":"2026-10-03T10:00:00Z","includesCreatedEdit":false,"isMinimized":false,"minimizedReason":"","reactionGroups":[],"url":"https://github.com/acme/widgets/issues/42#issuecomment-1","viewerDidAuthor":false}],"createdAt":"2026-10-01T10:00:00Z","labels":[{"id":"LA_1","name":"bug","description":"","color":"d73a4a"}],"number":42,"state":"OPEN","title":"Crash on start","updatedAt":"2026-10-02T10:00:00Z","url":"https://github.com/acme/widgets/issues/42"}
+EOF
+    ;;
+
+  "pr list")
+    if has_arg "--head=no-pr-branch" "$@"; then
+      echo "[]"
+    elif has_arg "--head=feature/x" "$@"; then
+      cat <<'EOF'
+[{"author":{"login":"octocat"},"baseRefName":"main","body":"Adds x.","comments":[{"id":"IC_kwDOB1","author":{"login":"hubot"},"body":"LGTM","createdAt":"2026-10-05T10:00:00Z","url":"https://github.com/acme/widgets/pull/7#issuecomment-2"}],"createdAt":"2026-10-04T10:00:00Z","headRefName":"feature/x","isDraft":false,"number":7,"state":"MERGED","title":"Add x","updatedAt":"2026-10-05T10:00:00Z","url":"https://github.com/acme/widgets/pull/7"}]
+EOF
+    else
+      cat <<'EOF'
+[{"author":{"login":"octocat"},"baseRefName":"main","createdAt":"2026-10-04T10:00:00Z","headRefName":"feature/x","isDraft":false,"number":7,"state":"OPEN","title":"Add x","updatedAt":"2026-10-05T10:00:00Z","url":"https://github.com/acme/widgets/pull/7"},{"author":{"login":"app/dependabot"},"baseRefName":"main","createdAt":"2026-10-03T10:00:00Z","headRefName":"deps/bump","isDraft":true,"number":6,"state":"OPEN","title":"Bump deps","updatedAt":"2026-10-03T11:00:00Z","url":"https://github.com/acme/widgets/pull/6"}]
+EOF
+    fi
+    ;;
+
+  "pr view")
+    if has_arg "commits" "$@"; then
+      cat <<'EOF'
+{"commits":[{"authoredDate":"2026-10-04T09:00:00Z","authors":[{"email":"octo@example.com","id":"MDQ6VXNlcjE=","login":"octocat","name":"The Octocat"}],"committedDate":"2026-10-04T09:30:00Z","messageBody":"","messageHeadline":"feat: add x","oid":"1111111111111111111111111111111111111111"},{"authoredDate":"2026-10-04T10:00:00Z","authors":[{"email":"bot@example.com","id":"","login":"","name":"Build Bot"}],"committedDate":"2026-10-04T10:30:00Z","messageBody":"details","messageHeadline":"fix: tweak x","oid":"2222222222222222222222222222222222222222"}]}
+EOF
+    else
+      cat <<'EOF'
+{"author":{"login":"octocat"},"baseRefName":"main","body":"Adds x.","comments":[{"id":"IC_kwDOB1","author":{"login":"hubot"},"body":"LGTM","createdAt":"2026-10-05T10:00:00Z","url":"https://github.com/acme/widgets/pull/7#issuecomment-2"}],"createdAt":"2026-10-04T10:00:00Z","headRefName":"feature/x","isDraft":false,"number":7,"state":"OPEN","title":"Add x","updatedAt":"2026-10-05T10:00:00Z","url":"https://github.com/acme/widgets/pull/7"}
+EOF
+    fi
+    ;;
+
+  "pr comment")
+    cat >"${FAKE_GH_STDIN:-/dev/null}"
+    echo "https://github.com/acme/widgets/pull/7#issuecomment-3"
+    ;;
+
+  api*)
+    cat >"${FAKE_GH_STDIN:-/dev/null}"
+    echo '{"id":1,"state":"COMMENTED"}'
+    ;;
+
+  *)
+    echo "unknown command \"$cmd\" for \"gh\"" >&2
+    exit 1
+    ;;
+esac

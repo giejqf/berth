@@ -1,0 +1,3 @@
+name = "fake"
+description = "Test fixture: plain git init checkout under $BERTH_SLOT_STATE"
+agent_placement = "host"

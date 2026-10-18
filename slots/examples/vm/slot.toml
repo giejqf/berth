@@ -1,0 +1,3 @@
+name = "vm"
+description = "Full isolation for untrusted code. Slowest to start."
+agent_placement = "host"

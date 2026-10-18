@@ -1,0 +1,76 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+default-members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT"
+repository = "https://github.com/berth-app/berth"
+publish = false
+
+[workspace.dependencies]
+berth-protocol = { path = "crates/berth-protocol" }
+berth-core = { path = "crates/berth-core" }
+berth-sidecar-client = { path = "crates/berth-sidecar-client" }
+berth-slot = { path = "crates/berth-slot" }
+berth-git = { path = "crates/berth-git" }
+berth-gh = { path = "crates/berth-gh" }
+berth-connectors = { path = "crates/berth-connectors" }
+
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+futures = "0.3"
+rusqlite = { version = "0.40", features = ["bundled"] }
+security-framework = "3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "time", "fs"] }
+toml = "0.9"
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+ts-rs = { version = "12", features = ["serde-json-impl", "no-serde-warnings"] }
+uuid = { version = "1", features = ["v4", "v7"] }
+
+# GPUI. `gpui-pre` is Zed's gpui published as an exact snapshot of zed@93d7456;
+# gpui-component 0.7.3 is built against exactly this snapshot. Bump all three
+# together, deliberately. See AGENTS.md §4.
+gpui = { package = "gpui-pre", version = "=0.3.9" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", features = ["font-kit", "runtime_shaders"] }
+gpui-component = "=0.7.3"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+# Selected pedantic lints.
+cloned_instead_of_copied = "warn"
+explicit_iter_loop = "warn"
+implicit_clone = "warn"
+inefficient_to_string = "warn"
+manual_let_else = "warn"
+match_same_arms = "warn"
+needless_pass_by_value = "warn"
+redundant_closure_for_method_calls = "warn"
+semicolon_if_nothing_returned = "warn"
+uninlined_format_args = "warn"
+unnested_or_patterns = "warn"
+
+[profile.dev]
+# GPUI is slow unoptimized; keep our crates debuggable but optimize deps.
+debug = "limited"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 16

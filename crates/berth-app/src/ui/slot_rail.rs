@@ -1,0 +1,433 @@
+//! Left rail: the repo's slots grouped by what they need (Needs you, Working,
+//! Ready to review, Done), the tool status footer, and a 56px collapsed strip
+//! used when the review pane needs the room.
+
+use berth_core::{SlotState, WorkflowState};
+use berth_protocol::OutcomeKind;
+use gpui::{
+    App, BoxShadow, Context, Div, Entity, FocusHandle, Focusable, FontWeight, Hsla,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, div, point, prelude::FluentBuilder as _,
+    px,
+};
+use gpui_component::scroll::ScrollableElement as _;
+use gpui_component::tooltip::Tooltip;
+
+use super::kit::{
+    Btn, Size, TypeExt as _, ago, caption, count_badge, dot, dur, now_ms, plural, ring_dot,
+};
+use super::repo_state::{RailGroup, rail_group};
+use super::{EnvGlobal, RepoState};
+use crate::backend::{SlotEntry, ToolState, ToolStatus};
+use crate::keymap::{NewWorkflow, RailNext, RailOpen, RailPrev};
+use crate::theme::{Tokens, ty};
+
+pub struct SlotRail {
+    state: Entity<RepoState>,
+    focus: FocusHandle,
+}
+
+impl SlotRail {
+    pub fn new(state: Entity<RepoState>, cx: &mut Context<'_, Self>) -> Self {
+        cx.observe(&state, |_, _, cx| cx.notify()).detach();
+        Self {
+            state,
+            focus: cx.focus_handle(),
+        }
+    }
+}
+
+impl Focusable for SlotRail {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+/// The rail's two lines for a slot.
+pub fn rail_lines(entry: &SlotEntry, state: &RepoState) -> (String, String) {
+    let title = entry
+        .workflow
+        .as_ref()
+        .map_or_else(|| entry.slot.name.clone(), |w| w.origin.title.clone());
+    let f = &entry.facts;
+    let sub = match (entry.slot.state, entry.workflow.as_ref()) {
+        (SlotState::Creating, _) => "Creating slot…".to_owned(),
+        (SlotState::Destroying, _) => "Destroying slot…".to_owned(),
+        (SlotState::Failed, _) => format!(
+            "Slot failed{}",
+            entry
+                .slot
+                .state_detail
+                .as_deref()
+                .map(|d| format!(" · {}", d.lines().next().unwrap_or(d)))
+                .unwrap_or_default()
+        ),
+        (_, Some(w)) => match w.state {
+            WorkflowState::AwaitingAnswer => match f.question_at {
+                Some(at) => format!("Asked a question · {}", ago(at)),
+                None => "Asked a question".to_owned(),
+            },
+            WorkflowState::Running | WorkflowState::Starting => match state.activity.get(&w.id) {
+                Some(a) => format!("{} · {}", a.headline(), dur(now_ms() - a.started_at)),
+                None => match f.last_round_at {
+                    Some(at) => format!("Working · {}", dur(now_ms() - at)),
+                    None => "Starting…".to_owned(),
+                },
+            },
+            WorkflowState::Idle => match f.summary_at {
+                Some(at) => format!(
+                    "Section {} ready · {}",
+                    w.section_no.saturating_sub(1).max(1),
+                    ago(at)
+                ),
+                None => "Your turn".to_owned(),
+            },
+            WorkflowState::Closed => {
+                let what = match f.outcome.as_ref().map(|o| (o.kind, o.r#ref.as_str())) {
+                    Some((OutcomeKind::Commit, _)) => "Committed".to_owned(),
+                    Some((OutcomeKind::Pr, r)) => match r.rsplit('/').next() {
+                        Some(n) if n.chars().all(|c| c.is_ascii_digit()) && !n.is_empty() => {
+                            format!("PR #{n}")
+                        }
+                        _ => "PR opened".to_owned(),
+                    },
+                    Some((OutcomeKind::Branch, _)) => "Branch ready".to_owned(),
+                    Some((OutcomeKind::None, _)) | None => "Closed".to_owned(),
+                };
+                let n = f.outcome.as_ref().map_or(0, |o| o.follow_ups.len());
+                if n > 0 {
+                    format!("{what} · {}", plural(n, "follow-up", "follow-ups"))
+                } else {
+                    format!("{what} · {}", entry.slot.slot_type)
+                }
+            }
+        },
+        (_, None) => format!("No workflow · {}", entry.slot.slot_type),
+    };
+    (title, sub)
+}
+
+/// The status mark for a rail group: filled, ring, or danger.
+fn status_dot(t: &Tokens, entry: &SlotEntry, size: f32) -> Div {
+    if entry.slot.state == SlotState::Failed {
+        return dot(size, t.danger);
+    }
+    match rail_group(entry) {
+        RailGroup::NeedsYou => dot(size, t.attention),
+        RailGroup::Working => ring_dot(size, t.accent),
+        RailGroup::Review => dot(size, t.accent),
+        RailGroup::Done => dot(size, t.done),
+    }
+}
+
+fn tool_color(t: &Tokens, s: &ToolStatus) -> Hsla {
+    match s.state {
+        ToolState::Ok => t.done,
+        ToolState::Warn | ToolState::Missing => t.attention,
+        ToolState::Checking => t.text3,
+    }
+}
+
+/// Tool status lines at the bottom of the rail.
+fn footer(t: &Tokens, cx: &App, collapsed: bool) -> Div {
+    let env = cx
+        .try_global::<EnvGlobal>()
+        .map(|e| e.0.clone())
+        .unwrap_or_default();
+    let rows = [
+        ("Claude Code", &env.claude, "claude"),
+        ("GitHub", &env.gh, "gh"),
+    ];
+    let base = div()
+        .mt_auto()
+        .flex()
+        .flex_col()
+        .flex_none()
+        .border_t_1()
+        .border_color(t.border);
+    if collapsed {
+        let mut col = base.w_full().items_center().py(px(10.)).gap(px(8.));
+        for (name, s, id) in rows {
+            let tip: SharedString = format!("{name} · {}", summary(s)).into();
+            col = col.child(
+                div()
+                    .id(SharedString::from(format!("env-{id}")))
+                    .p(px(2.))
+                    .child(dot(6., tool_color(t, s)))
+                    .tooltip(move |w, cx| Tooltip::new(tip.clone()).build(w, cx)),
+            );
+        }
+        return col;
+    }
+    let mut col = base
+        .px(px(8.))
+        .py(px(10.))
+        .gap(px(6.))
+        .ty(ty::META)
+        .text_color(t.text2);
+    for (name, s, _) in rows {
+        col = col.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(dot(6., tool_color(t, s)))
+                .child(format!("{name} · {}", summary(s))),
+        );
+    }
+    col
+}
+
+fn summary(s: &ToolStatus) -> String {
+    if s.state == ToolState::Checking {
+        "checking…".to_owned()
+    } else {
+        s.summary.clone()
+    }
+}
+
+impl Render for SlotRail {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
+        let t = Tokens::get(cx);
+        let state = self.state.read(cx);
+        let selected = state.selected_slot.clone();
+        let focused = self.focus.is_focused(window) && window.last_input_was_keyboard();
+        let order = state.rail_order();
+
+        let mut list = div()
+            .id("slot-list")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .gap(px(2.))
+            .overflow_y_scrollbar();
+        if order.is_empty() {
+            list = list.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .p(px(8.))
+                    .gap(px(8.))
+                    .ty(ty::META)
+                    .text_color(t.text2)
+                    .child("No slots yet. Each workflow you start gets one: an isolated checkout where its agent works.")
+                    .child(div().text_color(t.text3).child("Slots that need you float to the top of this list.")),
+            );
+        }
+        let mut last_group: Option<RailGroup> = None;
+        for entry in &order {
+            let group = rail_group(entry);
+            if last_group != Some(group) {
+                let first = last_group.is_none();
+                let count = order.iter().filter(|e| rail_group(e) == group).count();
+                list = list.child(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(px(6.))
+                        .px(px(8.))
+                        .pt(px(if first { 10. } else { 14. }))
+                        .pb(px(4.))
+                        .child(caption(
+                            group.label(),
+                            if group == RailGroup::NeedsYou {
+                                t.attention
+                            } else {
+                                t.text3
+                            },
+                        ))
+                        .when(group == RailGroup::NeedsYou, |d| {
+                            d.child(count_badge(&t, count))
+                        }),
+                );
+                last_group = Some(group);
+            }
+            let id = entry.slot.id.clone();
+            let is_selected = selected.as_deref() == Some(id.as_str());
+            let (title, sub) = rail_lines(entry, state);
+            let done = group == RailGroup::Done;
+            let weight = match (group, is_selected) {
+                (RailGroup::NeedsYou, _) => FontWeight::SEMIBOLD,
+                (_, true) => FontWeight::MEDIUM,
+                _ => FontWeight::NORMAL,
+            };
+            let rail_state = self.state.clone();
+            let focus = self.focus.clone();
+            let hover = t.card;
+            list = list.child(
+                div()
+                    .id(SharedString::from(format!("slot-{id}")))
+                    .flex()
+                    .flex_none()
+                    .flex_row()
+                    .items_start()
+                    .gap(px(10.))
+                    .px(px(8.))
+                    .py(px(6.))
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .when(is_selected, |d| d.bg(t.raised))
+                    .when(!is_selected, |d| d.hover(move |s| s.bg(hover)))
+                    .when(is_selected && focused, |d| {
+                        d.shadow(vec![BoxShadow {
+                            color: t.accent,
+                            offset: point(px(0.), px(0.)),
+                            blur_radius: px(0.),
+                            spread_radius: px(2.),
+                            inset: true,
+                        }])
+                    })
+                    .on_click(move |_, window, cx| {
+                        window.focus(&focus, cx);
+                        let id = id.clone();
+                        rail_state.update(cx, |s, cx| s.select_slot(id, cx));
+                    })
+                    .child(
+                        div()
+                            .w(px(16.))
+                            .h(px(18.))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(status_dot(&t, entry, 8.)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(1.))
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .ty(ty::BODY)
+                                    .font_weight(weight)
+                                    .text_color(if done && !is_selected {
+                                        t.text2
+                                    } else {
+                                        t.text
+                                    })
+                                    .whitespace_nowrap()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .ty(ty::META)
+                                    .text_color(if done && !is_selected {
+                                        t.text3
+                                    } else {
+                                        t.text2
+                                    })
+                                    .whitespace_nowrap()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(sub),
+                            ),
+                    ),
+            );
+        }
+
+        div()
+            .id("slot-rail")
+            .track_focus(&self.focus)
+            .key_context("SlotRail")
+            .on_action(cx.listener(|this, _: &RailNext, _, cx| {
+                this.state.update(cx, |s, cx| s.select_relative(1, cx));
+            }))
+            .on_action(cx.listener(|this, _: &RailPrev, _, cx| {
+                this.state.update(cx, |s, cx| s.select_relative(-1, cx));
+            }))
+            .on_action(cx.listener(|_, _: &RailOpen, window, cx| {
+                window.dispatch_action(Box::new(crate::keymap::FocusComposer), cx);
+            }))
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(t.rail)
+            .border_r_1()
+            .border_color(t.border)
+            .pt(px(12.))
+            .px(px(8.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px(px(8.))
+                    .pb(px(8.))
+                    .child(caption("Slots", t.text3))
+                    .child(
+                        Btn::new("rail-new")
+                            .ghost()
+                            .size(Size::S24)
+                            .icon("plus", 16.)
+                            .tooltip("New workflow  ⌘N")
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(Box::new(NewWorkflow), cx);
+                            }),
+                    ),
+            )
+            .child(list)
+            .child(footer(&t, cx, false))
+    }
+}
+
+/// The 56px strip: state dots only (review pane open on a narrow window).
+pub fn collapsed(state: &Entity<RepoState>, t: &Tokens, cx: &App) -> Div {
+    let s = state.read(cx);
+    let selected = s.selected_slot.clone();
+    let mut col = div()
+        .w(px(57.))
+        .h_full()
+        .flex_none()
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap(px(4.))
+        .pt(px(12.))
+        .bg(t.rail)
+        .border_r_1()
+        .border_color(t.border)
+        .child(
+            div().mb(px(6.)).child(
+                Btn::new("rail-new-collapsed")
+                    .ghost()
+                    .size(Size::S32)
+                    .icon("plus", 16.)
+                    .tooltip("New workflow  ⌘N")
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(NewWorkflow), cx)),
+            ),
+        );
+    for entry in s.rail_order() {
+        let id = entry.slot.id.clone();
+        let is_selected = selected.as_deref() == Some(id.as_str());
+        let (title, sub) = rail_lines(entry, s);
+        let tip: SharedString = format!("{title} — {sub}").into();
+        let st = state.clone();
+        let hover = t.card;
+        col = col.child(
+            div()
+                .id(SharedString::from(format!("slot-dot-{id}")))
+                .size(px(36.))
+                .flex_none()
+                .rounded(px(6.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .when(is_selected, |d| d.bg(t.raised))
+                .when(!is_selected, |d| d.hover(move |s| s.bg(hover)))
+                .tooltip(move |w, cx| Tooltip::new(tip.clone()).build(w, cx))
+                .on_click(move |_, _, cx| {
+                    let id = id.clone();
+                    st.update(cx, |s, cx| s.select_slot(id, cx));
+                })
+                .child(status_dot(t, entry, 10.)),
+        );
+    }
+    col.child(footer(t, cx, true))
+}

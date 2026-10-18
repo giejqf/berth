@@ -1,0 +1,153 @@
+// The "berth" MCP server: app-owned agent tools (AGENTS.md §5.2).
+//
+// Schemas mirror the generated protocol types; the assignability checks below
+// fail to compile when crates/berth-protocol changes and this file does not.
+
+import { createSdkMcpServer, tool, type McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
+import { z } from "zod";
+
+import {
+  MCP_SERVER_NAME,
+  TOOLS,
+  type AskUserInput,
+  type PresentArtifactInput,
+  type RecordDecisionInput,
+  type RecordOutcomeInput,
+  type RequestSlotInput,
+  type ToolName,
+  type WriteSummaryInput,
+} from "./protocol.js";
+
+const followUp = z.object({
+  id: z.string().optional(),
+  title: z.string().min(1),
+  description: z.string(),
+});
+
+export const shapes = {
+  record_decision: {
+    title: z.string().min(1).describe("Short name of the decision"),
+    rationale: z.string().describe("Why, in one or two sentences"),
+    affects: z.array(z.string()).optional().describe("Paths or areas the decision affects"),
+    reversible: z.boolean().optional().describe("Whether it is cheap to undo (default true)"),
+  },
+  ask_user: {
+    question: z.string().min(1),
+    options: z.array(z.string()).optional().describe("Suggested answers"),
+    allow_free_text: z.boolean().optional().describe("Allow an answer outside `options` (default true)"),
+  },
+  write_summary: {
+    done: z.array(z.string()).describe("What this section accomplished"),
+    remaining: z.array(z.string()).describe("What is left to do"),
+    follow_ups: z.array(followUp).optional().describe("Work that deserves its own workflow"),
+    notes: z.string().optional(),
+  },
+  record_outcome: {
+    kind: z.enum(["pr", "commit", "branch", "none"]),
+    ref: z.string().describe("PR URL, commit SHA, or branch name; empty for none"),
+    summary: z.string(),
+    follow_ups: z.array(followUp).optional(),
+  },
+  present_artifact: {
+    path: z.string().min(1).describe("The file, absolute or relative to the checkout"),
+    title: z.string().min(1).describe("What it shows, in a few words"),
+    description: z.string().optional().describe("One or two sentences of context"),
+  },
+  request_slot: {
+    name: z.string().min(1).describe("Short name for the new slot"),
+    purpose: z.string().describe("What the new workflow should do"),
+    from_follow_up: z.string().optional().describe("Follow-up id this slot pursues"),
+  },
+} as const;
+
+type Infer<S extends z.ZodRawShape> = z.infer<z.ZodObject<S>>;
+// Two-way assignability between zod schemas and generated protocol types.
+type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+const schemaMatchesProtocol: {
+  record_decision: Same<Infer<typeof shapes.record_decision>, RecordDecisionInput>;
+  ask_user: Same<Infer<typeof shapes.ask_user>, AskUserInput>;
+  write_summary: Same<Infer<typeof shapes.write_summary>, WriteSummaryInput>;
+  record_outcome: Same<Infer<typeof shapes.record_outcome>, RecordOutcomeInput>;
+  request_slot: Same<Infer<typeof shapes.request_slot>, RequestSlotInput>;
+  present_artifact: Same<Infer<typeof shapes.present_artifact>, PresentArtifactInput>;
+} = {
+  record_decision: true,
+  ask_user: true,
+  write_summary: true,
+  record_outcome: true,
+  request_slot: true,
+  present_artifact: true,
+};
+void schemaMatchesProtocol;
+
+/** Identifies one tool invocation; `toolUseId` comes from Claude Code's MCP `_meta`. */
+export interface CallContext {
+  toolUseId?: string;
+}
+
+export type ToolOutcome = { ok: true; text: string } | { ok: false; error: string };
+
+/** Implemented by the session; owns blocking, attribution, and round rules. */
+export interface ToolHost {
+  recordDecision(input: RecordDecisionInput, call: CallContext): Promise<ToolOutcome>;
+  askUser(input: AskUserInput, call: CallContext): Promise<ToolOutcome>;
+  writeSummary(input: WriteSummaryInput, call: CallContext): Promise<ToolOutcome>;
+  recordOutcome(input: RecordOutcomeInput, call: CallContext): Promise<ToolOutcome>;
+  requestSlot(input: RequestSlotInput, call: CallContext): Promise<ToolOutcome>;
+  presentArtifact(input: PresentArtifactInput, call: CallContext): Promise<ToolOutcome>;
+}
+
+/** Fully qualified name the model sees, e.g. `mcp__berth__ask_user`. */
+export function qualifiedToolName(name: ToolName): string {
+  return `mcp__${MCP_SERVER_NAME}__${name}`;
+}
+
+/** Inverse of {@link qualifiedToolName}; undefined for non-berth tools. */
+export function berthToolName(qualified: string): ToolName | undefined {
+  const prefix = `mcp__${MCP_SERVER_NAME}__`;
+  if (!qualified.startsWith(prefix)) return undefined;
+  const name = qualified.slice(prefix.length);
+  return name in TOOLS ? (name as ToolName) : undefined;
+}
+
+export function callContext(extra: unknown): CallContext {
+  if (typeof extra !== "object" || extra === null) return {};
+  const meta = (extra as { _meta?: unknown })._meta;
+  if (typeof meta !== "object" || meta === null) return {};
+  const id = (meta as Record<string, unknown>)["claudecode/toolUseId"];
+  return typeof id === "string" ? { toolUseId: id } : {};
+}
+
+function result(outcome: ToolOutcome) {
+  return outcome.ok
+    ? { content: [{ type: "text" as const, text: outcome.text }] }
+    : { content: [{ type: "text" as const, text: outcome.error }], isError: true };
+}
+
+export function createBerthServer(host: ToolHost): McpSdkServerConfigWithInstance {
+  return createSdkMcpServer({
+    name: MCP_SERVER_NAME,
+    version: "0.1.0",
+    alwaysLoad: true,
+    tools: [
+      tool("record_decision", TOOLS.record_decision.description, shapes.record_decision, async (args, extra) =>
+        result(await host.recordDecision(args, callContext(extra))),
+      ),
+      tool("ask_user", TOOLS.ask_user.description, shapes.ask_user, async (args, extra) =>
+        result(await host.askUser(args, callContext(extra))),
+      ),
+      tool("write_summary", TOOLS.write_summary.description, shapes.write_summary, async (args, extra) =>
+        result(await host.writeSummary(args, callContext(extra))),
+      ),
+      tool("record_outcome", TOOLS.record_outcome.description, shapes.record_outcome, async (args, extra) =>
+        result(await host.recordOutcome(args, callContext(extra))),
+      ),
+      tool("request_slot", TOOLS.request_slot.description, shapes.request_slot, async (args, extra) =>
+        result(await host.requestSlot(args, callContext(extra))),
+      ),
+      tool("present_artifact", TOOLS.present_artifact.description, shapes.present_artifact, async (args, extra) =>
+        result(await host.presentArtifact(args, callContext(extra))),
+      ),
+    ],
+  });
+}

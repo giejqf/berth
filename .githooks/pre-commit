@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Fast checks before each commit; `just lint` runs the full set.
+set -euo pipefail
+cargo fmt --all -- --check
+if git diff --cached --name-only | grep -q '^crates/berth-protocol/'; then
+    cargo run -q -p berth-protocol --bin gen-protocol
+    git diff --quiet -- sidecar/src/protocol.ts || {
+        echo "sidecar/src/protocol.ts is stale; it was regenerated — stage it and commit again." >&2
+        exit 1
+    }
+fi
