@@ -13,8 +13,10 @@ If a design decision is not here, it has not been made. Record new decisions her
 ## 1. Non-negotiables
 
 1. **No code editor, ever.** The UI never exposes an editable code surface. The only
-   code the user sees is read-only diffs in the review view. Do not add "quick edit",
-   "open in editor", or file-tree-with-contents features.
+   code Berth itself shows is read-only diffs in the review view. Do not add "quick
+   edit", "open in editor", or file-tree-with-contents features. The terminal panel
+   (§11.1) is a shell in the slot, not an editor: Berth adds nothing to it that opens,
+   shows or edits files (no file links, no "open in editor"). ADR 0005.
 2. **Claude Code is the only agent.** No abstraction layer for other agents. The
    sidecar talks to the official Claude Agent SDK and nothing else.
 3. **macOS only.** No `#[cfg(windows)]`, no Linux code paths, no cross-platform
@@ -94,6 +96,7 @@ berth/
 │   │     src/devtools.rs        feature `devtools`: scripted autopilot + window screenshots
 │   │     src/seed.rs            feature `devtools`: the design's scenarios (`BERTH_DEV_SEED`)
 │   │     src/ui/kit.rs          design-system primitives (type, chips, buttons, fields, icons)
+│   │     src/ui/terminal/       the terminal panel: PTY + grid (alacritty_terminal), keys, colors
 │   │     assets/icons/berth/    the design's Lucide glyphs at their stroke widths (ISC)
 │   │     assets/fonts/          IBM Plex Sans + JetBrains Mono (OFL); assets/logo.png
 │   ├── berth-core/              domain model, workflow state machine, SQLite store
@@ -138,6 +141,7 @@ berth/
 | Persistence | **SQLite** via `rusqlite` (bundled), embedded migrations | One DB at `~/Library/Application Support/Berth/berth.db`. |
 | Protocol types | `serde` structs in `berth-protocol`, exported with `ts-rs` | `just gen-protocol` regenerates `sidecar/src/protocol.ts`. CI fails if stale. |
 | Diff rendering | Berth's own read-only `ui/diff_view.rs` over `berth-git`'s typed model (a virtualized GPUI `list`; colors from gpui-component's tree-sitter highlighter via the `tree-sitter-languages` feature) | Read-only. No editing widgets. Drawn to the design's 36/36/16 gutter with inline comment cards (ADR 0003). |
+| Terminal | `alacritty_terminal` (Apache-2.0) for the PTY, the parser and the grid; Berth draws it | One shell per terminal on a PTY thread; the view only paints cells and sends bytes (ADR 0005). |
 | Visual system | Gruvbox tokens in `theme.rs` (dark and light), IBM Plex Sans 13/18 and JetBrains Mono 12, bundled (SIL OFL 1.1: fonts are data, compatible with MIT) | Sizes follow the design *as rendered* (its CSS adds padding/borders to stated widths). Text renders without CoreGraphics stroke dilation: Berth sets `AppleFontSmoothing = 0` in its own defaults domain at launch (ADR 0003). |
 | GitHub | `gh` CLI with `--json`, reusing the user's auth | No GitHub API client crate. |
 | Secrets | macOS Keychain via `security-framework` | Never written to SQLite or disk. |
@@ -345,6 +349,8 @@ slot.sh exec [--cwd <path>] -- <cmd> [args...]
     Run <cmd> inside the environment with cwd = checkout (or --cwd).
     stdin/stdout/stderr are piped through; exit code is propagated.
     Must support long-running, interactive-free processes (the sidecar).
+    Should, when its stdin and stdout are a terminal (Berth's terminal panel for an
+    `inside` slot), give <cmd> a terminal inside too (`docker exec -t`).
 
 slot.sh destroy
     Tear everything down. Idempotent.
@@ -571,9 +577,10 @@ stdin EOF stops the session; stdout carries protocol lines only (logs go to
   (slots, selected slot, workflow views, activity, diffs, comments). A welcome window
   opens when no repo is open; launch reopens the last repo (or the path in argv[1]).
 - Primary layout: 45px title bar; left **slot rail** (257px as rendered), center
-  **event flow** + composer, right **review pane** (521px). With the review pane open
-  on a window under 1400px the rail collapses to a 57px strip of state dots (⌘⇧L
-  toggles by hand). The review pane opens automatically on `Summary` and `Outcome`.
+  **event flow** + composer, right **review pane** (521px). The rail collapses to a
+  57px strip of state dots: by hand (the button next to + in its header, the one at
+  the top of the strip, or ⌘⇧L), and on its own while the review pane is open on a
+  window under 1400px. The review pane opens automatically on `Summary` and `Outcome`.
 - The rail groups slots by what they need: **Needs you** (a question, an idle workflow
   awaiting its next prompt, a failed slot), **Working**, **Ready to review** (idle after
   a summary), **Done**. The second line says what is happening (the live round's
@@ -603,10 +610,13 @@ stdin EOF stops the session; stdout carries protocol lines only (logs go to
   files as a tile. Clicking opens Quick Look (`qlmanage -p`), which is read-only; never
   an editor (§1.1). See `ui/composer.rs`, `ui/files.rs`, `backend/files.rs`.
 - Keyboard-first: every action has a binding; see `berth-app/src/keymap.rs` (its
-  `SHORTCUTS` list is what ⌘K shows). Single letters (J/K, E, D, A, C, /) act on the
-  focused pane and never type into a field; ⌘-chords are global. Closing a dialog must
+  `SHORTCUTS` list is what ⌘K shows). Single letters (J/K, E, D, A, C, /, 1–9) act
+  on the focused pane and never type into a field: macOS offers keys to bindings
+  first, so `keymap::bindings` switches every single-key binding off (`NoAction`) in
+  the `Input` and `Terminal` contexts. ⌘-chords are global. Closing a dialog must
   leave focus inside the window (the repo window refocuses itself when focus is lost),
   or bindings stop dispatching.
+- **Terminals** (§11.1): a bottom panel under the flow and composer, as in VS Code.
 - Dialogs (New workflow, Settings, ⌘K, confirmations) are drawn by the app
   (`ui/modal.rs`): scrim, 10px radius, one soft shadow, ⌘↩ confirms, esc closes.
 - Theme tokens in `berth-app/src/theme.rs`; light/dark follow the system unless
@@ -624,6 +634,46 @@ stdin EOF stops the session; stdout carries protocol lines only (logs go to
   `BERTH_DEV_SEED=question|working|review|comments|done|empty|welcome` seeds the
   design's scenario into a fresh `BERTH_HOME` (`src/seed.rs`), so screenshots line up
   with the design artboards. Use it to check UI changes without a human.
+  Without a display link (display asleep) the window draws only when `shot` or
+  `keys` forces it. Screenshots can then trail an `action` by a step, and an action
+  sent right after its target appeared is routed against a frame without it and
+  lost. When a sequence looks wrong, log the state before suspecting the app.
+
+
+### 11.1 Terminals
+
+VS Code's integrated terminal, per slot (`ui/terminal/`, ADR 0005):
+
+- A bottom panel spanning the flow and composer (not the rail or review pane):
+  header with the active terminal's name and New / Kill / Maximize / Collapse / Hide,
+  the terminal, and a list of the slot's terminals when there are several. The top
+  edge resizes it (120px up to leaving the flow 260px); Maximize hides the flow.
+- **Collapsed**, only the 34px header shows ("TERMINAL zsh · 2 terminals"); the
+  shells keep running and a click on it expands it. Hide puts the panel away
+  entirely. ⌃` expands and focuses the terminal, and collapses the panel when the
+  terminal has focus. A collapsed panel starts no shell when you switch slots;
+  expanding does.
+- **Terminals belong to a slot.** Each slot keeps its own list while the app runs;
+  the panel shows the selected slot's. Showing a slot with none starts one. A
+  destroyed slot's terminals are killed. They don't survive a restart.
+- **What runs** (`backend/terminal.rs`): on the host, your login shell (`$SHELL -l`)
+  in the checkout; for an `inside` slot, `slot.sh exec -- sh -c '<bash or sh -l>'`
+  under the PTY. The environment is the agent's: the slot's `BERTH_*` variables,
+  connector secrets, connector CLIs on PATH (host), plus `TERM=xterm-256color`.
+- A clean exit closes the terminal, and closing a slot's last one hides the panel;
+  a failed exit stays to be read ("press any key to close").
+- Keys: everything without ⌘ goes to the shell (the window's single-key shortcuts
+  and Tab focus traversal are switched off inside it), ⌘-chords stay the app's. In a
+  terminal: ⌘C/⌘V copy and paste (bracketed when the program asks), ⌘K clears
+  (VS Code), ⌘A selects all, ⌘⇧]/⌘⇧[ switch terminals, and VS Code's macOS line
+  editing (⌘←/⌘→ line start/end, ⌘⌫ delete line, ⌥←/⌥→ by word). ⌃` shows,
+  focuses or hides the panel; ⌃⇧` opens another terminal. Text arrives through the
+  input handler, so IMEs work.
+- Mouse: drag selects (double click a word, triple a line); programs that ask for
+  the mouse get it (shift overrides); the wheel scrolls the scrollback (10,000
+  lines), or sends arrows to full-screen programs.
+- Gruvbox's 16 ANSI colors per theme on the rail color; xterm's 256 and true color.
+  Switching slots while typing in a terminal keeps typing in the new slot's.
 
 ---
 

@@ -20,6 +20,7 @@ berth-protocol.workspace = true
 berth-sidecar-client.workspace = true
 berth-slot.workspace = true
 
+alacritty_terminal.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 futures.workspace = true

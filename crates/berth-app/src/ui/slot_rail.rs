@@ -19,7 +19,7 @@ use super::kit::{
 use super::repo_state::{RailGroup, rail_group};
 use super::{EnvGlobal, RepoState};
 use crate::backend::{SlotEntry, ToolState, ToolStatus};
-use crate::keymap::{NewWorkflow, RailNext, RailOpen, RailPrev};
+use crate::keymap::{NewWorkflow, RailNext, RailOpen, RailPrev, ToggleRail};
 use crate::theme::{Tokens, ty};
 
 pub struct SlotRail {
@@ -361,14 +361,30 @@ impl Render for SlotRail {
                     .pb(px(8.))
                     .child(caption("Slots", t.text3))
                     .child(
-                        Btn::new("rail-new")
-                            .ghost()
-                            .size(Size::S24)
-                            .icon("plus", 16.)
-                            .tooltip("New workflow  ⌘N")
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(NewWorkflow), cx);
-                            }),
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(2.))
+                            .child(
+                                Btn::new("rail-collapse")
+                                    .ghost()
+                                    .size(Size::S24)
+                                    .icon("panel-left", 16.)
+                                    .tooltip("Collapse the rail  ⌘⇧L")
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(ToggleRail), cx);
+                                    }),
+                            )
+                            .child(
+                                Btn::new("rail-new")
+                                    .ghost()
+                                    .size(Size::S24)
+                                    .icon("plus", 16.)
+                                    .tooltip("New workflow  ⌘N")
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(NewWorkflow), cx);
+                                    }),
+                            ),
                     ),
             )
             .child(list)
@@ -392,6 +408,14 @@ pub fn collapsed(state: &Entity<RepoState>, t: &Tokens, cx: &App) -> Div {
         .bg(t.rail)
         .border_r_1()
         .border_color(t.border)
+        .child(
+            Btn::new("rail-expand")
+                .ghost()
+                .size(Size::S32)
+                .icon("panel-left", 16.)
+                .tooltip("Expand the rail  ⌘⇧L")
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleRail), cx)),
+        )
         .child(
             div().mb(px(6.)).child(
                 Btn::new("rail-new-collapsed")

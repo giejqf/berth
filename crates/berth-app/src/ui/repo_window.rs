@@ -1,12 +1,13 @@
 //! Root view of a repo window: title bar, then slot rail | event flow +
-//! composer | review pane. Dialogs (New workflow, Settings, ⌘K, confirms)
-//! are drawn over it by [`super::modal`].
+//! composer over the terminal panel | review pane. Dialogs (New workflow,
+//! Settings, ⌘K, confirms) are drawn over it by [`super::modal`].
 
 use berth_protocol::DiffPreset;
 use gpui::{
-    AnyView, AppContext as _, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
-    Subscription, Window, div, prelude::FluentBuilder as _, px,
+    AnyView, AppContext as _, Context, DismissEvent, Entity, EntityId, EventEmitter, FocusHandle,
+    Focusable, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
+    ParentElement as _, Pixels, Render, SharedString, Styled as _, Subscription, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_component::notification::Notification;
 use gpui_component::{TitleBar, WindowExt as _};
@@ -22,6 +23,7 @@ use super::repo_state::RepoEvent;
 use super::review_pane::ReviewPane;
 use super::settings::SettingsForm;
 use super::slot_rail::{self, SlotRail};
+use super::terminal::{self, TerminalEvent, TerminalView};
 use super::{RepoState, details};
 use crate::backend::{Command, ToastLevel};
 use crate::keymap::{
@@ -29,6 +31,10 @@ use crate::keymap::{
     FollowUpFromOutcome, Interrupt, JumpToNeeding, NewWorkflow, NewWorkflowTab, NextChange,
     NextSlot, OpenSettings, PrevChange, PrevSlot, RefreshReview, ReviewBranch, ReviewSection,
     ReviewWorkflow, SelectSlot, ToggleDiffMode, ToggleRail, ToggleReview,
+};
+use crate::keymap::{
+    CloseTerminal, HideTerminal, KillTerminal, NewTerminal, NextTerminal, PrevTerminal,
+    ToggleTerminal, ToggleTerminalSize,
 };
 use crate::theme::{MONO, Tokens, ty};
 
@@ -39,6 +45,9 @@ const WIDE: f32 = 1400.;
 /// stated widths): rail 240 + 2×8 padding + 1 border, review 520 + 1 border.
 pub const RAIL_W: f32 = 257.;
 pub const REVIEW_W: f32 = 521.;
+/// The terminal panel's default and smallest heights.
+const TERMINAL_H: f32 = 280.;
+const TERMINAL_MIN_H: f32 = 120.;
 
 pub struct RepoWindow {
     state: Entity<RepoState>,
@@ -51,6 +60,18 @@ pub struct RepoWindow {
     rail_override: Option<bool>,
     modal: Option<(AnyView, FocusHandle, Subscription)>,
     focus: FocusHandle,
+    /// The terminal panel: shown, collapsed to its header, its height, maximized.
+    terminal_open: bool,
+    terminal_collapsed: bool,
+    terminal_height: Pixels,
+    terminal_max: bool,
+    /// Mouse y and panel height when a resize drag started.
+    terminal_drag: Option<(Pixels, Pixels)>,
+    /// The slot the panel last showed: a newly shown slot gets a shell.
+    terminal_slot: Option<String>,
+    /// A terminal had focus at the last frame: switching slots keeps typing
+    /// in the new slot's terminal.
+    terminal_focused: bool,
 }
 
 impl RepoWindow {
@@ -61,7 +82,18 @@ impl RepoWindow {
         let review = cx.new(|cx| ReviewPane::new(state.clone(), window, cx));
         cx.subscribe_in(&state, window, Self::on_repo_event)
             .detach();
-        cx.observe(&state, |_, _, cx| cx.notify()).detach();
+        cx.observe_in(&state, window, |this, _, window, cx| {
+            let shown = this.terminal_slot.clone();
+            this.sync_terminal(cx);
+            if this.terminal_focused
+                && this.terminal_slot != shown
+                && let Some(v) = this.active_terminal(cx)
+            {
+                v.focus_handle(cx).focus(window, cx);
+            }
+            cx.notify();
+        })
+        .detach();
         cx.observe_window_appearance(window, |_, window, cx| crate::theme::apply(window, cx))
             .detach();
         // Sync on window focus (§8.1): slots/workflows may have changed elsewhere.
@@ -86,7 +118,208 @@ impl RepoWindow {
             rail_override: None,
             modal: None,
             focus,
+            terminal_open: false,
+            terminal_collapsed: false,
+            terminal_height: px(TERMINAL_H),
+            terminal_max: false,
+            terminal_drag: None,
+            terminal_slot: None,
+            terminal_focused: false,
         }
+    }
+
+    // ---- terminal panel ----
+
+    fn active_terminal(&self, cx: &gpui::App) -> Option<Entity<TerminalView>> {
+        self.state
+            .read(cx)
+            .slot_terminals()
+            .and_then(|t| t.active())
+            .cloned()
+    }
+
+    /// With the panel open, a slot shown for the first time starts a shell.
+    fn sync_terminal(&mut self, cx: &mut Context<'_, Self>) {
+        // A collapsed panel starts nothing; expanding it catches up.
+        if !self.terminal_open || self.terminal_collapsed {
+            return;
+        }
+        let s = self.state.read(cx);
+        let Some(entry) = s.selected() else {
+            return;
+        };
+        let id = entry.slot.id.clone();
+        if self.terminal_slot.as_deref() == Some(id.as_str()) {
+            return;
+        }
+        let start = s.terminals.get(&id).is_none_or(|t| t.list.is_empty())
+            && RepoState::terminal_ready(entry);
+        self.terminal_slot = Some(id.clone());
+        if start {
+            self.state.update(cx, |s, cx| s.request_terminal(&id, cx));
+        }
+    }
+
+    /// Show the panel expanded (starting a shell if the slot has none).
+    fn expand_terminal(&mut self, cx: &mut Context<'_, Self>) {
+        if !self.terminal_open || self.terminal_collapsed {
+            self.terminal_open = true;
+            self.terminal_collapsed = false;
+            self.terminal_slot = None;
+            self.sync_terminal(cx);
+        }
+    }
+
+    /// ⌃` and the panel's chevron: expand and focus the terminal; collapse
+    /// the panel to its header when the terminal has focus.
+    fn toggle_terminal(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let active = self.active_terminal(cx);
+        let focused = active
+            .as_ref()
+            .is_some_and(|v| v.focus_handle(cx).contains_focused(window, cx));
+        let expanded = self.terminal_open && !self.terminal_collapsed;
+        if expanded && (focused || active.is_none()) {
+            self.terminal_collapsed = true;
+            self.focus.focus(window, cx);
+        } else {
+            self.expand_terminal(cx);
+            if let Some(v) = active {
+                v.focus_handle(cx).focus(window, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Put the panel away entirely (its terminals keep running).
+    fn hide_terminal(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let focused = self
+            .active_terminal(cx)
+            .is_some_and(|v| v.focus_handle(cx).contains_focused(window, cx));
+        self.terminal_open = false;
+        self.terminal_collapsed = false;
+        self.terminal_max = false;
+        if focused {
+            self.focus.focus(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn new_terminal(&mut self, cx: &mut Context<'_, Self>) {
+        let Some(entry) = self.state.read(cx).selected() else {
+            return;
+        };
+        let id = entry.slot.id.clone();
+        self.terminal_open = true;
+        self.terminal_collapsed = false;
+        self.terminal_slot = Some(id.clone());
+        if RepoState::terminal_ready(entry) {
+            self.state.update(cx, |s, cx| s.request_terminal(&id, cx));
+        }
+        cx.notify();
+    }
+
+    /// Start a terminal from its spec (it needs the window for focus events).
+    fn start_terminal(
+        &mut self,
+        slot_id: &str,
+        spec: &crate::backend::TerminalSpec,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        match TerminalView::spawn(spec, window, cx) {
+            Ok(view) => {
+                cx.subscribe_in(&view, window, Self::on_terminal_event)
+                    .detach();
+                self.state
+                    .update(cx, |s, cx| s.add_terminal(slot_id, view.clone(), cx));
+                let shown = self.state.read(cx).selected_slot.as_deref() == Some(slot_id);
+                if shown {
+                    self.terminal_open = true;
+                    self.terminal_collapsed = false;
+                    view.focus_handle(cx).focus(window, cx);
+                }
+            }
+            Err(e) => {
+                let note =
+                    Notification::error(format!("Couldn't start a terminal: {e}")).autohide(false);
+                window.push_notification(note, cx);
+            }
+        }
+    }
+
+    fn on_terminal_event(
+        &mut self,
+        view: &Entity<TerminalView>,
+        event: &TerminalEvent,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        match event {
+            // A clean exit closes it, as in VS Code; otherwise it stays to be read.
+            TerminalEvent::Exited(Some(0)) | TerminalEvent::CloseRequested => {
+                self.close_terminal(view.entity_id(), window, cx);
+            }
+            TerminalEvent::Exited(_) | TerminalEvent::TitleChanged => cx.notify(),
+        }
+    }
+
+    /// Close one terminal; closing a slot's last one hides the panel.
+    fn close_terminal(&mut self, id: EntityId, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let had_focus = self.active_terminal(cx).is_some_and(|v| {
+            v.entity_id() == id && v.focus_handle(cx).contains_focused(window, cx)
+        });
+        let Some(slot) = self.state.update(cx, |s, cx| s.remove_terminal(id, cx)) else {
+            return;
+        };
+        let s = self.state.read(cx);
+        if s.selected_slot.as_deref() != Some(slot.as_str()) {
+            return;
+        }
+        match s.terminals.get(&slot).and_then(|t| t.active()).cloned() {
+            Some(next) if had_focus => next.focus_handle(cx).focus(window, cx),
+            Some(_) => {}
+            None => {
+                self.terminal_open = false;
+                self.terminal_collapsed = false;
+                self.terminal_max = false;
+                self.focus.focus(window, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    fn cycle_terminal(&mut self, step: isize, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.state.update(cx, |s, cx| s.cycle_terminal(step, cx));
+        if let Some(v) = self.active_terminal(cx) {
+            v.focus_handle(cx).focus(window, cx);
+        }
+    }
+
+    fn start_terminal_drag(
+        &mut self,
+        e: &MouseDownEvent,
+        _: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.terminal_drag = Some((e.position.y, self.terminal_height));
+        cx.stop_propagation();
+    }
+
+    fn drag_terminal(
+        &mut self,
+        e: &MouseMoveEvent,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some((y, h)) = self.terminal_drag else {
+            return;
+        };
+        if e.pressed_button != Some(MouseButton::Left) {
+            self.terminal_drag = None;
+            return;
+        }
+        self.terminal_height = clamp_terminal(h + (y - e.position.y), window);
+        cx.notify();
     }
 
     fn on_repo_event(
@@ -98,6 +331,14 @@ impl RepoWindow {
     ) {
         match event {
             RepoEvent::OpenReview => self.set_review(true, cx),
+            RepoEvent::TerminalSpec { slot_id, result } => match result {
+                Ok(spec) => self.start_terminal(slot_id, spec, window, cx),
+                Err(message) => {
+                    let note = Notification::error(format!("Couldn't start a terminal: {message}"))
+                        .autohide(false);
+                    window.push_notification(note, cx);
+                }
+            },
             RepoEvent::Toast { level, message } => {
                 let note = match level {
                     ToastLevel::Info => Notification::info(message.clone()),
@@ -372,6 +613,14 @@ impl Render for RepoWindow {
         let state = self.state.read(cx);
         let has_slots = !state.slots.is_empty();
         let has_workflow = state.selected_view().is_some();
+        let show_terminal = self.terminal_open && state.selected().is_some();
+        let collapsed = self.terminal_collapsed;
+        let max = self.terminal_max && !collapsed;
+        self.terminal_focused = show_terminal
+            && state
+                .slot_terminals()
+                .and_then(|t| t.active())
+                .is_some_and(|v| v.focus_handle(cx).contains_focused(window, cx));
         let review_open = self.review_open && has_workflow;
         let collapsed = self.rail_collapsed(window);
         let modal = self.modal.as_ref().map(|(v, ..)| v.clone());
@@ -472,6 +721,39 @@ impl Render for RepoWindow {
                 this.review.update(cx, ReviewPane::refresh);
             }))
             .on_action(cx.listener(|_, _: &CloseWindow, window, _| window.remove_window()))
+            .on_action(cx.listener(|this, _: &ToggleTerminal, window, cx| {
+                this.toggle_terminal(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &NewTerminal, _, cx| this.new_terminal(cx)))
+            .on_action(cx.listener(|this, _: &KillTerminal, window, cx| {
+                if let Some(v) = this.active_terminal(cx) {
+                    this.close_terminal(v.entity_id(), window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, a: &CloseTerminal, window, cx| {
+                this.close_terminal(a.0, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleTerminalSize, _, cx| {
+                // From collapsed or hidden, maximizing shows it maximized.
+                this.terminal_max =
+                    !(this.terminal_max && this.terminal_open && !this.terminal_collapsed);
+                this.expand_terminal(cx);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &HideTerminal, window, cx| {
+                this.hide_terminal(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &NextTerminal, window, cx| {
+                this.cycle_terminal(1, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &PrevTerminal, window, cx| {
+                this.cycle_terminal(-1, window, cx);
+            }))
+            .on_mouse_move(cx.listener(Self::drag_terminal))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.terminal_drag = None),
+            )
             .child(self.title_bar(&t, cx))
             .child(
                 div()
@@ -496,8 +778,48 @@ impl Render for RepoWindow {
                             .flex_1()
                             .min_w_0()
                             .h_full()
-                            .child(div().flex_1().min_h_0().child(self.flow.clone()))
-                            .when(has_workflow, |d| d.child(self.composer.clone()))
+                            .when(!(show_terminal && max), |d| {
+                                d.child(div().flex_1().min_h_0().child(self.flow.clone()))
+                                    .when(has_workflow, |d| d.child(self.composer.clone()))
+                            })
+                            .when(show_terminal, |d| {
+                                d.child(
+                                    div()
+                                        .relative()
+                                        .flex_none()
+                                        .when(max, |d| d.flex_1().min_h_0())
+                                        .when(collapsed, |d| d.h(px(terminal::HEADER_H)))
+                                        .when(!max && !collapsed, |d| {
+                                            d.h(clamp_terminal(self.terminal_height, window))
+                                        })
+                                        .border_t_1()
+                                        .border_color(t.border)
+                                        .child(terminal::panel(
+                                            &t,
+                                            &self.state,
+                                            self.terminal_max,
+                                            collapsed,
+                                            cx,
+                                        ))
+                                        // The panel's top edge resizes it.
+                                        .when(!max && !collapsed, |d| {
+                                            d.child(
+                                                div()
+                                                    .id("terminal-resize")
+                                                    .absolute()
+                                                    .top(px(-3.))
+                                                    .left_0()
+                                                    .right_0()
+                                                    .h(px(6.))
+                                                    .cursor_row_resize()
+                                                    .on_mouse_down(
+                                                        MouseButton::Left,
+                                                        cx.listener(Self::start_terminal_drag),
+                                                    ),
+                                            )
+                                        }),
+                                )
+                            })
                             .into_any_element()
                     } else {
                         empty_repo(&t, cx).into_any_element()
@@ -522,4 +844,10 @@ impl Render for RepoWindow {
                 ))
             })
     }
+}
+
+/// The panel's height, kept between its minimum and leaving the flow room.
+fn clamp_terminal(h: Pixels, window: &Window) -> Pixels {
+    let max = (window.viewport_size().height - px(260.)).max(px(TERMINAL_MIN_H));
+    h.clamp(px(TERMINAL_MIN_H), max)
 }

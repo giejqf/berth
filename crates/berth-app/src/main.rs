@@ -86,6 +86,17 @@ fn main() {
                     MenuItem::separator(),
                     MenuItem::action("Destroy Slot…", keymap::DestroySlot),
                 ]),
+                Menu::new("Terminal").items([
+                    MenuItem::action("New Terminal", keymap::NewTerminal),
+                    MenuItem::action("Show or Collapse Terminal", keymap::ToggleTerminal),
+                    MenuItem::action("Hide Terminal Panel", keymap::HideTerminal),
+                    MenuItem::action("Maximize or Restore Terminal", keymap::ToggleTerminalSize),
+                    MenuItem::separator(),
+                    MenuItem::action("Next Terminal", keymap::NextTerminal),
+                    MenuItem::action("Previous Terminal", keymap::PrevTerminal),
+                    MenuItem::action("Clear", keymap::TerminalClear),
+                    MenuItem::action("Kill Terminal", keymap::KillTerminal),
+                ]),
                 Menu::new("Review").items([
                     MenuItem::action("Toggle Review Pane", keymap::ToggleReview),
                     MenuItem::action("Section Diff", keymap::ReviewSection),

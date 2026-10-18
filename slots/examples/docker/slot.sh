@@ -195,7 +195,17 @@ cmd_exec() {
     if [ -s "$BERTH_SLOT_STATE/claude-path" ]; then
         envs+=(-e "BERTH_CLAUDE_PATH=$(cat "$BERTH_SLOT_STATE/claude-path")")
     fi
-    exec docker exec -i --workdir "$cwd" ${envs[@]+"${envs[@]}"} "$container" "$@"
+    # Berth's terminal panel runs `exec` on a terminal: give the command one
+    # inside the container too, with the terminal's type.
+    local -a tty
+    tty=()
+    if [ -t 0 ] && [ -t 1 ]; then
+        tty=(-t)
+        for name in TERM COLORTERM; do
+            [ -n "${!name:-}" ] && envs+=(-e "$name")
+        done
+    fi
+    exec docker exec -i ${tty[@]+"${tty[@]}"} --workdir "$cwd" ${envs[@]+"${envs[@]}"} "$container" "$@"
 }
 
 cmd_destroy() {

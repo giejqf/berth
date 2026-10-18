@@ -1,24 +1,30 @@
 //! Per-window model: everything the views of one repo window draw. Fed by
 //! backend events; views only read it and send commands.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use berth_core::activity::RoundActivity;
 use berth_core::transcript::TranscriptEntry;
 use berth_core::{ReviewCommentRow, SlotState, WorkflowState, WorkflowView};
 use berth_protocol::{DiffPreset, SlotRequest};
-use gpui::{Context, EventEmitter};
+use gpui::{Context, Entity, EntityId, EventEmitter};
 
+use super::terminal::TerminalView;
 use crate::backend::{
     BackendHandle, Command, ConnectorInfo, DiffRequest, DiffResult, OriginChoice, OriginSource,
-    RepoSnapshot, SlotEntry, ToastLevel, UiEvent,
+    RepoSnapshot, SlotEntry, TerminalSpec, ToastLevel, UiEvent,
 };
 
 /// One-shot things the window reacts to (dialogs, sheets, toasts).
 #[derive(Debug, Clone)]
 pub enum RepoEvent {
     OpenReview,
+    /// A terminal's spec arrived: the window starts it (it needs a window).
+    TerminalSpec {
+        slot_id: String,
+        result: Result<TerminalSpec, String>,
+    },
     SlotRequest {
         workflow_id: String,
         request: SlotRequest,
@@ -56,6 +62,23 @@ pub struct RepoState {
     pub theme_setting: Option<String>,
     /// Whether the window shows the review pane (mirrored from the window).
     pub review_open: bool,
+    /// Each slot's terminals, kept while the app runs (§11).
+    pub terminals: HashMap<String, SlotTerminals>,
+    /// Slots with a terminal on its way.
+    pub terminal_pending: HashSet<String>,
+}
+
+/// A slot's terminals: newest last, and the one the panel shows.
+#[derive(Default)]
+pub struct SlotTerminals {
+    pub list: Vec<Entity<TerminalView>>,
+    pub active: usize,
+}
+
+impl SlotTerminals {
+    pub fn active(&self) -> Option<&Entity<TerminalView>> {
+        self.list.get(self.active).or_else(|| self.list.last())
+    }
 }
 
 /// Where a slot sits in the rail (design: grouped by state).
@@ -132,6 +155,8 @@ impl RepoState {
             review_preset: HashMap::new(),
             model_setting: None,
             theme_setting: None,
+            terminals: HashMap::new(),
+            terminal_pending: HashSet::new(),
             review_open: false,
         };
         if let Some(wf) = this.selected_workflow_id() {
@@ -294,7 +319,106 @@ impl RepoState {
         if self.selected().is_none() {
             self.selected_slot = self.slots.last().map(|s| s.slot.id.clone());
         }
+        // A destroyed slot's terminals go with it (dropping one hangs up its shell).
+        let live: HashSet<&str> = self
+            .slots
+            .iter()
+            .filter(|s| !matches!(s.slot.state, SlotState::Destroying | SlotState::Destroyed))
+            .map(|s| s.slot.id.as_str())
+            .collect();
+        self.terminals.retain(|id, _| live.contains(id.as_str()));
         cx.notify();
+    }
+
+    /// Whether a slot has a checkout a shell can start in.
+    pub fn terminal_ready(entry: &SlotEntry) -> bool {
+        entry.slot.checkout_path.is_some()
+            && matches!(entry.slot.state, SlotState::Ready | SlotState::Running)
+    }
+
+    /// Ask the backend what a new terminal in `slot_id` runs.
+    pub fn request_terminal(&mut self, slot_id: &str, cx: &mut Context<'_, Self>) {
+        if self.terminal_pending.insert(slot_id.to_owned()) {
+            self.backend.send(Command::TerminalSpec {
+                repo_id: self.repo_id().to_owned(),
+                slot_id: slot_id.to_owned(),
+            });
+            cx.notify();
+        }
+    }
+
+    pub fn terminal_spec(
+        &mut self,
+        slot_id: String,
+        result: Result<TerminalSpec, String>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.terminal_pending.remove(&slot_id);
+        cx.emit(RepoEvent::TerminalSpec { slot_id, result });
+        cx.notify();
+    }
+
+    pub fn add_terminal(
+        &mut self,
+        slot_id: &str,
+        view: Entity<TerminalView>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let slot = self.terminals.entry(slot_id.to_owned()).or_default();
+        slot.list.push(view);
+        slot.active = slot.list.len() - 1;
+        cx.notify();
+    }
+
+    /// Close a terminal, wherever it is; returns its slot.
+    pub fn remove_terminal(&mut self, id: EntityId, cx: &mut Context<'_, Self>) -> Option<String> {
+        let (slot_id, terms) = self
+            .terminals
+            .iter_mut()
+            .find(|(_, t)| t.list.iter().any(|v| v.entity_id() == id))?;
+        let slot_id = slot_id.clone();
+        if let Some(i) = terms.list.iter().position(|v| v.entity_id() == id) {
+            terms.list.remove(i);
+            if terms.active >= i && terms.active > 0 {
+                terms.active -= 1;
+            }
+        }
+        cx.notify();
+        Some(slot_id)
+    }
+
+    /// The selected slot's terminals.
+    pub fn slot_terminals(&self) -> Option<&SlotTerminals> {
+        self.selected_slot
+            .as_ref()
+            .and_then(|id| self.terminals.get(id))
+    }
+
+    /// Show another of the selected slot's terminals (wrapping).
+    pub fn cycle_terminal(&mut self, step: isize, cx: &mut Context<'_, Self>) {
+        let Some(terms) = self
+            .selected_slot
+            .as_ref()
+            .and_then(|id| self.terminals.get_mut(id))
+        else {
+            return;
+        };
+        let n = terms.list.len();
+        if n > 1 {
+            let i = isize::try_from(terms.active).unwrap_or(0) + step;
+            terms.active =
+                usize::try_from(i.rem_euclid(isize::try_from(n).unwrap_or(1))).unwrap_or(0);
+            cx.notify();
+        }
+    }
+
+    pub fn show_terminal(&mut self, id: EntityId, cx: &mut Context<'_, Self>) {
+        for terms in self.terminals.values_mut() {
+            if let Some(i) = terms.list.iter().position(|v| v.entity_id() == id) {
+                terms.active = i;
+                cx.notify();
+            }
+        }
     }
 
     pub fn set_workflow(&mut self, view: Arc<WorkflowView>, cx: &mut Context<'_, Self>) {

@@ -62,6 +62,18 @@ actions!(
         ReviewBranch,
         // dialogs
         Confirm,
+        // terminal
+        ToggleTerminal,
+        HideTerminal,
+        NewTerminal,
+        KillTerminal,
+        NextTerminal,
+        PrevTerminal,
+        ToggleTerminalSize,
+        TerminalCopy,
+        TerminalPaste,
+        TerminalClear,
+        TerminalSelectAll,
     ]
 );
 
@@ -94,6 +106,11 @@ pub struct ScrollFlowTo(pub usize);
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = berth, no_json)]
 pub struct ExpandLane(pub usize);
+
+/// Close this terminal (the × on a row of the terminal list; no binding).
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = berth, no_json)]
+pub struct CloseTerminal(pub gpui::EntityId);
 
 /// Attach these files to the next prompt (drops and devtools; no binding).
 #[derive(Clone, PartialEq, Action)]
@@ -321,6 +338,31 @@ pub const SHORTCUTS: &[Shortcut] = &[
         label: "Create workflow / confirm",
         group: "Comments & dialogs",
     },
+    Shortcut {
+        keys: "⌃`",
+        label: "Show, focus or collapse the slot's terminal",
+        group: "Terminal",
+    },
+    Shortcut {
+        keys: "⌃⇧`",
+        label: "New terminal in this slot",
+        group: "Terminal",
+    },
+    Shortcut {
+        keys: "⌘⇧] ⌘⇧[",
+        label: "Next / previous terminal",
+        group: "Terminal",
+    },
+    Shortcut {
+        keys: "⌘K",
+        label: "Clear the terminal",
+        group: "Terminal",
+    },
+    Shortcut {
+        keys: "⌘C ⌘V",
+        label: "Copy the selection / paste",
+        group: "Terminal",
+    },
 ];
 
 /// What the command palette can run: `(label, keys, action)`.
@@ -363,6 +405,19 @@ pub fn palette_actions() -> Vec<(&'static str, &'static str, Box<dyn Action>)> {
             Box::new(JumpToNeeding),
         ),
         ("Collapse or expand the rail", "⌘⇧L", Box::new(ToggleRail)),
+        (
+            "Show or collapse the terminal",
+            "⌃`",
+            Box::new(ToggleTerminal),
+        ),
+        ("Hide the terminal panel", "", Box::new(HideTerminal)),
+        ("New terminal", "⌃⇧`", Box::new(NewTerminal)),
+        ("Kill the terminal", "", Box::new(KillTerminal)),
+        (
+            "Maximize or restore the terminal",
+            "",
+            Box::new(ToggleTerminalSize),
+        ),
         ("Destroy slot…", "", Box::new(DestroySlot)),
         ("Close window", "⌘W", Box::new(CloseWindow)),
     ]
@@ -388,6 +443,19 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-up", ScrollToNewest, Some("EventFlow")),
         KeyBinding::new("cmd-w", CloseWindow, None),
         KeyBinding::new("cmd-q", Quit, None),
+        // terminal (keys without ⌘ go to the shell)
+        KeyBinding::new("ctrl-`", ToggleTerminal, None),
+        KeyBinding::new("ctrl-~", NewTerminal, None),
+        KeyBinding::new("ctrl-shift-`", NewTerminal, None),
+        KeyBinding::new("cmd-c", TerminalCopy, Some("Terminal")),
+        KeyBinding::new("cmd-v", TerminalPaste, Some("Terminal")),
+        KeyBinding::new("cmd-k", TerminalClear, Some("Terminal")),
+        KeyBinding::new("cmd-a", TerminalSelectAll, Some("Terminal")),
+        KeyBinding::new("cmd-shift-]", NextTerminal, Some("Terminal")),
+        KeyBinding::new("cmd-shift-[", PrevTerminal, Some("Terminal")),
+        // Tab completes in the shell instead of moving focus (gpui-component's Root).
+        KeyBinding::new("tab", gpui::NoAction {}, Some("Terminal")),
+        KeyBinding::new("shift-tab", gpui::NoAction {}, Some("Terminal")),
         // slot rail
         KeyBinding::new("down", RailNext, Some("SlotRail")),
         KeyBinding::new("up", RailPrev, Some("SlotRail")),
@@ -443,9 +511,82 @@ pub fn bindings() -> Vec<KeyBinding> {
             Some("NewWorkflow"),
         ));
     }
+    // Single keys (A, C, J, /, 1–9…) act on a pane, but a text field or a
+    // terminal inside it must get them as typing. macOS sends a key to the
+    // bindings before the text input, so switch them off in those contexts.
+    let typed: std::collections::BTreeSet<String> = b
+        .iter()
+        .filter_map(|binding| match binding.keystrokes() {
+            [k] if !k.modifiers().modified() && k.key().chars().count() == 1 => {
+                Some(k.key().to_owned())
+            }
+            _ => None,
+        })
+        .collect();
+    for key in typed {
+        for context in ["Input", "Terminal"] {
+            b.push(KeyBinding::new(&key, gpui::NoAction {}, Some(context)));
+        }
+    }
     b
 }
 
 pub fn init(cx: &mut App) {
     cx.bind_keys(bindings());
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{KeyContext, Keymap, Keystroke};
+
+    use super::*;
+
+    /// Which actions a keystroke resolves to with this focus path.
+    fn resolve(keys: &str, contexts: &[&str]) -> Vec<String> {
+        let keymap = Keymap::new(bindings());
+        let stack: Vec<KeyContext> = contexts
+            .iter()
+            .map(|c| KeyContext::parse(c).unwrap_or_default())
+            .collect();
+        let input = [Keystroke::parse(keys).unwrap_or_else(|e| panic!("{keys}: {e}"))];
+        keymap
+            .bindings_for_input(&input, &stack)
+            .0
+            .iter()
+            .map(|b| b.action().name().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn terminal_toggle_is_bound_everywhere() {
+        assert_eq!(
+            resolve("ctrl-`", &["RepoWindow"]),
+            ["berth::ToggleTerminal"]
+        );
+        assert_eq!(
+            resolve("ctrl-`", &["RepoWindow", "Terminal"]),
+            ["berth::ToggleTerminal"]
+        );
+    }
+
+    #[test]
+    fn single_keys_type_in_fields_and_terminals() {
+        assert_eq!(resolve("a", &["RepoWindow"]), ["berth::FocusAnswer"]);
+        assert!(resolve("a", &["RepoWindow", "Input"]).is_empty());
+        assert!(resolve("a", &["RepoWindow", "Terminal"]).is_empty());
+        assert!(resolve("c", &["RepoWindow", "ReviewPane", "Input"]).is_empty());
+        assert!(resolve("tab", &["Root", "RepoWindow", "Terminal"]).is_empty());
+    }
+
+    #[test]
+    fn terminal_keeps_vs_code_chords() {
+        // Deepest context first: the terminal's ⌘K wins over the palette.
+        assert_eq!(
+            resolve("cmd-k", &["RepoWindow", "Terminal"])
+                .first()
+                .map(String::as_str),
+            Some("berth::TerminalClear")
+        );
+        assert_eq!(resolve("cmd-k", &["RepoWindow"]), ["berth::CommandPalette"]);
+    }
 }

@@ -18,6 +18,7 @@ mod review_pane;
 pub mod rich;
 mod settings;
 mod slot_rail;
+mod terminal;
 mod welcome;
 
 use std::collections::HashMap;
@@ -97,6 +98,23 @@ pub fn prompt_open_repository(cx: &mut App) {
         }
     })
     .detach();
+}
+
+/// Type into the selected slot's active terminal (devtools).
+#[cfg(feature = "devtools")]
+pub fn type_in_terminal(text: &str, cx: &mut App) {
+    let Some(state) = first_repo_state(cx) else {
+        return;
+    };
+    let view = state
+        .read(cx)
+        .slot_terminals()
+        .and_then(|t| t.active())
+        .cloned();
+    if let Some(view) = view {
+        let bytes = text.as_bytes().to_vec();
+        view.update(cx, |v, cx| v.input(bytes, cx));
+    }
 }
 
 /// The first open repo's state and window (devtools).
@@ -214,6 +232,15 @@ fn route(event: UiEvent, cx: &mut App) {
         } => {
             if let Some(state) = repo(&repo_id, cx) {
                 state.update(cx, |s, cx| s.slot_request(workflow_id, request, cx));
+            }
+        }
+        UiEvent::TerminalSpec {
+            repo_id,
+            slot_id,
+            result,
+        } => {
+            if let Some(state) = repo(&repo_id, cx) {
+                state.update(cx, |s, cx| s.terminal_spec(slot_id, result, cx));
             }
         }
         UiEvent::Origins {

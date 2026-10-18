@@ -8,6 +8,7 @@ mod launch;
 mod review;
 mod session;
 mod slots;
+mod terminal;
 pub mod types;
 
 use std::collections::HashMap;
@@ -128,7 +129,9 @@ impl Shared {
     fn repo_hint(&self, cmd: &Command) -> Option<String> {
         let wf = match cmd {
             Command::NewWorkflow(n) => return Some(n.repo_id.clone()),
-            Command::RefreshRepo { repo_id } | Command::ListOrigins { repo_id, .. } => {
+            Command::RefreshRepo { repo_id }
+            | Command::ListOrigins { repo_id, .. }
+            | Command::TerminalSpec { repo_id, .. } => {
                 return Some(repo_id.clone());
             }
             Command::SendPrompt { workflow_id, .. }
@@ -326,6 +329,15 @@ impl Shared {
                 Ok(())
             }
             Command::LoadRoundDetails { workflow_id } => self.load_round_details(&workflow_id),
+            Command::TerminalSpec { repo_id, slot_id } => {
+                let result = self.terminal_spec(&slot_id).map_err(|e| format!("{e:#}"));
+                self.emit(UiEvent::TerminalSpec {
+                    repo_id,
+                    slot_id,
+                    result,
+                });
+                Ok(())
+            }
             Command::SetSecret {
                 connector,
                 key,

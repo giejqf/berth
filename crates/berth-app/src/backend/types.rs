@@ -91,6 +91,12 @@ pub enum Command {
     },
     /// Show `~/.config/berth/connectors` in Finder.
     RevealConnectors,
+    /// What a new terminal in this slot runs; answered with
+    /// [`UiEvent::TerminalSpec`].
+    TerminalSpec {
+        repo_id: String,
+        slot_id: String,
+    },
     /// The open round's transcript ("Show transcript" on the live card).
     LoadRoundDetails {
         workflow_id: String,
@@ -263,6 +269,30 @@ pub struct ConnectorInfo {
     pub origin_kind: Option<String>,
 }
 
+/// What one of a slot's terminals runs (`backend/terminal.rs`).
+#[derive(Clone)]
+pub struct TerminalSpec {
+    pub program: String,
+    pub args: Vec<String>,
+    pub cwd: std::path::PathBuf,
+    /// On top of the app's environment. Holds connector secrets: never log it.
+    pub env: Vec<(String, String)>,
+    /// The terminal's name until its shell sets a title.
+    pub title: String,
+}
+
+impl std::fmt::Debug for TerminalSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names: Vec<&str> = self.env.iter().map(|(k, _)| k.as_str()).collect();
+        f.debug_struct("TerminalSpec")
+            .field("program", &self.program)
+            .field("args", &self.args)
+            .field("cwd", &self.cwd)
+            .field("env", &names)
+            .finish_non_exhaustive()
+    }
+}
+
 /// One secret a connector declares.
 #[derive(Debug, Clone)]
 pub struct ConnectorKey {
@@ -356,6 +386,11 @@ pub enum UiEvent {
         entries: Vec<TranscriptEntry>,
     },
     Connectors(Vec<ConnectorInfo>),
+    TerminalSpec {
+        repo_id: String,
+        slot_id: String,
+        result: Result<TerminalSpec, String>,
+    },
     Settings {
         model: String,
         theme: String,

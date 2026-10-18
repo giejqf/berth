@@ -20,6 +20,7 @@ berth-git = { path = "crates/berth-git" }
 berth-gh = { path = "crates/berth-gh" }
 berth-connectors = { path = "crates/berth-connectors" }
 
+alacritty_terminal = "0.26"
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 futures = "0.3"

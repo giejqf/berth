@@ -16,6 +16,7 @@
 //! keys 2 enter                # type keystrokes into the focused element
 //! select 0                    # select the n-th slot (newest first)
 //! secret linear LINEAR_API_KEY x  # store a connector key (use BERTH_SECRETS=memory)
+//! term_type ls -la            # type into the selected slot's terminal (`keys enter` runs it)
 //! quit
 //! ```
 
@@ -81,6 +82,7 @@ pub fn start(cx: &mut App) {
                         }));
                     }
                 }),
+                "term_type" => cx.update(|cx| ui::type_in_terminal(arg, cx)),
                 "secret" => cx.update(|cx| {
                     let mut parts = arg.splitn(3, ' ');
                     if let (Some(connector), Some(key), Some(value)) =
@@ -467,6 +469,14 @@ fn dispatch(name: &str, cx: &mut App) {
         "FocusComposer" => Box::new(keymap::FocusComposer),
         "NextSlot" => Box::new(keymap::NextSlot),
         "PrevSlot" => Box::new(keymap::PrevSlot),
+        "ToggleTerminal" => Box::new(keymap::ToggleTerminal),
+        "HideTerminal" => Box::new(keymap::HideTerminal),
+        "ToggleRail" => Box::new(keymap::ToggleRail),
+        "NewTerminal" => Box::new(keymap::NewTerminal),
+        "KillTerminal" => Box::new(keymap::KillTerminal),
+        "NextTerminal" => Box::new(keymap::NextTerminal),
+        "ToggleTerminalSize" => Box::new(keymap::ToggleTerminalSize),
+        "TerminalClear" => Box::new(keymap::TerminalClear),
         other => match other
             .strip_prefix("NewWorkflowTab ")
             .and_then(|n| n.trim().parse().ok())
