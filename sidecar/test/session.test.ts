@@ -369,20 +369,22 @@ describe("attachments and artifacts", () => {
 });
 
 describe("model and effort", () => {
-  it("starts on the slot's model and effort and reports the models on offer", async () => {
+  it("starts on the slot's model and effort and reports the exact models on offer", async () => {
     const emitter = new RecordingEmitter();
     const q = fakeQueryFn();
     const session = new Session({ emitter, log: silentLogger, query: q.fn, now: () => 0 });
     session.start({ ...START, model: "opus", effort: "xhigh" }, "start-1");
     await flush();
     expect(q.last().options).toMatchObject({ model: "opus", effort: "xhigh" });
+    // Aliases become the model they resolve to; Default and duplicates drop out.
     expect(emitter.ofType("session.models")[0]?.models).toEqual([
       {
-        value: "opus",
+        value: "claude-opus-5-5",
         display_name: "Opus",
         description: "Most capable",
         efforts: ["low", "medium", "high", "xhigh", "max"],
       },
+      { value: "claude-opus-4-8", display_name: "Opus 4.8", description: "Previous Opus", efforts: [] },
       { value: "haiku", display_name: "Haiku", description: "Fastest", efforts: [] },
     ]);
   });

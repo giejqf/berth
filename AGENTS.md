@@ -670,8 +670,9 @@ stdin EOF stops the session; stdout carries protocol lines only (logs go to
   menu bar open the picker (`ui/agent_dialog.rs`). They change any time: a live session
   switches from the agent's next request (`session.configure`), mid-round included;
   otherwise the next session starts with them. `None` is the default: Settings'
-  "Default agent model", the model's own effort. The models on offer are the SDK's
-  (`session.models`, kept in settings), else Claude Code's aliases.
+  "Default agent model", the model's own effort. Models are exact ids named by
+  version ("Opus 5.5", "Opus 4.8"), never aliases; the ones on offer are the SDK's
+  (`session.models`, aliases resolved, kept in settings), else the current models.
 - Dialogs (New workflow, Settings, ⌘K, confirmations) are drawn by the app
   (`ui/modal.rs`): scrim, 10px radius, one soft shadow, ⌘↩ confirms, esc closes.
 - Theme tokens in `berth-app/src/theme.rs`; light/dark follow the system unless

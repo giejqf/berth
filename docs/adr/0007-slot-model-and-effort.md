@@ -45,8 +45,15 @@ New `session.models { models: [{ value, display_name, description, efforts }] }`
 (sidecar → app), from the SDK's `supportedModels()` once a session starts. The
 app keeps the last list in its settings (`models`) so the picker is right
 before any session of a run; until a session has ever reported one, it offers
-Claude Code's aliases (`fable`, `opus`, `sonnet`, `haiku`) with every effort
-level.
+the current models (Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5) with every
+effort level.
+
+Models are always chosen by exact id, never by alias: `opus` moves to a new
+model with each release, and Opus 5.5 and Opus 4.8 are different models. The
+sidecar reports each row as the model it resolves to (`resolvedModel`),
+dropping Claude Code's `default` row and duplicates, and the app names a model
+from its id ("Opus 5.5", "Opus 4.8"), so two versions never share a name.
+Settings' default model offers the same list.
 
 ### 4. Where it is set
 

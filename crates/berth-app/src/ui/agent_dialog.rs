@@ -18,23 +18,54 @@ use crate::backend::{BackendHandle, Command, SlotEntry};
 use crate::keymap::Confirm;
 use crate::theme::{Tokens, ty};
 
-/// Claude Code's aliases, offered until a session reports the real list
-/// (with descriptions, and the efforts each model takes).
+/// The current models, offered until a session reports the real list (with
+/// descriptions, older versions, and the efforts each model takes). Exact
+/// ids, never aliases: "opus" moves to a new model with each release.
 fn fallback_models() -> Vec<ModelChoice> {
     [
-        ("fable", "Fable"),
-        ("opus", "Opus"),
-        ("sonnet", "Sonnet"),
-        ("haiku", "Haiku"),
+        "claude-fable-5-1",
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "claude-haiku-5-5",
     ]
     .into_iter()
-    .map(|(value, name)| ModelChoice {
-        value: value.to_owned(),
-        display_name: name.to_owned(),
+    .map(|id| ModelChoice {
+        value: id.to_owned(),
+        display_name: model_label(id).unwrap_or_else(|| id.to_owned()),
         description: String::new(),
         efforts: Effort::ALL.to_vec(),
     })
     .collect()
+}
+
+/// A model id as people say it, version included: `claude-opus-5-5` is
+/// "Opus 5.5", `claude-opus-4-8-20260101` "Opus 4.8", `claude-sonnet-5[1m]`
+/// "Sonnet 5 (1M context)". `None` for anything that isn't a Claude model id.
+pub fn model_label(id: &str) -> Option<String> {
+    let (base, long) = match id.strip_suffix("[1m]") {
+        Some(base) => (base, true),
+        None => (id, false),
+    };
+    let rest = base.strip_prefix("claude-")?;
+    let mut family = None;
+    let mut version = Vec::new();
+    for part in rest.split('-') {
+        match part {
+            "fable" | "opus" | "sonnet" | "haiku" => family = Some(part),
+            // A date (`20260101`) or a tag (`latest`, `fast`) ends the version.
+            v if v.len() <= 2 && v.chars().all(|c| c.is_ascii_digit()) => version.push(v),
+            _ => {}
+        }
+    }
+    let family = family?;
+    let mut label = format!("{}{}", family[..1].to_uppercase(), &family[1..]);
+    if !version.is_empty() {
+        label = format!("{label} {}", version.join("."));
+    }
+    if long {
+        label.push_str(" (1M context)");
+    }
+    Some(label)
 }
 
 /// The models to offer: the SDK's last report, else Claude Code's aliases.
@@ -47,12 +78,15 @@ pub fn models(cx: &App) -> Vec<ModelChoice> {
     }
 }
 
-/// A model's name as people read it: its display name if it's on offer.
+/// A model's name as people read it: from its id when that's a Claude model
+/// id (so two versions never share a name), else what the SDK calls it.
 pub fn model_name(value: &str, models: &[ModelChoice]) -> String {
-    models
-        .iter()
-        .find(|m| m.value == value)
-        .map_or_else(|| value.to_owned(), |m| m.display_name.clone())
+    model_label(value).unwrap_or_else(|| {
+        models
+            .iter()
+            .find(|m| m.value == value)
+            .map_or_else(|| value.to_owned(), |m| m.display_name.clone())
+    })
 }
 
 /// What the composer's chip says for a slot: "Opus · High", "Default model".
@@ -231,7 +265,7 @@ impl Render for AgentDialog {
             list = list.child(row(
                 SharedString::from(format!("model-{}", m.value)),
                 self.model.as_deref() == Some(m.value.as_str()),
-                m.display_name.clone(),
+                model_name(&m.value, &self.models),
                 m.description.clone(),
                 cx,
                 Some(m.value.clone()),
@@ -369,5 +403,42 @@ impl Render for AgentDialog {
                         }),
                 ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn models_are_named_by_their_version() {
+        let cases = [
+            ("claude-opus-5-5", Some("Opus 5.5")),
+            ("claude-opus-4-8", Some("Opus 4.8")),
+            ("claude-fable-5-1", Some("Fable 5.1")),
+            ("claude-sonnet-5", Some("Sonnet 5")),
+            ("claude-haiku-4-5-20251001", Some("Haiku 4.5")),
+            ("claude-sonnet-5[1m]", Some("Sonnet 5 (1M context)")),
+            ("claude-3-5-sonnet-20241022", Some("Sonnet 3.5")),
+            ("opus", None),
+            ("my-proxy-model", None),
+        ];
+        for (id, want) in cases {
+            assert_eq!(model_label(id).as_deref(), want, "{id}");
+        }
+    }
+
+    #[test]
+    fn the_fallback_offers_exact_models() {
+        let names: Vec<String> = fallback_models()
+            .iter()
+            .map(|m| model_name(&m.value, &[]))
+            .collect();
+        assert_eq!(names, ["Fable 5.1", "Opus 5.5", "Sonnet 5.5", "Haiku 5.5"]);
+        assert!(
+            fallback_models()
+                .iter()
+                .all(|m| m.value.starts_with("claude-"))
+        );
     }
 }

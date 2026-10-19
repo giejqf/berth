@@ -187,15 +187,24 @@ export class Session implements ToolHost {
     }
   }
 
-  /** Tell the app which models (and efforts) it can offer. */
+  /** Tell the app which models (and efforts) it can offer: each one by the
+   * exact model it is, not an alias ("opus" moves with every release). */
   private async reportModels(q: AgentQuery): Promise<void> {
     try {
-      const models = (await q.supportedModels()).map((m) => ({
-        value: m.value,
-        display_name: m.displayName,
-        description: m.description,
-        efforts: (m.supportedEffortLevels ?? []).filter((e): e is Effort => EFFORTS.includes(e as Effort)),
-      }));
+      const seen = new Set<string>();
+      const models = [];
+      for (const m of await q.supportedModels()) {
+        const value = m.resolvedModel ?? m.value;
+        // The app has its own Default; aliases of one model collapse into it.
+        if (m.value === "default" || seen.has(value)) continue;
+        seen.add(value);
+        models.push({
+          value,
+          display_name: m.displayName,
+          description: m.description,
+          efforts: (m.supportedEffortLevels ?? []).filter((e): e is Effort => EFFORTS.includes(e as Effort)),
+        });
+      }
       if (models.length > 0) this.emitter.emit({ type: "session.models", models });
     } catch (e) {
       this.log.warn({ err: e }, "supportedModels failed");

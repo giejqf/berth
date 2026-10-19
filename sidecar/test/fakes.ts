@@ -32,13 +32,22 @@ export class FakeQuery implements AgentQuery {
   /** `setModel` and `applyFlagSettings` calls, in order. */
   readonly configured: Array<{ model?: string } | { effortLevel?: string | null }> = [];
   models: ModelInfo[] = [
+    { value: "default", resolvedModel: "claude-opus-5-5", displayName: "Default", description: "Recommended" },
     {
       value: "opus",
+      resolvedModel: "claude-opus-5-5",
       displayName: "Opus",
       description: "Most capable",
       supportsEffort: true,
       supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
     },
+    {
+      value: "claude-opus-5-5",
+      resolvedModel: "claude-opus-5-5",
+      displayName: "Opus 5.5",
+      description: "Same model by id",
+    },
+    { value: "claude-opus-4-8", displayName: "Opus 4.8", description: "Previous Opus" },
     { value: "haiku", displayName: "Haiku", description: "Fastest" },
   ];
 

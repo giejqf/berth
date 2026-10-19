@@ -439,6 +439,19 @@ impl Shared {
         self.emit(UiEvent::Models(models.to_vec()));
     }
 
+    /// The app's settings (the default model, the theme), for the windows.
+    pub(super) fn emit_settings(&self) -> Result<()> {
+        let (model, theme) = {
+            let core = self.core();
+            (
+                core.store.setting("model")?.unwrap_or_default(),
+                core.store.setting("theme")?.unwrap_or_default(),
+            )
+        };
+        self.emit(UiEvent::Settings { model, theme });
+        Ok(())
+    }
+
     /// The models from the last session, before any session of this run reports them.
     pub(super) fn emit_models(&self) {
         let saved = self.core().store.setting("models").ok().flatten();

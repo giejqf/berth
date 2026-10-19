@@ -18,14 +18,6 @@ use crate::backend::{Command, ToolState, ToolStatus};
 use crate::keymap::Confirm;
 use crate::theme::{Appearance, MONO, Tokens, ty};
 
-const MODELS: [(&str, &str); 5] = [
-    ("", "Claude Code default"),
-    ("fable", "Fable"),
-    ("opus", "Opus"),
-    ("sonnet", "Sonnet"),
-    ("haiku", "Haiku"),
-];
-
 pub struct SettingsForm {
     state: Entity<RepoState>,
     custom_model: Entity<InputState>,
@@ -271,9 +263,20 @@ impl Render for SettingsForm {
             .child(self.tool_row(&t, "GitHub CLI", "gh", &env.gh, false, cx))
             .child(self.tool_row(&t, "Docker", "docker", &env.docker, true, cx));
 
-        let custom = !model.is_empty() && !MODELS.iter().any(|(id, _)| *id == model);
+        // The same models the slots' picker offers, by exact version.
+        let offered = super::agent_dialog::models(cx);
+        let presets: Vec<(String, String)> =
+            std::iter::once((String::new(), "Claude Code default".to_owned()))
+                .chain(offered.iter().map(|m| {
+                    (
+                        m.value.clone(),
+                        super::agent_dialog::model_name(&m.value, &offered),
+                    )
+                }))
+                .collect();
+        let custom = !model.is_empty() && !presets.iter().any(|(id, _)| *id == model);
         let mut models = div().flex().flex_wrap().items_center().gap(px(8.));
-        for (id, label) in MODELS {
+        for (id, label) in presets {
             let active = model == id && !(self.custom_open && id.is_empty());
             models = models.child(
                 div()
@@ -292,7 +295,7 @@ impl Render for SettingsForm {
                     .child(div().when(active, super::kit::TypeExt::medium).child(label))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.custom_open = false;
-                        this.set_model(id, cx);
+                        this.set_model(&id, cx);
                     })),
             );
         }
@@ -314,7 +317,7 @@ impl Render for SettingsForm {
                 .when(!custom_active, |d| d.border_color(t.border))
                 .child(radio(&t, custom_active, 14.))
                 .child(if custom {
-                    model.clone()
+                    super::agent_dialog::model_name(&model, &offered)
                 } else {
                     "Custom…".to_owned()
                 })

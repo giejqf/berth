@@ -320,17 +320,7 @@ impl Shared {
                 self.emit(UiEvent::Connectors(self.connector_infos()));
                 Ok(())
             }
-            Command::LoadSettings => {
-                let (model, theme) = {
-                    let core = self.core();
-                    (
-                        core.store.setting("model")?.unwrap_or_default(),
-                        core.store.setting("theme")?.unwrap_or_default(),
-                    )
-                };
-                self.emit(UiEvent::Settings { model, theme });
-                Ok(())
-            }
+            Command::LoadSettings => self.emit_settings(),
             Command::SetSetting { key, value } => {
                 self.core().store.set_setting(&key, value.trim())?;
                 Ok(())
