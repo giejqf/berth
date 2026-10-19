@@ -216,12 +216,20 @@ impl Shared {
                 workflow_id,
                 question_id,
                 text,
-            } => self.answer(&workflow_id, &question_id, &text).await,
+            } => {
+                let sent = self.answer(&workflow_id, &question_id, &text).await;
+                self.report_unsent(&workflow_id, &question_id, &sent);
+                sent
+            }
             Command::AnswerReview {
                 workflow_id,
                 review_id,
                 choices,
-            } => self.answer_review(&workflow_id, &review_id, &choices).await,
+            } => {
+                let sent = self.answer_review(&workflow_id, &review_id, &choices).await;
+                self.report_unsent(&workflow_id, &review_id, &sent);
+                sent
+            }
             Command::Rewind {
                 workflow_id,
                 node_id,
@@ -283,11 +291,11 @@ impl Shared {
                 Ok(())
             }
             Command::LoadDiff(req) => {
-                let wf = req.workflow_id.clone();
+                let request = req.clone();
                 match self.load_diff(req).await {
                     Ok(diff) => self.emit(UiEvent::Diff(Arc::new(diff))),
                     Err(e) => self.emit(UiEvent::DiffFailed {
-                        workflow_id: wf,
+                        request,
                         message: format!("{e:#}"),
                     }),
                 }
@@ -695,6 +703,17 @@ impl Shared {
         let _ = core.store.set_setting("last_repo", &path.to_string_lossy());
         if let Ok(json) = serde_json::to_string(&recent) {
             let _ = core.store.set_setting("recent_repos", &json);
+        }
+    }
+
+    /// An answer or review decisions did not go out: the card that sent them
+    /// lets the user try again.
+    fn report_unsent(&self, workflow_id: &str, id: &str, sent: &Result<()>) {
+        if sent.is_err() {
+            self.emit(UiEvent::AnswerFailed {
+                workflow_id: workflow_id.to_owned(),
+                id: id.to_owned(),
+            });
         }
     }
 

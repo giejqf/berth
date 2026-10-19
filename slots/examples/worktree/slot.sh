@@ -31,7 +31,9 @@ ensure_base_ref() {
     git -C "$BERTH_REPO" rev-parse --verify --quiet "$BERTH_BASE_REF^{commit}" >/dev/null && return
     local remote=${BERTH_BASE_REF%%/*} branch=${BERTH_BASE_REF#*/}
     if [ "$remote" != "$BERTH_BASE_REF" ] && git -C "$BERTH_REPO" remote get-url "$remote" >/dev/null 2>&1; then
-        git -C "$BERTH_REPO" fetch --quiet "$remote" "$branch" >&2 ||
+        # An explicit refspec: a single-branch or shallow clone's fetch config
+        # would leave the branch in FETCH_HEAD only.
+        git -C "$BERTH_REPO" fetch --quiet "$remote" "+refs/heads/$branch:refs/remotes/$remote/$branch" >&2 ||
             die "could not fetch '$branch' from $remote"
     fi
     git -C "$BERTH_REPO" rev-parse --verify --quiet "$BERTH_BASE_REF^{commit}" >/dev/null ||

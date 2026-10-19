@@ -645,9 +645,16 @@ async fn worktree_fetches_a_remote_base_it_has_not_seen() {
     let upstream = tmp.path().join("upstream");
     init_repo(&upstream);
     let repo = tmp.path().join("repo");
+    // Single-branch, as `--depth` implies: its fetch config covers main only.
     host_git(
         tmp.path(),
-        &["clone", "--quiet", &upstream.to_string_lossy(), "repo"],
+        &[
+            "clone",
+            "--quiet",
+            "--single-branch",
+            &format!("file://{}", upstream.display()),
+            "repo",
+        ],
     );
     // A pull request's branch, pushed after the clone: the repo has never fetched it.
     host_git(&upstream, &["checkout", "--quiet", "-b", "fix-login"]);

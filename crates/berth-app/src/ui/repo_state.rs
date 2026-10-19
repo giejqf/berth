@@ -22,6 +22,8 @@ pub enum RepoEvent {
     OpenReview,
     /// A review arrived in the selected workflow: open its findings.
     ShowFindings,
+    /// Sending this answer or these review decisions failed (by id).
+    AnswerFailed(String),
     /// A terminal's spec arrived: the window starts it (it needs a window).
     TerminalSpec {
         slot_id: String,
@@ -66,6 +68,9 @@ pub struct RepoState {
     pub diffs: HashMap<String, Arc<DiffResult>>,
     pub diff_loading: HashMap<String, DiffRequest>,
     pub diff_errors: HashMap<String, String>,
+    /// The latest diff request's ticket per workflow, and the next ticket.
+    diff_wanted: HashMap<String, u64>,
+    diff_tickets: u64,
     pub comments: HashMap<String, Vec<ReviewCommentRow>>,
     pub origins: HashMap<OriginSource, Result<Vec<OriginChoice>, String>>,
     pub connectors: Vec<ConnectorInfo>,
@@ -183,6 +188,8 @@ impl RepoState {
             diffs: HashMap::new(),
             diff_loading: HashMap::new(),
             diff_errors: HashMap::new(),
+            diff_wanted: HashMap::new(),
+            diff_tickets: 0,
             comments: HashMap::new(),
             origins: HashMap::new(),
             connectors,
@@ -290,6 +297,7 @@ impl RepoState {
                 preset,
                 section,
                 custom: None,
+                ticket: 0,
             },
             cx,
         );
@@ -309,13 +317,17 @@ impl RepoState {
                 preset: DiffPreset::Custom,
                 section: None,
                 custom: Some((from, to)),
+                ticket: 0,
             },
             cx,
         );
         cx.emit(RepoEvent::OpenReview);
     }
 
-    fn request_diff(&mut self, req: DiffRequest, cx: &mut Context<'_, Self>) {
+    fn request_diff(&mut self, mut req: DiffRequest, cx: &mut Context<'_, Self>) {
+        self.diff_tickets += 1;
+        req.ticket = self.diff_tickets;
+        self.diff_wanted.insert(req.workflow_id.clone(), req.ticket);
         let (workflow_id, preset, section) = (req.workflow_id.clone(), req.preset, req.section);
         self.review_preset
             .insert(workflow_id.clone(), (preset, section));
@@ -323,6 +335,11 @@ impl RepoState {
         self.diff_errors.remove(&workflow_id);
         self.backend.send(Command::LoadDiff(req));
         cx.notify();
+    }
+
+    /// Whether `req` is the workflow's latest diff request (not one replaced).
+    fn wants_diff(&self, req: &DiffRequest) -> bool {
+        self.knows(&req.workflow_id) && self.diff_wanted.get(&req.workflow_id) == Some(&req.ticket)
     }
 
     /// Read the history again (it is shown loading until it arrives).
@@ -362,12 +379,16 @@ impl RepoState {
     }
 
     pub fn set_slots(&mut self, slots: Vec<SlotEntry>, cx: &mut Context<'_, Self>) {
-        let had = self.slots.len();
+        let known: HashSet<String> = self.repo_slots.iter().map(|e| e.slot.id.clone()).collect();
         self.slots = in_window(&slots, &self.window_id);
         self.repo_slots = slots;
-        // A newly created slot becomes the selection.
-        if self.slots.len() > had
-            && let Some(newest) = self.slots.iter().max_by_key(|s| s.slot.created_at)
+        // A newly created slot becomes the selection; one moved in from another
+        // window is not new (its move picks the selection itself).
+        if let Some(newest) = self
+            .slots
+            .iter()
+            .filter(|e| !known.contains(&e.slot.id))
+            .max_by_key(|s| s.slot.created_at)
         {
             self.selected_slot = Some(newest.slot.id.clone());
         }
@@ -375,8 +396,10 @@ impl RepoState {
             self.selected_slot = self.slots.last().map(|s| s.slot.id.clone());
         }
         // A destroyed slot's terminals go with it (dropping one hangs up its shell).
+        // Not one this list puts in another window: a move hands them over, and
+        // an update sent before the move landed must not hang them up.
         let live: HashSet<&str> = self
-            .slots
+            .repo_slots
             .iter()
             .filter(|s| !matches!(s.slot.state, SlotState::Destroying | SlotState::Destroyed))
             .map(|s| s.slot.id.as_str())
@@ -573,25 +596,24 @@ impl RepoState {
                     cx.emit(RepoEvent::Rewound { text, attachments });
                 }
             }
+            UiEvent::AnswerFailed { workflow_id, id } if self.knows(&workflow_id) => {
+                cx.emit(RepoEvent::AnswerFailed(id));
+            }
             UiEvent::ShowFindings { workflow_id } if self.knows(&workflow_id) => {
                 if self.selected_workflow_id().as_deref() == Some(workflow_id.as_str()) {
                     cx.emit(RepoEvent::ShowFindings);
                 }
             }
-            UiEvent::Diff(diff) if self.knows(&diff.request.workflow_id) => {
+            UiEvent::Diff(diff) if self.wants_diff(&diff.request) => {
                 let wf = diff.request.workflow_id.clone();
-                if self.diff_loading.get(&wf) == Some(&diff.request) {
-                    self.diff_loading.remove(&wf);
-                }
+                self.diff_loading.remove(&wf);
+                self.diff_errors.remove(&wf);
                 self.diffs.insert(wf, diff);
                 cx.notify();
             }
-            UiEvent::DiffFailed {
-                workflow_id,
-                message,
-            } if self.knows(&workflow_id) => {
-                self.diff_loading.remove(&workflow_id);
-                self.diff_errors.insert(workflow_id, message);
+            UiEvent::DiffFailed { request, message } if self.wants_diff(&request) => {
+                self.diff_loading.remove(&request.workflow_id);
+                self.diff_errors.insert(request.workflow_id, message);
                 cx.notify();
             }
             UiEvent::ReviewComments {

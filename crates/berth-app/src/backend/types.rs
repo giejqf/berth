@@ -215,6 +215,9 @@ pub struct DiffRequest {
     pub section: Option<u32>,
     /// `(from, to)` refs or tree SHAs for the Custom preset.
     pub custom: Option<(String, String)>,
+    /// Which request this is (the UI numbers them): an answer to one the UI
+    /// has since replaced is dropped, so a slow diff can't cover a newer one.
+    pub ticket: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -449,6 +452,12 @@ pub enum UiEvent {
     OpenReview {
         workflow_id: String,
     },
+    /// An answer (`id`: a question's) or review decisions (a review's) failed
+    /// to reach the agent: the card or tab that sent them unlocks.
+    AnswerFailed {
+        workflow_id: String,
+        id: String,
+    },
     /// A review arrived: show its findings.
     ShowFindings {
         workflow_id: String,
@@ -468,7 +477,7 @@ pub enum UiEvent {
     },
     Diff(Arc<DiffResult>),
     DiffFailed {
-        workflow_id: String,
+        request: DiffRequest,
         message: String,
     },
     ReviewComments {

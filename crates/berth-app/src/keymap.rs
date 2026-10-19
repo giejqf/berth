@@ -678,7 +678,8 @@ pub fn bindings() -> Vec<KeyBinding> {
     }
     // Single keys (A, C, J, /, 1–9…) act on a pane, but a text field or a
     // terminal inside it must get them as typing. macOS sends a key to the
-    // bindings before the text input, so switch them off in those contexts.
+    // bindings before the text input, so switch them off in those contexts;
+    // and in dialogs, so A can't reach the answer card behind one.
     let typed: std::collections::BTreeSet<String> = b
         .iter()
         .filter_map(|binding| match binding.keystrokes() {
@@ -689,7 +690,7 @@ pub fn bindings() -> Vec<KeyBinding> {
         })
         .collect();
     for key in typed {
-        for context in ["Input", "Terminal"] {
+        for context in ["Input", "Terminal", "Dialog"] {
             b.push(KeyBinding::new(&key, gpui::NoAction {}, Some(context)));
         }
     }
@@ -741,6 +742,17 @@ mod tests {
         assert!(resolve("a", &["RepoWindow", "Terminal"]).is_empty());
         assert!(resolve("c", &["RepoWindow", "ReviewPane", "Input"]).is_empty());
         assert!(resolve("tab", &["Root", "RepoWindow", "Terminal"]).is_empty());
+    }
+
+    #[test]
+    fn single_keys_stay_out_of_dialogs() {
+        assert!(resolve("a", &["RepoWindow", "Dialog"]).is_empty());
+        assert!(resolve("r", &["RepoWindow", "EventFlow", "Dialog"]).is_empty());
+        // Dialogs keep their own chords.
+        assert_eq!(
+            resolve("cmd-enter", &["RepoWindow", "Dialog"]),
+            ["berth::Confirm"]
+        );
     }
 
     #[test]

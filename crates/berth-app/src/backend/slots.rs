@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, Result, anyhow};
 use berth_core::ids::{new_id, now_ms, short};
-use berth_core::{Engine, Slot, SlotState, SnapshotKind, Workflow, WorkflowState, paths, prompt};
+use berth_core::{Engine, Slot, SlotState, SnapshotKind, Workflow, paths, prompt};
 use berth_gh::{Gh, ListState, ReviewCommentInput, ReviewSide};
 use berth_git::{LocalGit, SnapshotIndex};
 use berth_protocol::{
@@ -367,7 +367,7 @@ impl Shared {
             self.core()
                 .store
                 .transition_slot(&slot.id, SlotState::Running, None)?;
-            return self.start_workflow(wf).await;
+            return self.start_or_fail(wf).await;
         }
         let script = self.slot_script(&slot)?;
         std::fs::create_dir_all(paths::slot_state_dir(&slot.id))?;
@@ -399,7 +399,7 @@ impl Shared {
                 return Err(anyhow!(message));
             }
         }
-        self.start_workflow(wf).await
+        self.start_or_fail(wf).await
     }
 
     /// After `create`: while the script's optional `slot.sh status` says the
@@ -439,6 +439,28 @@ impl Shared {
         }
     }
 
+    /// [`Self::start_workflow`], and if it fails (the first snapshot, the skill
+    /// install, the sidecar), say so on the workflow and settle it, so it shows
+    /// Failed instead of starting forever; the next prompt tries again.
+    async fn start_or_fail(self: &Arc<Self>, wf: &Workflow) -> Result<()> {
+        let started = self.start_workflow(wf).await;
+        if let Err(e) = &started {
+            let message = format!("The agent did not start: {e:#}");
+            self.retire_session(&wf.id);
+            let fx = {
+                let mut core = self.core();
+                let super::Core { store, engine } = &mut *core;
+                engine.sidecar_exited(store, &wf.id, Some(&message))
+            };
+            match fx {
+                Ok(fx) => self.run_effects(&wf.id, fx),
+                Err(e) => tracing::error!(error = %e, "settling a failed start"),
+            }
+            self.emit_workflow(&wf.id);
+        }
+        started
+    }
+
     /// Snapshot the checkout, start the session, and send the origin turn.
     async fn start_workflow(self: &Arc<Self>, wf: &Workflow) -> Result<()> {
         let slot = self.core().store.slot(&wf.slot_id)?;
@@ -465,14 +487,23 @@ impl Shared {
     }
 
     pub(super) async fn destroy_slot(self: &Arc<Self>, slot_id: &str) -> Result<()> {
-        let (slot, active) = {
+        let (slot, active, all) = {
             let core = self.core();
             (
                 core.store.slot(slot_id)?,
                 core.store.active_workflow(slot_id)?,
+                core.store.workflows_for_slot(slot_id)?,
             )
         };
-        if let Some(wf) = &active {
+        // Its `create` (or `status` wait) is still running: destroying now
+        // would leave whatever it makes with no slot to clean it up.
+        if slot.state == SlotState::Creating {
+            return Err(anyhow!(
+                "The slot is still being created; destroy it once it is ready."
+            ));
+        }
+        // No agent outlives its slot, whichever of its workflows it served.
+        for wf in &all {
             let session = lock(&self.sessions).remove(&wf.id);
             if let Some(s) = session {
                 s.shutdown().await;
@@ -486,28 +517,35 @@ impl Shared {
             Ok(script) => script.destroy().await.map_err(anyhow::Error::from),
             Err(e) => Err(e),
         };
-        {
-            let core = self.core();
+        let closed = {
+            let mut core = self.core();
+            let super::Core { store, engine } = &mut *core;
             match &result {
                 Ok(()) => {
-                    core.store
-                        .transition_slot(slot_id, SlotState::Destroyed, None)?;
+                    store.transition_slot(slot_id, SlotState::Destroyed, None)?;
                     let _ = std::fs::remove_dir_all(paths::slot_state_dir(slot_id));
                 }
                 Err(e) => {
-                    core.store.transition_slot(
+                    store.transition_slot(
                         slot_id,
                         SlotState::Failed,
                         Some(&format!("destroy failed: {e}")),
                     )?;
                 }
             }
-            if let Some(wf) = &active {
-                core.store
-                    .set_workflow_error(&wf.id, Some("Slot destroyed before an outcome."))?;
-                core.store
-                    .set_workflow_state(&wf.id, WorkflowState::Closed)?;
+            // Its open workflow closes the way any does: open round ended,
+            // running subagents cancelled (§5.4).
+            match &active {
+                Some(wf) => {
+                    let fx = engine.close_for_reuse(store, &wf.id)?;
+                    store.set_workflow_error(&wf.id, Some("Slot destroyed before an outcome."))?;
+                    Some((wf.id.clone(), fx))
+                }
+                None => None,
             }
+        };
+        if let Some((wf, fx)) = closed {
+            self.run_effects(&wf, fx);
         }
         self.emit_slots(&slot.repo_id);
         if let Some(wf) = active {
@@ -541,6 +579,15 @@ impl Shared {
         if !approved {
             reply(None);
             return Ok(());
+        }
+        // The agent may have stopped waiting (interrupted, or its session
+        // ended): it was told no, so nothing is made.
+        let waiting = session.is_some()
+            && self.core().store.workflow(workflow_id)?.state == berth_core::WorkflowState::Running;
+        if !waiting {
+            return Err(anyhow!(
+                "The agent stopped waiting for that slot, so none was created."
+            ));
         }
         let repo_id = self.repo_of_workflow(workflow_id)?;
         let origin = self.slot_request_origin(workflow_id, &request)?;

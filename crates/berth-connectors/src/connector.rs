@@ -351,12 +351,19 @@ impl Connector {
         })?;
         let stdin = fs::read(path)?;
         // `name` is restricted to [A-Za-z0-9._-], so single quotes are safe.
+        // The skill is Berth's, not the work's: git ignores it (the repo's
+        // `info/exclude`), so it never shows in a diff or lands in a commit;
+        // a copy the repo commits itself is left alone.
         let script = format!(
             "set -eu\n\
-             d='.claude/skills/{name}'\n\
-             mkdir -p \"$d\"\n\
-             cat > \"$d/{SKILL_FILE}.tmp\"\n\
-             mv -f \"$d/{SKILL_FILE}.tmp\" \"$d/{SKILL_FILE}\"\n",
+             f='.claude/skills/{name}/{SKILL_FILE}'\n\
+             if git ls-files --error-unmatch \"$f\" >/dev/null 2>&1; then cat >/dev/null; exit 0; fi\n\
+             mkdir -p \"$(dirname \"$f\")\"\n\
+             cat > \"$f.tmp\"\n\
+             mv -f \"$f.tmp\" \"$f\"\n\
+             x=$(git rev-parse --git-path info/exclude 2>/dev/null) || exit 0\n\
+             mkdir -p \"$(dirname \"$x\")\"\n\
+             grep -qxF \"/$f\" \"$x\" 2>/dev/null || printf '%s\\n' \"/$f\" >> \"$x\"\n",
             name = self.name,
         );
         Ok(Some(SkillInstall { script, stdin }))

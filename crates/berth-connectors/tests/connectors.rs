@@ -288,6 +288,18 @@ fn skill_install_script_writes_skill() {
 
     let checkout = tmp.path().join("checkout");
     fs::create_dir(&checkout).unwrap();
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(&checkout)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{args:?}");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    git(&["init", "--quiet"]);
     // Run twice: install must be idempotent (overwrite).
     for _ in 0..2 {
         let [sh, flag, script] = install.argv();
@@ -312,6 +324,13 @@ fn skill_install_script_writes_skill() {
         .map(|e| e.unwrap().file_name())
         .collect();
     assert_eq!(leftovers, ["SKILL.md"]);
+    // Git ignores it, once: it never shows in a diff or a commit.
+    assert_eq!(git(&["status", "--porcelain", "--untracked-files=all"]), "");
+    let exclude = fs::read_to_string(checkout.join(".git/info/exclude")).unwrap();
+    assert_eq!(
+        exclude.matches("/.claude/skills/linear/SKILL.md").count(),
+        1
+    );
 }
 
 #[test]

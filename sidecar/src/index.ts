@@ -51,7 +51,11 @@ export async function run(opts: {
 }): Promise<void> {
   const emitter = new NdjsonWriter(opts.output as import("node:stream").Writable);
   const session = new Session({ emitter, log: opts.log, query: opts.query });
-  await readLines(opts.input as import("node:stream").Readable, (line) => {
+  // `session.stop` ends the process as stdin closing does: the app waits for
+  // the exit, and stdin stays open until it gives up.
+  let stopped!: () => void;
+  const stop = new Promise<void>((resolve) => (stopped = resolve));
+  const lines = readLines(opts.input as import("node:stream").Readable, (line) => {
     const msg = parseAppMessage(line);
     if (typeof msg === "string") {
       opts.log.warn({ line: line.slice(0, 200) }, msg);
@@ -60,8 +64,10 @@ export async function run(opts: {
     }
     opts.log.debug({ type: msg.type, id: msg.id }, "app message");
     dispatch(session, msg, emitter);
+    if (msg.type === "session.stop") stopped();
   });
-  // stdin closed: the app is gone or asked us to stop.
+  await Promise.race([lines, stop]);
+  // stdin closed, or the app asked us to stop.
   session.stop();
   await session.done;
 }

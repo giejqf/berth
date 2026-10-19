@@ -2,6 +2,11 @@
 //! composer over the terminal panel | review pane. Dialogs (New workflow,
 //! Settings, ⌘K, confirms) are drawn over it by [`super::modal`].
 
+use std::cell::Cell;
+use std::collections::VecDeque;
+use std::rc::Rc;
+
+use berth_protocol::SlotRequest;
 use std::time::{Duration, Instant};
 
 use berth_protocol::DiffPreset;
@@ -70,6 +75,10 @@ pub struct RepoWindow {
     /// A dismissed dialog fading out, and when it was dismissed.
     closing: Option<(AnyView, Instant)>,
     focus: FocusHandle,
+    /// The agent's slot request on screen (its workflow and answer), and the
+    /// ones that arrived while it was (§5.2 `request_slot`).
+    slot_request: Option<(String, Rc<SlotRequestAnswer>)>,
+    queued_requests: VecDeque<(String, SlotRequest)>,
     /// The terminal panel: shown, collapsed to its header, its height, maximized.
     terminal_open: bool,
     terminal_collapsed: bool,
@@ -113,6 +122,7 @@ impl RepoWindow {
         cx.subscribe_in(&state, window, Self::on_repo_event)
             .detach();
         cx.observe_in(&state, window, |this, _, window, cx| {
+            this.drop_stale_slot_request(window, cx);
             let shown = this.terminal_slot.clone();
             this.sync_terminal(cx);
             if this.terminal_focused
@@ -156,6 +166,8 @@ impl RepoWindow {
             rail_override: None,
             modal: None,
             closing: None,
+            slot_request: None,
+            queued_requests: VecDeque::new(),
             focus,
             terminal_open: false,
             terminal_collapsed: false,
@@ -392,6 +404,10 @@ impl RepoWindow {
         match event {
             RepoEvent::OpenReview => self.set_review(true, cx),
             RepoEvent::ShowFindings => self.show_findings(None, window, cx),
+            RepoEvent::AnswerFailed(id) => {
+                self.flow.update(cx, |f, cx| f.unsend(id, cx));
+                self.review.update(cx, |r, cx| r.unsend(id, cx));
+            }
             RepoEvent::TerminalSpec { slot_id, result } => match result {
                 Ok(spec) => self.start_terminal(slot_id, spec, window, cx),
                 Err(message) => {
@@ -434,40 +450,76 @@ impl RepoWindow {
                 workflow_id,
                 request,
             } => {
-                let backend = self.state.read(cx).backend.clone();
-                let (wf, req) = (workflow_id.clone(), request.clone());
-                let (no_backend, no_wf, no_req) = (backend.clone(), wf.clone(), req.clone());
-                let body = vec![
-                    SharedString::from(req.name.clone()),
-                    SharedString::from(req.purpose.clone()),
-                    "Approving creates a new slot with its own workflow. This workflow stays here."
-                        .into(),
-                ];
-                let dialog = cx.new(|cx| {
-                    ConfirmDialog::new(
-                        "The agent wants a new slot",
-                        body,
-                        "Create slot",
-                        move |_, _| {
-                            backend.send(Command::ResolveSlotRequest {
-                                workflow_id: wf.clone(),
-                                request: req.clone(),
-                                approved: true,
-                            });
-                        },
-                        cx,
-                    )
-                    .cancel("Decline", move |_, _| {
-                        no_backend.send(Command::ResolveSlotRequest {
-                            workflow_id: no_wf.clone(),
-                            request: no_req.clone(),
-                            approved: false,
-                        });
-                    })
-                });
-                self.open_modal(dialog, window, cx);
+                self.queued_requests
+                    .push_back((workflow_id.clone(), request.clone()));
+                self.next_slot_request(window, cx);
             }
         }
+    }
+
+    /// Show the next queued slot request, unless one is on screen. The agent
+    /// waits on it: whatever closes the dialog without an answer declines it.
+    fn next_slot_request(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        // One at a time, and after a dialog already open (its input is kept).
+        if self.slot_request.is_some() || self.modal.is_some() {
+            return;
+        }
+        // Skip requests whose agent stopped waiting while they were queued.
+        let next = loop {
+            match self.queued_requests.pop_front() {
+                Some((wf, req)) if self.agent_running(&wf, cx) => break Some((wf, req)),
+                Some(_) => {}
+                None => break None,
+            }
+        };
+        let Some((wf, req)) = next else {
+            return;
+        };
+        let answer = Rc::new(SlotRequestAnswer {
+            backend: self.state.read(cx).backend.clone(),
+            workflow_id: wf.clone(),
+            request: req.clone(),
+            answered: Cell::new(false),
+        });
+        let (yes, no) = (answer.clone(), answer.clone());
+        let body = vec![
+            SharedString::from(req.name.clone()),
+            SharedString::from(req.purpose.clone()),
+            "Approving creates a new slot with its own workflow. This workflow stays here.".into(),
+        ];
+        let dialog = cx.new(|cx| {
+            ConfirmDialog::new(
+                "The agent wants a new slot",
+                body,
+                "Create slot",
+                move |_, _| yes.answer(true),
+                cx,
+            )
+            .cancel("Decline", move |_, _| no.answer(false))
+        });
+        self.open_modal(dialog, window, cx);
+        self.slot_request = Some((wf, answer));
+    }
+
+    /// The request's agent stopped waiting (its round ended): its dialog goes,
+    /// with nothing to send.
+    fn drop_stale_slot_request(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let Some((wf, answer)) = &self.slot_request else {
+            return;
+        };
+        if !self.agent_running(wf, cx) {
+            answer.answered.set(true);
+            self.close_modal(window, cx);
+        }
+    }
+
+    /// Whether workflow `wf`'s agent is mid-round (so still waiting on a request).
+    fn agent_running(&self, wf: &str, cx: &Context<'_, Self>) -> bool {
+        self.state.read(cx).repo_slots.iter().any(|e| {
+            e.workflow
+                .as_ref()
+                .is_some_and(|w| w.id == wf && w.state == berth_core::WorkflowState::Running)
+        })
     }
 
     /// Show `view` over the window; it closes itself with `DismissEvent`.
@@ -477,6 +529,10 @@ impl RepoWindow {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        // The agent's slot request stays on top until it is answered.
+        if self.slot_request.is_some() {
+            return;
+        }
         let sub = cx.subscribe_in(&view, window, |this, view, _: &DismissEvent, window, cx| {
             // Only the dialog on screen closes; one it replaced may still say so.
             if this
@@ -500,6 +556,10 @@ impl RepoWindow {
         {
             self.closing = Some((view, Instant::now()));
         }
+        // A slot request closed without an answer (the scrim) is declined
+        // when its dialog goes; a queued one shows now.
+        self.slot_request = None;
+        self.next_slot_request(window, cx);
         self.focus.focus(window, cx);
         cx.notify();
     }
@@ -1247,4 +1307,33 @@ fn drop_overlay(t: &Tokens, label: String, target: bool) -> gpui::AnyElement {
 fn clamp_terminal(h: Pixels, window: &Window) -> Pixels {
     let max = (window.viewport_size().height - px(260.)).max(px(TERMINAL_MIN_H));
     h.clamp(px(TERMINAL_MIN_H), max)
+}
+
+/// The answer to the agent's `request_slot`: sent once; if its dialog goes
+/// without one (the scrim, a closed window), it is a decline, so the agent
+/// never waits on a dialog that is gone.
+struct SlotRequestAnswer {
+    backend: crate::backend::BackendHandle,
+    workflow_id: String,
+    request: SlotRequest,
+    answered: Cell<bool>,
+}
+
+impl SlotRequestAnswer {
+    fn answer(&self, approved: bool) {
+        if self.answered.replace(true) {
+            return;
+        }
+        self.backend.send(Command::ResolveSlotRequest {
+            workflow_id: self.workflow_id.clone(),
+            request: self.request.clone(),
+            approved,
+        });
+    }
+}
+
+impl Drop for SlotRequestAnswer {
+    fn drop(&mut self) {
+        self.answer(false);
+    }
 }

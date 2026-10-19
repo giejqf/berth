@@ -300,6 +300,20 @@ fn reviews_wait_for_a_decision_on_every_finding() {
         store.workflow(&wf).unwrap().state,
         WorkflowState::AwaitingAnswer
     );
+    // The app checks before it starts an agent: no prompt while it waits, and
+    // checking the decisions records nothing.
+    assert!(Engine::check_prompt(&store, &wf).is_err());
+    let both = [
+        (FindingAction::Fix, None),
+        (FindingAction::Decide, Some("keep it".to_owned())),
+    ];
+    let (_, decided) = Engine::decided_review(&store, &wf, "r1", &both).unwrap();
+    assert_eq!(decided.findings[1].note.as_deref(), Some("keep it"));
+    assert!(Engine::decided_review(&store, &wf, "r1", &both[..1]).is_err());
+    let NodePayload::Review(stored) = store.review_node(&wf, "r1").unwrap().unwrap().payload else {
+        panic!("not a review")
+    };
+    assert!(stored.answered_at.is_none() && stored.findings[0].choice.is_none());
     let facts = store.workflow_facts(&wf).unwrap();
     assert_eq!(facts.review.map(|(_, n)| n), Some(2));
     assert!(facts.question_at.is_none());
@@ -1178,4 +1192,63 @@ fn a_claude_code_session_becomes_a_workflow_that_resumes_it() {
         sub.turn_text
             .contains("Earlier messages ran in `/repo` (branch `main`)")
     );
+}
+
+#[test]
+fn rewinding_past_a_reopen_keeps_the_new_checkout() {
+    let (store, mut engine, wf) = setup();
+    let home = store.workflow(&wf).unwrap().slot_id;
+    engine.session_started(&wf);
+    engine.submit_prompt(&store, &wf, "zero", vec![]).unwrap();
+    engine
+        .apply(&store, &wf, &entry(1, "assistant", "u0"))
+        .unwrap();
+    engine
+        .apply(&store, &wf, &ended(TerminalKind::WriteSummary, None))
+        .unwrap();
+    let one = engine.submit_prompt(&store, &wf, "one", vec![]).unwrap();
+    engine
+        .apply(&store, &wf, &entry(1, "assistant", "u1"))
+        .unwrap();
+    engine
+        .apply(&store, &wf, &ended(TerminalKind::WriteSummary, None))
+        .unwrap();
+    // Opened in another slot from the history, then on with a prompt.
+    let other = second_slot(&store, &home);
+    store
+        .set_workflow_state(&wf, WorkflowState::Closed)
+        .unwrap();
+    engine.reopen(&store, &wf, &other).unwrap();
+    engine.submit_prompt(&store, &wf, "two", vec![]).unwrap();
+    engine
+        .apply(&store, &wf, &entry(2, "assistant", "u2"))
+        .unwrap();
+    engine
+        .apply(&store, &wf, &ended(TerminalKind::WriteSummary, None))
+        .unwrap();
+
+    // Back to before "one": the move stays, and this checkout gets a new start.
+    let (_, fx) = engine.rewind(&store, &wf, &one.node.id).unwrap();
+    assert!(fx.iter().any(|e| matches!(
+        e,
+        Effect::Snapshot {
+            kind: SnapshotKind::Start,
+            ..
+        }
+    )));
+    let kinds: Vec<&str> = store
+        .workflow_view(&wf)
+        .unwrap()
+        .nodes
+        .iter()
+        .map(|n| n.payload.kind().as_str())
+        .collect();
+    assert_eq!(kinds, ["origin", "prompt", "reopened", "rewind"]);
+    // The next prompt tells the agent both.
+    let sub = engine
+        .submit_prompt(&store, &wf, "one again", vec![])
+        .unwrap();
+    assert!(sub.turn_text.contains("reopened in another checkout"));
+    assert!(sub.turn_text.contains("rewound"));
+    assert!(sub.turn_text.ends_with("one again"));
 }

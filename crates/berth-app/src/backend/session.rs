@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
-use berth_core::{AnswerDelivery, Effect, WorkflowState, prompt};
+use berth_core::{AnswerDelivery, Effect, Engine, WorkflowState, prompt};
 use berth_protocol::{
     AppToSidecar, ConnectorSkill, FindingAction, QuestionAnswer, ReviewAnswer, SessionResume,
     SessionStart, SessionTurn, TurnAttachment,
@@ -162,8 +162,46 @@ impl Shared {
         self.core().engine.session_started(&wf.id);
         session.send(msg)?;
         lock(&self.sessions).insert(wf.id.clone(), session.clone());
-        tokio::spawn(self.clone().pump(wf.id.clone(), events));
+        tokio::spawn(self.clone().pump(wf.id.clone(), session.clone(), events));
         Ok(session)
+    }
+
+    /// Whether `session` is still the workflow's live session (a newer one may
+    /// have replaced it, or it was retired).
+    fn is_current(&self, workflow_id: &str, session: &Arc<Session>) -> bool {
+        lock(&self.sessions)
+            .get(workflow_id)
+            .is_some_and(|s| Arc::ptr_eq(s, session))
+    }
+
+    /// The workflow is done with its sidecar (closed, or moved): stop it.
+    pub(super) fn retire_session(self: &Arc<Self>, workflow_id: &str) {
+        let session = lock(&self.sessions).remove(workflow_id);
+        if let Some(s) = session {
+            tokio::spawn(async move { s.shutdown().await });
+        }
+    }
+
+    /// After handing `session` a turn or an answer: if it died meanwhile (its
+    /// exit was already settled), settle the round just opened too, or the
+    /// workflow would stay Running with no agent behind it.
+    fn settle_if_gone(self: &Arc<Self>, workflow_id: &str, session: &Arc<Session>) {
+        if self.is_current(workflow_id, session) {
+            return;
+        }
+        let fx = {
+            let mut core = self.core();
+            let super::Core { store, engine } = &mut *core;
+            engine.sidecar_exited(
+                store,
+                workflow_id,
+                Some("The agent session ended before your message reached it; send it again."),
+            )
+        };
+        match fx {
+            Ok(fx) => self.run_effects(workflow_id, fx),
+            Err(e) => tracing::error!(error = %e, "settling a gone session failed"),
+        }
     }
 
     pub(super) async fn send_prompt(
@@ -172,6 +210,8 @@ impl Shared {
         text: &str,
         attachments: &[std::path::PathBuf],
     ) -> Result<()> {
+        // Refused before an agent starts for it.
+        Engine::check_prompt(&self.core().store, workflow_id)?;
         let session = self.ensure_session(workflow_id).await?;
         let slot = {
             let core = self.core();
@@ -201,6 +241,7 @@ impl Shared {
             text: submission.turn_text,
             attachments: images,
         }))?;
+        self.settle_if_gone(workflow_id, &session);
         self.emit_workflow(workflow_id);
         self.emit_comments(workflow_id);
         Ok(())
@@ -212,6 +253,7 @@ impl Shared {
         question_id: &str,
         text: &str,
     ) -> Result<()> {
+        Engine::open_question(&self.core().store, workflow_id, question_id)?;
         let session = self.ensure_session(workflow_id).await?;
         let delivery = {
             let mut core = self.core();
@@ -219,6 +261,7 @@ impl Shared {
             engine.answer(store, workflow_id, question_id, text)?
         };
         Self::deliver(&session, delivery)?;
+        self.settle_if_gone(workflow_id, &session);
         self.emit_workflow(workflow_id);
         Ok(())
     }
@@ -229,6 +272,7 @@ impl Shared {
         review_id: &str,
         choices: &[(FindingAction, Option<String>)],
     ) -> Result<()> {
+        Engine::decided_review(&self.core().store, workflow_id, review_id, choices)?;
         let session = self.ensure_session(workflow_id).await?;
         let delivery = {
             let mut core = self.core();
@@ -236,6 +280,7 @@ impl Shared {
             engine.answer_review(store, workflow_id, review_id, choices)?
         };
         Self::deliver(&session, delivery)?;
+        self.settle_if_gone(workflow_id, &session);
         self.emit_workflow(workflow_id);
         Ok(())
     }
@@ -327,17 +372,30 @@ impl Shared {
         Ok(())
     }
 
+    /// Apply what `session`'s sidecar sends. Once the session is no longer the
+    /// workflow's (rewound, reused, moved, retired), what it still sends is
+    /// dropped, and its exit settles nothing: a newer session owns the workflow.
     async fn pump(
         self: Arc<Self>,
         workflow_id: String,
+        session: Arc<Session>,
         mut events: UnboundedReceiver<SidecarEvent>,
     ) {
         while let Some(event) = events.recv().await {
             match event {
                 SidecarEvent::Message(msg) => {
+                    if !self.is_current(&workflow_id, &session) {
+                        tracing::debug!(
+                            kind = msg.body.type_name(),
+                            "message from a retired sidecar"
+                        );
+                        continue;
+                    }
                     if let berth_protocol::SidecarToApp::SessionModels(m) = &msg.body {
                         self.remember_models(&m.models);
                     }
+                    let round_ended =
+                        matches!(msg.body, berth_protocol::SidecarToApp::RoundEnded(_));
                     let result = {
                         let mut core = self.core();
                         let super::Core { store, engine } = &mut *core;
@@ -349,12 +407,35 @@ impl Shared {
                             tracing::error!(error = %e, kind = msg.body.type_name(), "apply failed");
                         }
                     }
+                    // The round that recorded the Outcome is over: a closed
+                    // workflow keeps no agent running.
+                    let closed = round_ended
+                        && self
+                            .core()
+                            .store
+                            .workflow(&workflow_id)
+                            .is_ok_and(|w| w.state == WorkflowState::Closed);
+                    if closed {
+                        self.retire_session(&workflow_id);
+                    }
                 }
                 SidecarEvent::ProtocolError { line, error } => {
                     tracing::warn!(%error, line = %line.chars().take(200).collect::<String>(), "sidecar protocol error");
                 }
                 SidecarEvent::Exited { code, stderr_tail } => {
-                    lock(&self.sessions).remove(&workflow_id);
+                    let current = {
+                        let mut sessions = lock(&self.sessions);
+                        let current = sessions
+                            .get(&workflow_id)
+                            .is_some_and(|s| Arc::ptr_eq(s, &session));
+                        if current {
+                            sessions.remove(&workflow_id);
+                        }
+                        current
+                    };
+                    if !current {
+                        break;
+                    }
                     let error = (code != Some(0)).then(|| {
                         let tail: String = stderr_tail
                             .lines()

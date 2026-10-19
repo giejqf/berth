@@ -2,6 +2,8 @@
 //! agent's options (click, 1–9, ↑↓) or write your own answer, then Answer.
 //! An option written "Label — explanation" shows as two lines.
 
+use std::collections::HashSet;
+
 use berth_protocol::Question;
 use gpui::{
     App, AppContext as _, BoxShadow, ClickEvent, Context, Entity, FocusHandle, Focusable,
@@ -26,7 +28,9 @@ pub struct AnswerCard {
     selected: Option<usize>,
     input: Entity<InputState>,
     focus: FocusHandle,
-    sent: bool,
+    /// Questions whose answer went out (until the flow moves on, or the send
+    /// fails): switching slots and back can't answer twice.
+    sent: HashSet<String>,
 }
 
 /// `(label, description)` of an option.
@@ -64,7 +68,7 @@ impl AnswerCard {
             selected: None,
             input,
             focus: cx.focus_handle(),
-            sent: false,
+            sent: HashSet::new(),
         }
     }
 
@@ -86,13 +90,19 @@ impl AnswerCard {
         self.workflow_id = workflow_id.to_owned();
         self.question = question.cloned();
         self.selected = question.filter(|q| !q.options.is_empty()).map(|_| 0);
-        self.sent = false;
         self.input
             .update(cx, |i, cx| i.set_value(String::new(), window, cx));
         if question.is_some() {
             self.focus(window, cx);
         }
         cx.notify();
+    }
+
+    /// Its answer to `question_id` did not go out: answer again.
+    pub fn unsend(&mut self, question_id: &str, cx: &mut Context<'_, Self>) {
+        if self.sent.remove(question_id) {
+            cx.notify();
+        }
     }
 
     /// Focus the card (the options), or the text field when there are none.
@@ -133,15 +143,15 @@ impl AnswerCard {
         let Some(q) = self.question.clone() else {
             return;
         };
-        if self.sent || text.trim().is_empty() {
+        if self.sent.contains(&q.question_id) || text.trim().is_empty() {
             return;
         }
         self.backend.send(Command::Answer {
             workflow_id: self.workflow_id.clone(),
-            question_id: q.question_id,
+            question_id: q.question_id.clone(),
             text,
         });
-        self.sent = true;
+        self.sent.insert(q.question_id.clone());
         self.input
             .update(cx, |i, cx| i.set_value(String::new(), window, cx));
         cx.notify();
@@ -189,6 +199,7 @@ impl Render for AnswerCard {
         let Some(q) = self.question.clone() else {
             return div().into_any_element();
         };
+        let sent = self.sent.contains(&q.question_id);
         let card_focused = self.focus.is_focused(window);
         let keyboard = card_focused && window.last_input_was_keyboard();
         let input_focused = self.input.read(cx).focus_handle(cx).is_focused(window);
@@ -196,7 +207,7 @@ impl Render for AnswerCard {
 
         let mut options = div().flex().flex_col().gap(px(6.));
         for (i, option) in q.options.iter().enumerate() {
-            let selected = self.selected == Some(i) && !self.sent;
+            let selected = self.selected == Some(i) && !sent;
             let (label, desc) = split_option(option);
             let (hover_bg, hover_border) = (t.raised, t.border_strong);
             options = options.child(
@@ -286,8 +297,8 @@ impl Render for AnswerCard {
                 .child(kbd("↩"))
                 .child(" to answer")
         };
-        let ready = !self.sent
-            && (self.selected.is_some() || !self.input.read(cx).value().trim().is_empty());
+        let ready =
+            !sent && (self.selected.is_some() || !self.input.read(cx).value().trim().is_empty());
 
         div()
             .id("answer-card")
@@ -353,10 +364,10 @@ impl Render for AnswerCard {
                         Btn::new("answer-submit")
                             .primary()
                             .size(Size::S32)
-                            .label(if self.sent { "Answering…" } else { "Answer" })
+                            .label(if sent { "Answering…" } else { "Answer" })
                             .hint("↩")
-                            .loading(self.sent)
-                            .disabled(!ready && !self.sent)
+                            .loading(sent)
+                            .disabled(!ready && !sent)
                             .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
                     ),
             )

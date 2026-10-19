@@ -195,6 +195,13 @@ impl FindingsView {
         cx.notify();
     }
 
+    /// Its decisions on `review_id` did not go out: they can be sent again.
+    pub fn unsend(&mut self, review_id: &str, cx: &mut Context<'_, Self>) {
+        if self.sent.remove(review_id) {
+            cx.notify();
+        }
+    }
+
     /// The shown review, and whether its decisions can still be made.
     fn current(&self, cx: &App) -> Option<(Review, bool)> {
         let view = self.state.read(cx).selected_view()?;

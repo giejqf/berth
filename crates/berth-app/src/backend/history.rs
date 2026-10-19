@@ -201,6 +201,14 @@ impl Shared {
             self.run_effects(&old.id, fx);
         }
         let target = self.refresh_branch(&target).await?;
+        // A workflow moving in brings no agent along: its next session starts
+        // in this slot's checkout.
+        if let HistoryOpen::Workflow(id) = &open {
+            let session = lock(&self.sessions).remove(id);
+            if let Some(s) = session {
+                s.shutdown().await;
+            }
+        }
         let (workflow_id, fx) = {
             let mut core = self.core();
             let super::Core { store, engine } = &mut *core;

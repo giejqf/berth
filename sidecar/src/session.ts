@@ -321,6 +321,8 @@ export class Session implements ToolHost {
         for (const p of pending.values()) p.reject(new Error("Session ended."));
         pending.clear();
       }
+      for (const p of this.slotRequests.values()) p.resolve({ approved: false });
+      this.slotRequests.clear();
     }
   }
 

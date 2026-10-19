@@ -90,6 +90,11 @@ impl FlowView {
         cx.notify();
     }
 
+    /// An answer that did not go out: its card unlocks.
+    pub fn unsend(&mut self, question_id: &str, cx: &mut Context<'_, Self>) {
+        self.answer.update(cx, |a, cx| a.unsend(question_id, cx));
+    }
+
     pub fn focus_answer(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         self.answer.update(cx, |a, cx| a.focus(window, cx));
     }

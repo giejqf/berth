@@ -55,6 +55,21 @@ describe("stdio NDJSON loop", () => {
     await done;
     expect(q.last().closed).toBe(true);
   });
+
+  it("ends on session.stop without waiting for stdin to close", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const q = fakeQueryFn();
+    const done = run({ input, output, log: silentLogger, query: q.fn });
+    input.write(
+      `${JSON.stringify({ id: "1", type: "session.start", workflow_id: "w", cwd: "/tmp", system_prompt: "", env: {}, allowed_tools: [], connector_skills: [] })}\n`,
+    );
+    await flush();
+    input.write(`${JSON.stringify({ id: "2", type: "session.stop" })}\n`);
+    await done;
+    expect(q.last().closed).toBe(true);
+    expect(input.writableEnded).toBe(false);
+  });
 });
 
 describe("helpers", () => {

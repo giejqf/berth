@@ -215,7 +215,9 @@ request_slot    { name, purpose, from_follow_up?: string }
   → BLOCKS until the app sends slot_request.resolved. Not terminal.
      App shows a confirmation; on approve, creates the slot and a new workflow
      (the current workflow does NOT move). Returns { approved, slot_id? } as soon as
-     the slot row exists; provisioning continues in the background.
+     the slot row exists; provisioning continues in the background. Closing the
+     confirmation any other way declines; it waits behind an open dialog, nothing
+     replaces it, and it goes away (unanswered) when the round ends (ADR 0013).
 
 present_artifact { path, title, description? }
   → non-blocking, not terminal, not available to subagents. Emits Artifact node.
@@ -404,8 +406,12 @@ Reference implementations in `slots/examples/`: `worktree` (git worktree, host),
 `Failed` (create or destroy failed; detail shown; the only way out is Destroying).
 Creating lasts through `create` and, for scripts with `status`, until it says
 ready; the rail shows its detail ("Creating slot… · Booting the VM").
-A closed workflow releases its slot (`Running → Ready`). Destroying a slot with an
-open workflow closes that workflow.
+A closed workflow releases its slot (`Running → Ready`) and its sidecar is stopped
+once the round that closed it ends. Destroying a slot with an open workflow closes
+that workflow as reuse does (open round ended, running subagents cancelled) and
+stops every sidecar the slot's workflows had. A slot cannot be destroyed while it is
+Creating. If the agent fails to start in a ready slot, the workflow shows the error
+and settles to idle; the next prompt tries again (ADR 0013).
 
 **Reuse** (ADR 0006): a new workflow can start in an existing slot instead of a new
 one. `Slot::reuse` decides: Ready or Running with its latest workflow closed, idle or
@@ -499,7 +505,8 @@ bin/…              the CLI (any language)
 
 On session start the app installs each connector's `SKILL.md` into the slot's
 `.claude/skills/<name>/SKILL.md` (via `exec`) and adds the binary dir to the agent's
-PATH. Both the agent and the app may invoke connector binaries (e.g. "New workflow
+PATH. The installed file is listed in the repo's `info/exclude`, so it never shows
+in a diff or lands in a commit; a copy the repo tracks itself is left alone. Both the agent and the app may invoke connector binaries (e.g. "New workflow
 from Linear issue" calls `linear-cli` to list issues).
 
 `[origin].list` makes the binary print a JSON array of `{ ref, title, body?, url? }`;
@@ -622,8 +629,11 @@ The sidecar is stateless across restarts: all state lives in SQLite on the app s
 `system_prompt` is appended to `BERTH_SYSTEM_PROMPT`. `raw.event.seq` restarts with
 each sidecar process. `terminal_kind` ∈ `write_summary | record_outcome | unterminated |
 interrupted | error`. `round.ended.cost_usd` is the delta of the SDK's cumulative cost.
-stdin EOF stops the session; stdout carries protocol lines only (logs go to
-`~/Library/Logs/Berth/sidecar.log`).
+stdin EOF or `session.stop` stops the session and ends the process; stdout carries
+protocol lines only (logs go to `~/Library/Logs/Berth/sidecar.log`). A sidecar is
+tied to its workflow only while it is that workflow's live session: once replaced
+(rewind, reuse, a move) or stopped, what it still sends is dropped and its exit
+settles nothing (ADR 0013).
 
 ---
 
@@ -719,7 +729,7 @@ stdin EOF stops the session; stdout carries protocol lines only (logs go to
   `SHORTCUTS` list is what ⌘K shows). Single letters (J/K, E, D, A, C, /, 1–9) act
   on the focused pane and never type into a field: macOS offers keys to bindings
   first, so `keymap::bindings` switches every single-key binding off (`NoAction`) in
-  the `Input` and `Terminal` contexts. ⌘-chords are global. Closing a dialog must
+  the `Input`, `Terminal` and `Dialog` contexts (so A can't answer behind a dialog). ⌘-chords are global. Closing a dialog must
   leave focus inside the window (the repo window refocuses itself when focus is lost),
   or bindings stop dispatching.
 - **Terminals** (§11.1): a bottom panel under the flow and composer, as in VS Code.

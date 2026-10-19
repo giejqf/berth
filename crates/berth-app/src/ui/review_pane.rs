@@ -139,6 +139,11 @@ impl ReviewPane {
         cx.notify();
     }
 
+    /// Review decisions that did not go out: the Findings tab unlocks.
+    pub fn unsend(&mut self, review_id: &str, cx: &mut Context<'_, Self>) {
+        self.findings.update(cx, |f, cx| f.unsend(review_id, cx));
+    }
+
     /// What takes the keys on the Findings tab.
     pub fn findings_focus(&self, cx: &gpui::App) -> FocusHandle {
         self.findings.read(cx).focus_handle(cx)

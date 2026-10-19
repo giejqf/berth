@@ -339,7 +339,26 @@ impl Engine {
                 "the agent's transcript before this message is missing".to_owned(),
             )
         })?;
+        // A move into this slot (opened from history) among what goes is kept:
+        // the conversation still continues in this checkout.
+        let moved = store
+            .nodes(workflow_id)?
+            .into_iter()
+            .rev()
+            .find_map(|n| match n.payload {
+                NodePayload::Reopened(r) if n.seq > node.seq => Some(r),
+                _ => None,
+            });
         let dropped = store.drop_from(workflow_id, node.seq, &round.id, round.section_no)?;
+        if let Some(r) = &moved {
+            store.insert_node(
+                workflow_id,
+                None,
+                None,
+                NodePayload::Reopened(r.clone()),
+                None,
+            )?;
+        }
         store.insert_node(
             workflow_id,
             None,
@@ -359,6 +378,16 @@ impl Engine {
             workflow_id: workflow_id.to_owned(),
             activity: None,
         }];
+        // The section's start snapshot is the old checkout's: diffs from here
+        // compare against this one.
+        if moved.is_some() {
+            store.delete_snapshots(workflow_id, round.section_no, SnapshotKind::Start)?;
+            fx.push(Effect::Snapshot {
+                workflow_id: workflow_id.to_owned(),
+                section_no: round.section_no,
+                kind: SnapshotKind::Start,
+            });
+        }
         if reopened {
             store.reopen_workflow(workflow_id)?;
             fx.push(Effect::StateChanged {
@@ -386,6 +415,95 @@ impl Engine {
     }
 
     /// Record the user's Prompt (with any pending review comments) and open a round.
+    /// Whether the workflow takes a prompt now; [`Self::submit_prompt`]'s
+    /// check, so the app can ask before it starts an agent for one.
+    pub fn check_prompt(store: &Store, workflow_id: &str) -> Result<()> {
+        let wf = store.workflow(workflow_id)?;
+        if wf.state.accepts_prompt() {
+            Ok(())
+        } else {
+            Err(CoreError::InvalidTransition(format!(
+                "workflow {workflow_id} is {}; it does not accept a prompt now",
+                wf.state
+            )))
+        }
+    }
+
+    /// The question, if it is still waiting for its answer ([`Self::answer`]'s check).
+    pub fn open_question(
+        store: &Store,
+        workflow_id: &str,
+        question_id: &str,
+    ) -> Result<(Node, Question)> {
+        let node = store
+            .question_node(workflow_id, question_id)?
+            .ok_or_else(|| CoreError::NotFound {
+                kind: "question",
+                id: question_id.to_owned(),
+            })?;
+        let NodePayload::Question(q) = node.payload.clone() else {
+            return Err(CoreError::Corrupt {
+                what: "question node",
+                value: node.id,
+            });
+        };
+        if q.answer.is_some() {
+            return Err(CoreError::InvalidTransition(format!(
+                "question {question_id} already answered"
+            )));
+        }
+        Ok((node, q))
+    }
+
+    /// The review with `choices` applied, if it is still waiting and they are a
+    /// decision on every finding ([`Self::answer_review`]'s check). Writes nothing.
+    pub fn decided_review(
+        store: &Store,
+        workflow_id: &str,
+        review_id: &str,
+        choices: &[(FindingAction, Option<String>)],
+    ) -> Result<(Node, Review)> {
+        let node =
+            store
+                .review_node(workflow_id, review_id)?
+                .ok_or_else(|| CoreError::NotFound {
+                    kind: "review",
+                    id: review_id.to_owned(),
+                })?;
+        let NodePayload::Review(mut r) = node.payload.clone() else {
+            return Err(CoreError::Corrupt {
+                what: "review node",
+                value: node.id,
+            });
+        };
+        if r.answered_at.is_some() {
+            return Err(CoreError::InvalidTransition(format!(
+                "review {review_id} already answered"
+            )));
+        }
+        if choices.len() != r.findings.len() {
+            return Err(CoreError::InvalidTransition(format!(
+                "review {review_id} has {} findings, got {} decisions",
+                r.findings.len(),
+                choices.len()
+            )));
+        }
+        for (i, (f, (choice, note))) in r.findings.iter_mut().zip(choices).enumerate() {
+            let note = note.as_deref().map(str::trim).filter(|n| !n.is_empty());
+            if *choice == FindingAction::Decide && note.is_none() {
+                return Err(CoreError::InvalidTransition(format!(
+                    "finding {} is yours to decide: say what to do",
+                    i + 1
+                )));
+            }
+            f.choice = Some(*choice);
+            f.note = note
+                .filter(|_| *choice == FindingAction::Decide)
+                .map(str::to_owned);
+        }
+        Ok((node, r))
+    }
+
     pub fn submit_prompt(
         &mut self,
         store: &Store,
@@ -393,13 +511,8 @@ impl Engine {
         text: &str,
         attachments: Vec<berth_protocol::FileRef>,
     ) -> Result<Submission> {
+        Self::check_prompt(store, workflow_id)?;
         let wf = store.workflow(workflow_id)?;
-        if !wf.state.accepts_prompt() {
-            return Err(CoreError::InvalidTransition(format!(
-                "workflow {workflow_id} is {}; it does not accept a prompt now",
-                wf.state
-            )));
-        }
         let pending = store.pending_review_comments(workflow_id)?;
         let review_comments: Vec<ReviewComment> = pending
             .iter()
@@ -412,21 +525,23 @@ impl Engine {
         };
         let mut turn_text = serialize_prompt(&prompt);
         // The first prompt after a rewind or a reopen tells the agent where
-        // its files stand.
+        // its files stand: every rewind and reopen since the last prompt, in
+        // order.
         let nodes = store.nodes(workflow_id)?;
-        let since = nodes.iter().rev().find(|n| {
-            matches!(
-                n.payload,
-                NodePayload::Prompt(_) | NodePayload::Rewind(_) | NodePayload::Reopened(_)
-            )
-        });
-        let note = since.and_then(|n| match &n.payload {
-            NodePayload::Rewind(_) => Some(crate::prompt::REWIND_NOTE.to_owned()),
-            NodePayload::Reopened(r) => Some(crate::prompt::reopen_note(r)),
-            _ => None,
-        });
-        if let Some(note) = note {
-            turn_text = format!("{note}\n\n{turn_text}");
+        let since = nodes
+            .iter()
+            .rposition(|n| matches!(n.payload, NodePayload::Prompt(_)))
+            .map_or(0, |i| i + 1);
+        let notes: Vec<String> = nodes[since..]
+            .iter()
+            .filter_map(|n| match &n.payload {
+                NodePayload::Rewind(_) => Some(crate::prompt::REWIND_NOTE.to_owned()),
+                NodePayload::Reopened(r) => Some(crate::prompt::reopen_note(r)),
+                _ => None,
+            })
+            .collect();
+        if !notes.is_empty() {
+            turn_text = format!("{}\n\n{turn_text}", notes.join("\n\n"));
         }
         let round = store.insert_round(workflow_id, wf.section_no, now_ms())?;
         let node = store.insert_node(
@@ -470,23 +585,7 @@ impl Engine {
         question_id: &str,
         text: &str,
     ) -> Result<AnswerDelivery> {
-        let node = store
-            .question_node(workflow_id, question_id)?
-            .ok_or_else(|| CoreError::NotFound {
-                kind: "question",
-                id: question_id.to_owned(),
-            })?;
-        let NodePayload::Question(mut q) = node.payload else {
-            return Err(CoreError::Corrupt {
-                what: "question node",
-                value: node.id,
-            });
-        };
-        if q.answer.is_some() {
-            return Err(CoreError::InvalidTransition(format!(
-                "question {question_id} already answered"
-            )));
-        }
+        let (node, mut q) = Self::open_question(store, workflow_id, question_id)?;
         q.answer = Some(text.to_owned());
         q.answered_at = Some(now_ms());
         store.update_node_payload(&node.id, &NodePayload::Question(q.clone()))?;
@@ -518,44 +617,7 @@ impl Engine {
         review_id: &str,
         choices: &[(FindingAction, Option<String>)],
     ) -> Result<AnswerDelivery> {
-        let node =
-            store
-                .review_node(workflow_id, review_id)?
-                .ok_or_else(|| CoreError::NotFound {
-                    kind: "review",
-                    id: review_id.to_owned(),
-                })?;
-        let NodePayload::Review(mut r) = node.payload else {
-            return Err(CoreError::Corrupt {
-                what: "review node",
-                value: node.id,
-            });
-        };
-        if r.answered_at.is_some() {
-            return Err(CoreError::InvalidTransition(format!(
-                "review {review_id} already answered"
-            )));
-        }
-        if choices.len() != r.findings.len() {
-            return Err(CoreError::InvalidTransition(format!(
-                "review {review_id} has {} findings, got {} decisions",
-                r.findings.len(),
-                choices.len()
-            )));
-        }
-        for (i, (f, (choice, note))) in r.findings.iter_mut().zip(choices).enumerate() {
-            let note = note.as_deref().map(str::trim).filter(|n| !n.is_empty());
-            if *choice == FindingAction::Decide && note.is_none() {
-                return Err(CoreError::InvalidTransition(format!(
-                    "finding {} is yours to decide: say what to do",
-                    i + 1
-                )));
-            }
-            f.choice = Some(*choice);
-            f.note = note
-                .filter(|_| *choice == FindingAction::Decide)
-                .map(str::to_owned);
-        }
+        let (node, mut r) = Self::decided_review(store, workflow_id, review_id, choices)?;
         r.answered_at = Some(now_ms());
         store.update_node_payload(&node.id, &NodePayload::Review(r.clone()))?;
         let delivery = if self.live(workflow_id).blocked.remove(review_id) {
