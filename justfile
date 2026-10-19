@@ -19,12 +19,15 @@ setup:
     @echo "ready: just dev"
 
 # Run the app in debug with a dev sidecar (tsx). Pass a repo path to open it.
+# It runs from target/debug/Berth.app so macOS shows Berth's name and icon.
 dev *args: sidecar-build fetch-connectors
-    cargo run -p berth-app -- {{args}}
+    cargo build -p berth-app
+    scripts/dev-app.sh target/debug/berth {{args}}
 
 # Run the app with the devtools autopilot/screenshot feature.
 dev-tools *args: sidecar-build fetch-connectors
-    cargo run -p berth-app --features devtools -- {{args}}
+    cargo build -p berth-app --features devtools
+    scripts/dev-app.sh target/debug/berth {{args}}
 
 # Rust + sidecar tests.
 test:
@@ -57,3 +60,7 @@ fetch-connectors:
 # Release build + sidecar bundle into dist/Berth.app.
 bundle:
     ./scripts/bundle.sh
+
+# Drag-to-install disk image: dist/Berth-<version>-<arch>.dmg (bundles first).
+dmg:
+    scripts/dmg.sh

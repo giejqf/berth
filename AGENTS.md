@@ -87,7 +87,12 @@ berth/
 ├── Cargo.toml                   workspace
 ├── justfile                     dev commands
 ├── scripts/bundle.sh            `just bundle`: dist/Berth.app
+├── scripts/dmg.sh               `just dmg`: dist/Berth-<version>-<arch>.dmg (§12.1)
+├── scripts/icon.sh              packaging/AppIcon.svg → .icns
+├── scripts/dev-app.sh           runs `just dev` builds inside target/debug/Berth.app
 ├── scripts/fetch-connectors.sh  pinned CLIs for the built-in connectors
+├── packaging/                   AppIcon.svg; dmg/ (window background, dmgbuild settings)
+├── .github/workflows/           ci.yml (checks), release.yml (disk images)
 ├── .githooks/                   installed by `just setup`
 ├── crates/
 │   ├── berth-app/               GPUI binary: windows, views, actions, theming
@@ -98,14 +103,16 @@ berth/
 │   │     src/ui/kit.rs          design-system primitives (type, chips, buttons, fields, icons)
 │   │     src/ui/terminal/       the terminal panel: PTY + grid (alacritty_terminal), keys, colors
 │   │     assets/icons/berth/    the design's Lucide glyphs at their stroke widths (ISC)
-│   │     assets/fonts/          IBM Plex Sans + JetBrains Mono (OFL); assets/logo.png
+│   │     assets/fonts/          IBM Plex Sans + JetBrains Mono (OFL)
+│   │     assets/logo.svg        the mark, the source of the app icon; assets/logo.png
 │   ├── berth-core/              domain model, workflow state machine, SQLite store
 │   ├── berth-protocol/          serde types for app<->sidecar messages; ts-rs exports
 │   ├── berth-sidecar-client/    spawn/supervise sidecar, NDJSON framing, request ids
 │   ├── berth-slot/              slot contract, script runner, lifecycle, placement
 │   ├── berth-git/               tree snapshots, diff parsing, worktree helpers
 │   ├── berth-gh/                `gh --json` wrapper, GitHub entity sync
-│   └── berth-connectors/        connector discovery, skill install, Keychain secrets
+│   ├── berth-connectors/        connector discovery, skill install, Keychain secrets
+│   └── berth-svg/               build tooling: renders packaging/*.svg to PNG (resvg)
 ├── sidecar/
 │   ├── package.json             pnpm, Node 22+, TypeScript strict
 │   ├── build.mjs                esbuild bundle -> dist/sidecar.mjs (+ `--with-claude`)
@@ -703,6 +710,7 @@ just lint           fmt check + clippy -D warnings (with and without devtools) +
 just fetch-connectors  pinned CLIs for the built-in connectors (connectors/*/bin/)
 just gen-protocol   regenerate sidecar/src/protocol.ts from berth-protocol
 just bundle         release build + sidecar bundle into dist/Berth.app
+just dmg            bundle, then the drag-to-install disk image in dist/
 ```
 
 Conventions:
@@ -722,11 +730,33 @@ When adding a feature, ask in order: does it expose code editing (reject)? does 
 an agent backend (reject)? does it belong in the sidecar (probably not)? which crate
 owns it? what node type does it produce?
 
+### 12.1 Packaging
+
+- `just dev` and `just dev-tools` run the binary from `target/debug/Berth.app` (only
+  Info.plist, the icon and a hard link; identifier `com.berth.app.dev`), so macOS
+  shows Berth's name and icon. The app still finds its sidecar, connectors and slot
+  types in the workspace: it uses `Contents/Resources/…` only where they exist.
+- The icon comes from SVG: `crates/berth-app/assets/logo.svg` is the mark
+  (traced from the original logo.png), `packaging/AppIcon.svg` sets it on Apple's
+  1024 grid, and `scripts/icon.sh` renders it with `berth-svg` + `iconutil`. No
+  generated image is checked in.
+- `scripts/dmg.sh` (`just dmg`) lays out the disk image with
+  [dmgbuild](https://github.com/dmgbuild/dmgbuild), which writes the window's
+  .DS_Store itself, so it needs no Finder and runs on CI. It is installed in
+  `target/dmgbuild` from hash-pinned wheels (`packaging/dmg/requirements.txt`) and
+  runs on any Python 3.9+, macOS's own included.
+- `.github/workflows/release.yml` builds one image per CPU (`macos-15`,
+  `macos-15-intel`) on every run, checks it, and on a `v*` tag (which must match the
+  `berth-app` version) drafts a GitHub release with both attached.
+- The bundle is signed ad hoc (`BERTH_SIGN_IDENTITY` picks a real identity) and not
+  notarized, so the first launch of a downloaded copy needs System Settings ›
+  Privacy & Security › Open Anyway (§13).
+
 ---
 
 ## 13. Deferred / not in v1
 
-- Code signing, notarization, auto-update.
+- Developer ID signing, notarization, auto-update (the disk image is signed ad hoc).
 - Multiple workflows per slot concurrently.
 - Non-git slots.
 - Any OS other than macOS.

@@ -1,0 +1,85 @@
+name: Release
+
+# Builds the drag-to-install disk images (scripts/dmg.sh), one per CPU:
+# every run uploads them as artifacts; a v* tag also drafts a GitHub release
+# with them attached, to review and publish by hand.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dmg:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15 # Apple silicon
+          - runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: sidecar/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: sidecar/pnpm-lock.yaml
+      - name: Tag matches the app version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 |
+            jq -r '.packages[] | select(.name == "berth-app") | .version')
+          test "v$version" = "$GITHUB_REF_NAME" ||
+            { echo "tag $GITHUB_REF_NAME does not match berth-app $version"; exit 1; }
+      - run: scripts/dmg.sh
+      - name: Check the image
+        run: |
+          dmg=$(ls dist/Berth-*.dmg)
+          hdiutil verify "$dmg"
+          mnt=$(mktemp -d)
+          hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mnt"
+          trap 'hdiutil detach "$mnt"' EXIT
+          test -L "$mnt/Applications"
+          codesign --verify --strict "$mnt/Berth.app"
+          test -f "$mnt/Berth.app/Contents/Resources/Berth.icns"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dmg-${{ matrix.runner }}
+          path: dist/Berth-*.dmg
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: dmg
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dmg-*
+          merge-multiple: true
+          path: dist
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat >notes.md <<'NOTES'
+          Open the disk image for your Mac (`arm64` for Apple silicon, `x86_64` for Intel)
+          and drag Berth into Applications.
+
+          Berth isn't notarized yet, so macOS stops the first launch: open
+          System Settings › Privacy & Security and choose **Open Anyway** (or run
+          `xattr -dr com.apple.quarantine /Applications/Berth.app`).
+          NOTES
+          gh release create "$GITHUB_REF_NAME" dist/Berth-*.dmg \
+            --repo "$GITHUB_REPOSITORY" --draft --title "Berth ${GITHUB_REF_NAME#v}" \
+            --notes-file notes.md --generate-notes

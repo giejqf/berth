@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build dist/Berth.app: release binary, sidecar bundle, reference slot types,
-# built-in connectors.
-# Code signing and notarization are deferred (AGENTS.md §13).
+# built-in connectors, the icon. Signed ad hoc, or with BERTH_SIGN_IDENTITY;
+# Developer ID signing and notarization are deferred (AGENTS.md §13).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -23,7 +23,7 @@ cp sidecar/dist/sidecar.mjs "$app/Contents/Resources/sidecar/"
 cp -R slots/examples/worktree slots/examples/docker slots/examples/vm "$app/Contents/Resources/slots/"
 cp -R connectors/linear connectors/posthog "$app/Contents/Resources/connectors/"
 rm -f "$app"/Contents/Resources/connectors/*/bin/.version
-[ -f assets/Berth.icns ] && cp assets/Berth.icns "$app/Contents/Resources/"
+scripts/icon.sh "$app/Contents/Resources/Berth.icns"
 
 cat >"$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -44,5 +44,10 @@ cat >"$app/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+
+# Seal the bundle (the linker signed only the binary), so it stays intact
+# when it is copied out of the disk image.
+codesign --force --sign "${BERTH_SIGN_IDENTITY:--}" "$app"
+codesign --verify --strict "$app"
 
 echo "built $app ($version)"

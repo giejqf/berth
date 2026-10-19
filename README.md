@@ -14,6 +14,14 @@ anything a `slot.sh` script can produce.
 - Claude Code signed in (`claude` → `/login`), or `ANTHROPIC_API_KEY`
 - `gh auth login` for GitHub features
 
+## Install
+
+Download the disk image for your Mac from
+[Releases](https://github.com/berth-app/berth/releases) (`arm64` for Apple silicon,
+`x86_64` for Intel), open it, and drag Berth into Applications. Berth isn't
+notarized yet, so the first launch needs System Settings › Privacy & Security ›
+**Open Anyway**.
+
 ## Quick start
 
 ```sh
@@ -39,7 +47,8 @@ More reference types (docker, Lima VM) live in [`slots/examples/`](slots/example
 just test       # Rust + sidecar tests
 just lint       # fmt, clippy -D warnings, eslint + tsc
 just test-e2e   # one real Claude Code round (spends tokens)
-just bundle     # dist/Berth.app (unsigned)
+just bundle     # dist/Berth.app (signed ad hoc)
+just dmg        # dist/Berth-<version>-<arch>.dmg, drag-to-install
 ```
 
 `just dev-tools` builds with the `devtools` feature: set `BERTH_DEV_SCRIPT` to a

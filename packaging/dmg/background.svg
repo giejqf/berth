@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 660 400" width="660" height="400">
+  <title>Install Berth</title>
+  <!-- The disk image's window (660×400 points; scripts/dmg.sh renders it at
+       1x and 2x). Finder draws the icons on it: Berth.app at (170, 180),
+       Applications at (490, 180), 128 points, labels below. -->
+  <defs>
+    <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fbf1c7"/>
+      <stop offset="1" stop-color="#f2e5bc"/>
+    </linearGradient>
+  </defs>
+  <rect width="660" height="400" fill="url(#ground)"/>
+  <g fill="none" stroke="#bdae93" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M272 180H384"/>
+    <path d="M370 166L386 180L370 194"/>
+  </g>
+  <text x="330" y="322" text-anchor="middle" font-family="IBM Plex Sans" font-size="15" fill="#665c54">Drag Berth into your Applications folder</text>
+</svg>

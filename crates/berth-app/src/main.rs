@@ -135,15 +135,23 @@ fn main() {
 /// own `AppleFontSmoothing` default, so set it in Berth's domain.
 fn disable_font_smoothing() {
     let exe = std::env::current_exe().ok();
-    let bundled = exe.as_ref().and_then(|e| {
-        e.parent()?
-            .parent()?
-            .join("Info.plist")
-            .exists()
-            .then_some(())
-    });
-    let domain = match (bundled, &exe) {
-        (Some(()), _) => "com.berth.app".to_owned(),
+    // In a bundle (the release one, or `just dev`'s) the domain is its identifier.
+    let bundle_id = exe
+        .as_ref()
+        .and_then(|e| Some(e.parent()?.parent()?.join("Info")))
+        .filter(|info| info.with_extension("plist").exists())
+        .and_then(|info| {
+            let out = std::process::Command::new("/usr/bin/defaults")
+                .arg("read")
+                .arg(&info)
+                .arg("CFBundleIdentifier")
+                .output()
+                .ok()?;
+            let id = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+            (out.status.success() && !id.is_empty()).then_some(id)
+        });
+    let domain = match (bundle_id, &exe) {
+        (Some(id), _) => id,
         (None, Some(e)) => e
             .file_name()
             .map_or_else(|| "berth".to_owned(), |n| n.to_string_lossy().into_owned()),
