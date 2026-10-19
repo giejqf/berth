@@ -626,9 +626,12 @@ stdin EOF stops the session; stdout carries protocol lines only (logs go to
   window under 1400px. The review pane opens automatically on `Summary` and `Outcome`.
 - The rail groups slots by what they need: **Needs you** (a question, an idle workflow
   awaiting its next prompt, a failed slot), **Working**, **Ready to review** (idle after
-  a summary), **Done**. The second line says what is happening (the live round's
-  current step from `berth_core::activity`, "Asked a question · 40s ago", "Review: 5
-  findings to decide · 1m ago", "Committed · 1 follow-up"). The footer shows Claude Code / GitHub CLI status (`backend/env.rs`).
+  a summary), **Done**. Each slot's mark is a dot in its group's color; a busy slot's
+  (its agent working, or the slot being created or destroyed) is the working spinner,
+  in the rail and its collapsed strip alike. The second line says what is happening
+  (the live round's current step from `berth_core::activity`, "Asked a question · 40s
+  ago", "Review: 5 findings to decide · 1m ago", "Committed · 1 follow-up"). The footer
+  shows Claude Code / GitHub CLI status (`backend/env.rs`).
 - A slot's first line is its workflow's title, or the name the user gave it: **Rename
   slot** (R with the rail focused, a double-click, the row's context menu, the flow's
   More menu, ⌘K) stores `slots.custom_name`; an empty name goes back to the title.

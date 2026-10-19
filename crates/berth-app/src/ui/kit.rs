@@ -67,8 +67,8 @@ pub fn icon(name: &str, size: f32, color: Hsla) -> Svg {
         .text_color(color)
 }
 
-/// The working spinner: a ring with a gap, 1 turn per second. `size` is 10,
-/// 12 or 14.
+/// The working spinner: a 2px ring with a gap, 1 turn per second. `size` is
+/// 8, 10, 12 or 14 (8 and 10 sit where the rail's status dots do).
 pub fn spinner(id: impl Into<ElementId>, size: u32, color: Hsla) -> AnyElement {
     svg()
         .path(SharedString::from(format!(
@@ -89,16 +89,6 @@ pub fn spinner(id: impl Into<ElementId>, size: u32, color: Hsla) -> AnyElement {
 
 pub fn dot(size: f32, color: Hsla) -> Div {
     div().size(px(size)).flex_none().rounded_full().bg(color)
-}
-
-/// A hollow status dot (working).
-pub fn ring_dot(size: f32, color: Hsla) -> Div {
-    div()
-        .size(px(size))
-        .flex_none()
-        .rounded_full()
-        .border_2()
-        .border_color(color)
 }
 
 /// 1×18 divider between header controls.

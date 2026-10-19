@@ -8,7 +8,7 @@ use std::time::Instant;
 use berth_core::{SlotState, WorkflowState};
 use berth_protocol::OutcomeKind;
 use gpui::{
-    App, BoxShadow, Context, Div, Entity, FocusHandle, Focusable, FontWeight, Hsla,
+    AnyElement, App, BoxShadow, Context, Div, Entity, FocusHandle, Focusable, FontWeight, Hsla,
     InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Window, div, point, prelude::FluentBuilder as _,
     px,
@@ -18,7 +18,7 @@ use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::tooltip::Tooltip;
 
 use super::kit::{
-    Btn, Size, TypeExt as _, ago, caption, count_badge, dot, dur, now_ms, plural, ring_dot,
+    Btn, Size, TypeExt as _, ago, caption, count_badge, dot, dur, now_ms, plural, spinner,
 };
 use super::motion;
 use super::repo_state::{RailGroup, rail_group};
@@ -167,16 +167,22 @@ pub fn rail_lines(entry: &SlotEntry, state: &RepoState) -> (String, String) {
     (title, sub)
 }
 
-/// The status mark for a rail group: filled, ring, or danger.
-fn status_dot(t: &Tokens, entry: &SlotEntry, size: f32) -> Div {
+/// The status mark for a rail group: filled, danger, or, while the slot is
+/// busy (its agent working, the slot being created or destroyed), the
+/// working spinner: the ring of a waiting dot, turning. `size` is 8 or 10.
+fn status_dot(t: &Tokens, entry: &SlotEntry, size: f32) -> AnyElement {
     if entry.slot.state == SlotState::Failed {
-        return dot(size, t.danger);
+        return dot(size, t.danger).into_any_element();
     }
     match rail_group(entry) {
-        RailGroup::NeedsYou => dot(size, t.attention),
-        RailGroup::Working => ring_dot(size, t.accent),
-        RailGroup::Review => dot(size, t.accent),
-        RailGroup::Done => dot(size, t.done),
+        RailGroup::NeedsYou => dot(size, t.attention).into_any_element(),
+        RailGroup::Working => spinner(
+            SharedString::from(format!("rail-spin-{}-{size}", entry.slot.id)),
+            size as u32,
+            t.accent,
+        ),
+        RailGroup::Review => dot(size, t.accent).into_any_element(),
+        RailGroup::Done => dot(size, t.done).into_any_element(),
     }
 }
 
