@@ -413,6 +413,83 @@ pub struct SessionCost {
     pub total_usd: f64,
 }
 
+/// What a part of the context window is (the SDK's `/context` rows): `used`
+/// content occupies it, `free` is what is left, `buffer` is the reserve kept
+/// for auto-compaction, `deferred` tool schemas are outside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextKind {
+    Used,
+    Free,
+    Buffer,
+    Deferred,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ContextCategory {
+    /// As Claude Code names it ("Messages", "System tools").
+    pub name: String,
+    #[ts(type = "number")]
+    pub tokens: u64,
+    pub kind: ContextKind,
+}
+
+/// The session's context window, part by part (`getContextUsage`): sent after
+/// each `result`, after a compaction, and when a resumed session starts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SessionContext {
+    pub categories: Vec<ContextCategory>,
+}
+
+/// Where a plan limit stands: under it, past a warning threshold, or reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum QuotaStatus {
+    Allowed,
+    Warning,
+    Rejected,
+}
+
+/// One of the plan's usage limits.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct QuotaWindow {
+    /// The SDK's name for the window: `five_hour`, `seven_day`,
+    /// `seven_day_opus`, `seven_day_sonnet`, `extra_usage`, or `model:<label>`
+    /// for a per-model weekly window.
+    pub key: String,
+    /// The server's label, for windows it names (per-model ones).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub label: Option<String>,
+    /// Percent used, 0–100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub utilization: Option<f64>,
+    /// When it resets, in unix milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub resets_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub status: Option<QuotaStatus>,
+}
+
+/// The account's plan limits (ADR 0014). `complete` answers come from the
+/// SDK's usage report and replace what the app knew; others update the
+/// windows they carry (a `rate_limit_event`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct SessionQuota {
+    pub complete: bool,
+    /// Plan limits apply: a claude.ai subscription, not an API key or a cloud
+    /// provider.
+    pub available: bool,
+    /// The subscription (`pro`, `max`, `team`, `enterprise`), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub plan: Option<String>,
+    pub windows: Vec<QuotaWindow>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct SessionError {
     pub message: String,
@@ -455,6 +532,10 @@ pub enum SidecarToApp {
     SessionModels(SessionModels),
     #[serde(rename = "sessions.listed")]
     SessionsListed(SessionsListed),
+    #[serde(rename = "session.context")]
+    SessionContext(SessionContext),
+    #[serde(rename = "session.quota")]
+    SessionQuota(SessionQuota),
 }
 
 impl SidecarToApp {
@@ -477,6 +558,8 @@ impl SidecarToApp {
             Self::SessionError(_) => "session.error",
             Self::SessionModels(_) => "session.models",
             Self::SessionsListed(_) => "sessions.listed",
+            Self::SessionContext(_) => "session.context",
+            Self::SessionQuota(_) => "session.quota",
         }
     }
 }

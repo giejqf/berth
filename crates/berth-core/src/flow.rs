@@ -276,6 +276,7 @@ mod tests {
             branches,
             rounds: vec![],
             snapshots: vec![],
+            context: None,
         }
     }
 

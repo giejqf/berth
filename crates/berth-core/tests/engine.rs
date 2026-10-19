@@ -1252,3 +1252,27 @@ fn rewinding_past_a_reopen_keeps_the_new_checkout() {
     assert!(sub.turn_text.contains("rewound"));
     assert!(sub.turn_text.ends_with("one again"));
 }
+
+#[test]
+fn context_reports_are_kept_on_the_workflow() {
+    let (store, mut engine, wf) = setup();
+    assert!(store.workflow_view(&wf).unwrap().context.is_none());
+    let report = SidecarToApp::SessionContext(berth_protocol::SessionContext {
+        categories: vec![
+            berth_protocol::ContextCategory {
+                name: "Messages".into(),
+                tokens: 30_000,
+                kind: berth_protocol::ContextKind::Used,
+            },
+            berth_protocol::ContextCategory {
+                name: "Free space".into(),
+                tokens: 170_000,
+                kind: berth_protocol::ContextKind::Free,
+            },
+        ],
+    });
+    let fx = engine.apply(&store, &wf, &report).unwrap();
+    assert!(fx.iter().any(|e| matches!(e, Effect::FlowChanged { .. })));
+    let context = store.workflow_view(&wf).unwrap().context.unwrap();
+    assert_eq!((context.used(), context.window()), (30_000, 200_000));
+}

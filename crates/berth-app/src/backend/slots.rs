@@ -106,6 +106,7 @@ impl Shared {
         // A window that opens after launch missed the first report of these.
         self.emit_settings()?;
         self.emit_models();
+        self.emit_quota();
         Ok(())
     }
 

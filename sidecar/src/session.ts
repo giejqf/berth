@@ -39,6 +39,7 @@ import type {
   WriteSummaryInput,
 } from "./protocol.js";
 import { AsyncQueue } from "./queue.js";
+import { type ContextReport, type UsageReport, contextCategories, quotaFromRateLimit, quotaFromUsage } from "./usage.js";
 import { berthToolName, createBerthServer, type CallContext, type ToolHost, type ToolOutcome } from "./tools.js";
 
 export const BERTH_SYSTEM_PROMPT = `You are working inside Berth. The user never reads or edits code: they follow your decisions, answer your questions, review diffs, and ship pull requests.
@@ -65,6 +66,8 @@ const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"] as co
 type ImageType = (typeof IMAGE_TYPES)[number];
 /** How long a tool handler waits for its tool_use to appear in the stream. */
 const ATTRIBUTION_WAIT_MS = 3000;
+/** How often the plan's usage is asked for, at most (it is account-wide). */
+const QUOTA_EVERY_MS = 60_000;
 
 /** The subset of the SDK's `Query` the session uses (lets tests supply a fake). */
 export interface AgentQuery extends AsyncIterable<SDKMessage> {
@@ -73,6 +76,9 @@ export interface AgentQuery extends AsyncIterable<SDKMessage> {
   setModel(model?: string): Promise<void>;
   applyFlagSettings(settings: { effortLevel?: Effort | null }): Promise<void>;
   supportedModels(): Promise<ModelInfo[]>;
+  /** Optional so test fakes may leave them out; the SDK's `Query` has both. */
+  getContextUsage?(opts?: { detail?: "summary" | "full" }): Promise<ContextReport>;
+  usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET?(opts?: { skipBehaviors?: boolean }): Promise<UsageReport>;
 }
 
 const EFFORTS: readonly Effort[] = ["low", "medium", "high", "xhigh", "max"];
@@ -141,6 +147,10 @@ export class Session implements ToolHost {
   private cwd = "";
   private seq = 0;
   private totalUsd = 0;
+  /** A context report is being made; `contextAgain` asks for one more after it. */
+  private contextBusy = false;
+  private contextAgain = false;
+  private quotaAt = -Infinity;
 
   constructor(deps: SessionDeps) {
     this.emitter = deps.emitter;
@@ -342,7 +352,14 @@ export class Session implements ToolHost {
       case "system":
         if (msg.subtype === "init") this.onInit(msg.session_id);
         else if (msg.subtype === "task_notification") this.onTaskNotification(msg);
+        else if (msg.subtype === "compact_boundary") void this.reportContext();
         break;
+      case "rate_limit_event": {
+        const quota = quotaFromRateLimit(msg.rate_limit_info);
+        if (quota) this.emitter.emit({ type: "session.quota", ...quota });
+        void this.reportQuota();
+        break;
+      }
       case "assistant":
         this.onAssistant(msg.message.id, msg.message.content, parent, branch);
         break;
@@ -363,6 +380,51 @@ export class Session implements ToolHost {
     this.claudeSessionId = sessionId;
     this.emitter.emit({ type: "session.started", claude_session_id: sessionId }, this.startReplyTo);
     this.startReplyTo = undefined;
+    // A resumed conversation already fills part of the window.
+    void this.reportContext();
+    void this.reportQuota();
+  }
+
+  /** Tell the app how full the context window is (ADR 0014). One report at a
+   * time; one asked for meanwhile follows it. */
+  private async reportContext(): Promise<void> {
+    const q = this.q;
+    if (!q?.getContextUsage) return;
+    if (this.contextBusy) {
+      this.contextAgain = true;
+      return;
+    }
+    this.contextBusy = true;
+    try {
+      do {
+        this.contextAgain = false;
+        // `summary` answers from the last response's usage: no token-count calls.
+        const r = await q.getContextUsage({ detail: "summary" });
+        this.emitter.emit({ type: "session.context", categories: contextCategories(r) });
+      } while (this.contextAgain);
+    } catch (e) {
+      this.log.warn({ err: e }, "getContextUsage failed");
+    } finally {
+      this.contextBusy = false;
+    }
+  }
+
+  /** Tell the app where the plan's limits stand, at most once a minute. The
+   * SDK marks the call experimental; it is pinned, and without it the app
+   * still has the rate-limit events. */
+  private async reportQuota(): Promise<void> {
+    const q = this.q;
+    const usage = q?.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
+    if (!q || !usage) return;
+    const now = this.now();
+    if (now - this.quotaAt < QUOTA_EVERY_MS) return;
+    this.quotaAt = now;
+    try {
+      const quota = quotaFromUsage(await usage.call(q, { skipBehaviors: true }));
+      if (quota) this.emitter.emit({ type: "session.quota", ...quota });
+    } catch (e) {
+      this.log.warn({ err: e }, "usage report failed");
+    }
   }
 
   private onAssistant(
@@ -441,6 +503,8 @@ export class Session implements ToolHost {
   private onResult(totalUsd: number, isError: boolean): void {
     if (Number.isFinite(totalUsd)) this.totalUsd = totalUsd;
     this.emitter.emit({ type: "session.cost", total_usd: this.totalUsd });
+    void this.reportContext();
+    void this.reportQuota();
     const round = this.round;
     if (!round) return;
     if (round.interrupted) return this.endRound("interrupted");

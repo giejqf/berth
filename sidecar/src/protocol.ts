@@ -324,13 +324,56 @@ last_text?: string, };
 
 export type SessionCost = { total_usd: number, };
 
+export type ContextKind = "used" | "free" | "buffer" | "deferred";
+
+export type ContextCategory = { 
+/**
+ * As Claude Code names it ("Messages", "System tools").
+ */
+name: string, tokens: number, kind: ContextKind, };
+
+export type SessionContext = { categories: Array<ContextCategory>, };
+
+export type QuotaStatus = "allowed" | "warning" | "rejected";
+
+export type QuotaWindow = { 
+/**
+ * The SDK's name for the window: `five_hour`, `seven_day`,
+ * `seven_day_opus`, `seven_day_sonnet`, `extra_usage`, or `model:<label>`
+ * for a per-model weekly window.
+ */
+key: string, 
+/**
+ * The server's label, for windows it names (per-model ones).
+ */
+label?: string, 
+/**
+ * Percent used, 0–100.
+ */
+utilization?: number, 
+/**
+ * When it resets, in unix milliseconds.
+ */
+resets_at?: number, status?: QuotaStatus, };
+
+export type SessionQuota = { complete: boolean, 
+/**
+ * Plan limits apply: a claude.ai subscription, not an API key or a cloud
+ * provider.
+ */
+available: boolean, 
+/**
+ * The subscription (`pro`, `max`, `team`, `enterprise`), when known.
+ */
+plan?: string, windows: Array<QuotaWindow>, };
+
 export type SessionError = { message: string, fatal: boolean, };
 
-export type SidecarToApp = { "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.artifact" } & NodeArtifact | { "type": "node.review" } & NodeReview | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels | { "type": "sessions.listed" } & SessionsListed;
+export type SidecarToApp = { "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.artifact" } & NodeArtifact | { "type": "node.review" } & NodeReview | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels | { "type": "sessions.listed" } & SessionsListed | { "type": "session.context" } & SessionContext | { "type": "session.quota" } & SessionQuota;
 
 export type AppMessage = { id: string, } & ({ "type": "session.start" } & SessionStart | { "type": "session.resume" } & SessionResume | { "type": "session.turn" } & SessionTurn | { "type": "session.interrupt" } | { "type": "session.stop" } | { "type": "question.answer" } & QuestionAnswer | { "type": "review.answer" } & ReviewAnswer | { "type": "slot_request.resolved" } & SlotRequestResolved | { "type": "session.configure" } & SessionConfigure | { "type": "sessions.list" } & SessionsList);
 
-export type SidecarMessage = { id: string, reply_to?: string, } & ({ "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.artifact" } & NodeArtifact | { "type": "node.review" } & NodeReview | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels | { "type": "sessions.listed" } & SessionsListed);
+export type SidecarMessage = { id: string, reply_to?: string, } & ({ "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.artifact" } & NodeArtifact | { "type": "node.review" } & NodeReview | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels | { "type": "sessions.listed" } & SessionsListed | { "type": "session.context" } & SessionContext | { "type": "session.quota" } & SessionQuota);
 
 export const MCP_SERVER_NAME = "berth" as const;
 

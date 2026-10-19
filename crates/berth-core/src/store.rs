@@ -22,6 +22,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0004_workflow_resume_at.sql"),
     include_str!("../migrations/0005_workflow_opened_at.sql"),
     include_str!("../migrations/0006_slot_window.sql"),
+    include_str!("../migrations/0007_workflow_context.sql"),
 ];
 
 pub struct Store {
@@ -818,6 +819,24 @@ impl Store {
         Ok(())
     }
 
+    /// The context window its session last reported (ADR 0014).
+    pub fn workflow_context(&self, id: &str) -> Result<Option<crate::ContextUsage>> {
+        let json: Option<String> = self.conn.query_row(
+            "SELECT context_json FROM workflows WHERE id = ?1",
+            [id],
+            |r| r.get(0),
+        )?;
+        Ok(json.map(|j| serde_json::from_str(&j)).transpose()?)
+    }
+
+    pub fn set_workflow_context(&self, id: &str, context: &crate::ContextUsage) -> Result<()> {
+        self.conn.execute(
+            "UPDATE workflows SET context_json = ?2 WHERE id = ?1",
+            params![id, serde_json::to_string(context)?],
+        )?;
+        Ok(())
+    }
+
     pub fn set_section_no(&self, id: &str, section_no: u32) -> Result<()> {
         self.conn.execute(
             "UPDATE workflows SET section_no = ?2 WHERE id = ?1",
@@ -1605,6 +1624,7 @@ impl Store {
             branches: self.branches(workflow_id)?,
             rounds: self.rounds(workflow_id)?,
             snapshots: self.snapshots(workflow_id)?,
+            context: self.workflow_context(workflow_id)?,
         })
     }
 }

@@ -106,6 +106,12 @@ pub fn typescript() -> String {
         TerminalKind,
         RoundEnded,
         SessionCost,
+        ContextKind,
+        ContextCategory,
+        SessionContext,
+        QuotaStatus,
+        QuotaWindow,
+        SessionQuota,
         SessionError,
         SidecarToApp,
         AppMessage,
@@ -400,6 +406,39 @@ mod tests {
         assert_eq!(l.sessions[0].cwd, None);
         roundtrip_sidecar(&listed);
         assert_eq!(OriginKind::Session.as_str(), "session");
+    }
+
+    #[test]
+    fn usage_on_the_wire() {
+        let ctx: SidecarMessage = serde_json::from_value(serde_json::json!({
+            "id": "c",
+            "type": "session.context",
+            "categories": [
+                {"name": "Messages", "tokens": 41_000, "kind": "used"},
+                {"name": "Free space", "tokens": 126_000, "kind": "free"},
+                {"name": "Autocompact buffer", "tokens": 33_000, "kind": "buffer"}
+            ]
+        }))
+        .unwrap();
+        let SidecarToApp::SessionContext(c) = &ctx.body else {
+            panic!("not session.context");
+        };
+        assert_eq!(c.categories[2].kind, ContextKind::Buffer);
+        roundtrip_sidecar(&ctx);
+        let quota: SidecarMessage = serde_json::from_value(serde_json::json!({
+            "id": "q",
+            "type": "session.quota",
+            "complete": false,
+            "available": true,
+            "windows": [{"key": "five_hour", "utilization": 81.0, "status": "warning"}]
+        }))
+        .unwrap();
+        let SidecarToApp::SessionQuota(q) = &quota.body else {
+            panic!("not session.quota");
+        };
+        assert_eq!(q.windows[0].status, Some(QuotaStatus::Warning));
+        assert_eq!(q.windows[0].resets_at, None);
+        roundtrip_sidecar(&quota);
     }
 
     #[test]

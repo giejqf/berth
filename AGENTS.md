@@ -124,6 +124,7 @@ berth/
 │   ├── src/tools.ts             the "berth" MCP server (app-owned tools)
 │   ├── src/branches.ts          subagent branch tracking from the stream
 │   ├── src/history.ts           the repo's Claude Code sessions (`sessions.list`)
+│   ├── src/usage.ts             context window and plan limits, SDK shapes → protocol
 │   ├── src/ndjson.ts, queue.ts, log.ts
 │   ├── src/protocol.ts          GENERATED from berth-protocol via ts-rs; do not edit
 │   └── test/                    vitest; SDK mocked; e2e.test.ts behind BERTH_E2E=1
@@ -562,7 +563,7 @@ repos            id, path, default_slot_type, created_at
 slots            id, repo_id, type, name, custom_name, state, state_detail, checkout_path, placement, branch,
                  base_ref, created_at, model, effort, window_id
 workflows        id, slot_id, origin_json, state, claude_session_id, section_no, total_cost_usd, last_error,
-                 created_at, closed_at, resume_at, opened_at
+                 created_at, closed_at, resume_at, opened_at, context_json
 rounds           id, workflow_id, section_no, started_at, ended_at, terminal_kind, nudges, cost_usd, duration_ms
 branches         id, workflow_id, spawn_round_id, collect_round_id, parent_branch_id, parent_tool_use_id,
                  agent_name, description, parallel_group, status, spawned_at, collected_at, cost_usd,
@@ -575,7 +576,7 @@ review_comments  id, workflow_id, from_snapshot, to_snapshot, preset, path, side
 gh_entities      id, repo_id, kind, number_or_sha, json, synced_at
 workflow_links   workflow_id, entity_id, role(origin|outcome)
 connectors       name, path, enabled
-settings         key, value          # last_repo, recent_repos, model
+settings         key, value          # last_repo, recent_repos, model, models, quota
 ```
 
 Timestamps are unix epoch milliseconds. `nodes.raw_first/raw_last` are `raw_events.id`
@@ -622,6 +623,8 @@ round.ended      { terminal_kind, cost_usd, duration_ms, nudges, last_text? }
 session.cost     { total_usd }
 session.error    { message, fatal }
 session.models   { models: [{ value, display_name, description, efforts }] }   # supportedModels()
+session.context  { categories: [{ name, tokens, kind: used|free|buffer|deferred }] }   # getContextUsage (ADR 0014)
+session.quota    { complete, available, plan?, windows: [{ key, label?, utilization?, resets_at?, status? }] }   # plan limits
 sessions.listed  { sessions: [{ session_id, title, first_prompt?, cwd?, git_branch?, last_modified }] }   # reply to sessions.list
 ```
 
@@ -739,6 +742,14 @@ settles nothing (ADR 0013).
   **New workflow here** (⌥⌘N, the rail's context menu, More, ⌘K, the menu bar)
   opens it on the selected slot; a closed workflow's composer offers it too, and
   its follow-ups offer **Continue here** beside **Create slot**.
+- **Usage ring** (`ui/usage.rs`, ADR 0014): at the end of the composer's status line,
+  a ring of two arcs: the workflow's context window outside (`workflows.context_json`,
+  reported by its session after each round, each compaction and on resume), the
+  plan's tightest limit inside (account-wide, `settings.quota`; absent where plan
+  limits don't apply, e.g. an API key). Each arc turns the attention color at 75% and
+  danger at 90%; the context percentage stands beside it. Hovering shows the detail
+  card (tokens used of the window, when it compacts, the largest parts; each plan
+  window with its use and reset time); a click keeps it open until the next click.
 - **Model and effort** are per slot (`slots.model`, `slots.effort`; ADR 0007): a chip
   in the composer shows them ("Opus · High", "Default model"); it, ⌘⇧M, ⌘K and the
   menu bar open the picker (`ui/agent_dialog.rs`). They change any time: a live session
@@ -801,7 +812,7 @@ settles nothing (ADR 0013).
   activity, `berth_core::activity`).
 - Feature `devtools` (dev only): `BERTH_DEV_SCRIPT` drives the live UI and
   `BERTH_DEV_SHOTS` receives window screenshots (see `src/devtools.rs`).
-  `BERTH_DEV_SEED=question|working|review|comments|done|findings|empty|welcome` seeds the
+  `BERTH_DEV_SEED=question|working|review|comments|done|findings|usage-api|empty|welcome` seeds the
   design's scenario into a fresh `BERTH_HOME` (`src/seed.rs`), so screenshots line up
   with the design artboards. Use it to check UI changes without a human.
   `BERTH_DEV_SLOW_MOTION=<factor>` stretches every animation so a shot can catch

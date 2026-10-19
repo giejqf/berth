@@ -25,6 +25,7 @@ pub mod rich;
 mod settings;
 mod slot_rail;
 mod terminal;
+mod usage;
 mod welcome;
 pub mod windows;
 
@@ -76,6 +77,8 @@ pub struct Berth {
     welcome: Option<WindowHandle<Root>>,
     /// The models the agent can run on, as the SDK last reported them.
     pub models: Vec<berth_protocol::ModelChoice>,
+    /// The plan's limits, as a session last reported them (ADR 0014).
+    pub quota: Option<berth_core::Quota>,
 }
 
 impl Global for Berth {}
@@ -93,6 +96,7 @@ pub fn init(backend: BackendHandle, events: UnboundedReceiver<UiEvent>, cx: &mut
         repos: HashMap::new(),
         welcome: None,
         models: Vec::new(),
+        quota: None,
     });
     cx.spawn(async move |cx| {
         let mut events = events;
@@ -214,6 +218,10 @@ fn route(event: UiEvent, cx: &mut App) {
         }
         UiEvent::Models(models) => {
             cx.global_mut::<Berth>().models = models;
+            cx.refresh_windows();
+        }
+        UiEvent::Quota(quota) => {
+            cx.global_mut::<Berth>().quota = Some(quota);
             cx.refresh_windows();
         }
         UiEvent::Settings { model, theme } => {

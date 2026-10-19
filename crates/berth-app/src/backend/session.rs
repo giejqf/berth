@@ -391,8 +391,12 @@ impl Shared {
                         );
                         continue;
                     }
-                    if let berth_protocol::SidecarToApp::SessionModels(m) = &msg.body {
-                        self.remember_models(&m.models);
+                    match &msg.body {
+                        berth_protocol::SidecarToApp::SessionModels(m) => {
+                            self.remember_models(&m.models);
+                        }
+                        berth_protocol::SidecarToApp::SessionQuota(q) => self.remember_quota(q),
+                        _ => {}
                     }
                     let round_ended =
                         matches!(msg.body, berth_protocol::SidecarToApp::RoundEnded(_));
@@ -629,6 +633,30 @@ impl Shared {
         Ok(())
     }
 
+    /// Fold a session's report into the plan's limits, keep them for the
+    /// next launch, and show them in every window. They are the account's,
+    /// whichever session reported them.
+    fn remember_quota(&self, report: &berth_protocol::SessionQuota) {
+        let quota = {
+            let core = self.core();
+            let known = saved_quota(&core.store);
+            let quota = berth_core::Quota::apply(known.as_ref(), report, berth_core::ids::now_ms());
+            if let Ok(json) = serde_json::to_string(&quota) {
+                let _ = core.store.set_setting("quota", &json);
+            }
+            quota
+        };
+        self.emit(UiEvent::Quota(quota));
+    }
+
+    /// The plan's limits as last known, before a session of this run reports.
+    pub(super) fn emit_quota(&self) {
+        let saved = saved_quota(&self.core().store);
+        if let Some(quota) = saved {
+            self.emit(UiEvent::Quota(quota));
+        }
+    }
+
     /// The models from the last session, before any session of this run reports them.
     pub(super) fn emit_models(&self) {
         let saved = self.core().store.setting("models").ok().flatten();
@@ -651,4 +679,9 @@ impl Shared {
                 .transition_slot(&slot.id, berth_core::SlotState::Ready, None);
         }
     }
+}
+
+fn saved_quota(store: &berth_core::Store) -> Option<berth_core::Quota> {
+    let json = store.setting("quota").ok().flatten()?;
+    serde_json::from_str(&json).ok()
 }

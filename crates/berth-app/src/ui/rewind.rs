@@ -423,6 +423,7 @@ mod tests {
             branches: vec![],
             rounds: vec![round("r1"), round("r2")],
             snapshots: vec![],
+            context: None,
         };
         assert_eq!(
             dropped(&view, 1, 1),

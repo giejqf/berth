@@ -3,7 +3,8 @@
 //! real git worktrees; the flow is written straight into the store.
 //!
 //! Scenarios: `question` (default), `working`, `review`, `comments`, `done`,
-//! `findings` (the third slot waits on decisions about a code review), `empty`
+//! `findings` (the third slot waits on decisions about a code review),
+//! `usage-api` (`question`, signed in with an API key: no plan limits), `empty`
 //! (a repo without workflows), `welcome` (only recent repositories).
 
 use std::path::{Path, PathBuf};
@@ -360,7 +361,68 @@ pub fn seed(scenario: &str) -> Result<Option<PathBuf>> {
     } else {
         s.store.set_workflow_state(&wc.id, WorkflowState::Running)?;
     }
+    seed_usage(&store, [&wa.id, &wb.id, &wc.id], scenario)?;
     Ok(Some(repo_dir))
+}
+
+/// Context windows for the three workflows (a quarter, about half, and
+/// nearly full) and a Max plan's limits; `usage-api` stands for an API-key
+/// sign-in, where plan limits don't apply.
+fn seed_usage(store: &Store, workflows: [&str; 3], scenario: &str) -> Result<()> {
+    use berth_protocol::{ContextCategory, ContextKind, QuotaWindow, SessionQuota};
+    let now = berth_core::ids::now_ms();
+    let part = |name: &str, tokens: u64, kind| ContextCategory {
+        name: name.into(),
+        tokens,
+        kind,
+    };
+    for (wf, messages) in workflows.into_iter().zip([28_000, 79_000, 141_000]) {
+        let used = 3_100 + 14_600 + 2_400 + 1_900 + messages;
+        let context = berth_core::ContextUsage {
+            categories: vec![
+                part("System prompt", 3_100, ContextKind::Used),
+                part("System tools", 14_600, ContextKind::Used),
+                part("MCP tools", 2_400, ContextKind::Used),
+                part("Skills", 1_900, ContextKind::Used),
+                part("Messages", messages, ContextKind::Used),
+                part("MCP tools (deferred)", 9_800, ContextKind::Deferred),
+                part("Free space", 167_000 - used, ContextKind::Free),
+                part("Autocompact buffer", 33_000, ContextKind::Buffer),
+            ],
+            at: now - 4 * 60_000,
+        };
+        store.set_workflow_context(wf, &context)?;
+    }
+    let hour = 3_600_000;
+    let window = |key: &str, label: Option<&str>, utilization: f64, resets_at: i64| QuotaWindow {
+        key: key.into(),
+        label: label.map(str::to_owned),
+        utilization: Some(utilization),
+        resets_at: Some(resets_at),
+        status: None,
+    };
+    let report = if scenario == "usage-api" {
+        SessionQuota {
+            complete: true,
+            available: false,
+            plan: None,
+            windows: vec![],
+        }
+    } else {
+        SessionQuota {
+            complete: true,
+            available: true,
+            plan: Some("max".into()),
+            windows: vec![
+                window("five_hour", None, 34., now + 2 * hour + 1_500_000),
+                window("seven_day", None, 61., now + 3 * 24 * hour),
+                window("model:Opus", Some("Opus"), 78., now + 3 * 24 * hour),
+            ],
+        }
+    };
+    let quota = berth_core::Quota::apply(None, &report, now - 60_000);
+    store.set_setting("quota", &serde_json::to_string(&quota)?)?;
+    Ok(())
 }
 
 /// The `findings` scenario: the agent migrated the config, reviewed its own

@@ -395,6 +395,8 @@ pub struct WorkflowView {
     pub branches: Vec<Branch>,
     pub rounds: Vec<Round>,
     pub snapshots: Vec<Snapshot>,
+    /// The context window as its session last reported it.
+    pub context: Option<crate::ContextUsage>,
 }
 
 impl WorkflowView {

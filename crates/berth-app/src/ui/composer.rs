@@ -33,6 +33,8 @@ struct Pending {
 
 pub struct Composer {
     state: Entity<RepoState>,
+    /// The context and plan usage ring beside the model chip.
+    usage: Entity<super::usage::UsageMeter>,
     input: Entity<TextareaState>,
     attachments: Vec<Pending>,
     /// Files are being dragged over the composer. Tracked by hand: GPUI's
@@ -61,6 +63,7 @@ impl Composer {
         .detach();
         cx.observe(&state, |_, _, cx| cx.notify()).detach();
         Self {
+            usage: cx.new(|cx| super::usage::UsageMeter::new(state.clone(), cx)),
             state,
             input,
             attachments: Vec::new(),
@@ -531,7 +534,23 @@ impl Render for Composer {
                 this.add_paths(paths.paths(), cx);
                 this.focus(window, cx);
             }))
-            .child(div().ty(ty::META).text_color(t.text2).child(status))
+            // The status, and the usage ring at its end: outside the box,
+            // so it stays readable while the composer is locked.
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .ty(ty::META)
+                            .text_color(t.text2)
+                            .child(status),
+                    )
+                    .child(self.usage.clone()),
+            )
             .when_some(self.notice.clone(), |d, notice| {
                 d.child(div().ty(ty::META).text_color(t.attention).child(notice))
             })

@@ -972,9 +972,20 @@ impl Engine {
                     fatal: e.fatal,
                 });
             }
-            // The models on offer are the app's, not the workflow's: the
-            // backend keeps them. The history comes from a listing sidecar.
-            SidecarToApp::SessionModels(_) | SidecarToApp::SessionsListed(_) => {}
+            SidecarToApp::SessionContext(c) => {
+                let context = crate::ContextUsage {
+                    categories: c.categories.clone(),
+                    at: now_ms(),
+                };
+                store.set_workflow_context(workflow_id, &context)?;
+                fx.push(Effect::FlowChanged { workflow_id: wf_id });
+            }
+            // The models on offer and the plan's limits are the app's, not the
+            // workflow's: the backend keeps them. The history comes from a
+            // listing sidecar.
+            SidecarToApp::SessionModels(_)
+            | SidecarToApp::SessionQuota(_)
+            | SidecarToApp::SessionsListed(_) => {}
         }
         Ok(fx)
     }

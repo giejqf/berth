@@ -6,6 +6,7 @@ import type { Emitter } from "../src/ndjson.js";
 import type { SidecarToApp } from "../src/protocol.js";
 import { AsyncQueue } from "../src/queue.js";
 import type { AgentQuery, QueryFn } from "../src/session.js";
+import type { ContextReport, UsageReport } from "../src/usage.js";
 
 export class RecordingEmitter implements Emitter {
   readonly sent: Array<{ body: SidecarToApp; replyTo?: string }> = [];
@@ -22,6 +23,18 @@ export class RecordingEmitter implements Emitter {
     return this.sent.map((s) => s.body.type).filter((t) => t !== "raw.event");
   }
 }
+
+/** What the fake's usage call answers: a Max plan, extra usage off. */
+export const USAGE_REPORT: UsageReport = {
+  subscription_type: "max",
+  rate_limits_available: true,
+  rate_limits: {
+    five_hour: { utilization: 23, resets_at: "2026-10-20T15:40:00Z" },
+    seven_day: { utilization: 41, resets_at: null },
+    model_scoped: [{ display_name: "Opus", utilization: 12, resets_at: null }],
+    extra_usage: { is_enabled: false, monthly_limit: null, used_credits: null, utilization: null },
+  },
+};
 
 export class FakeQuery implements AgentQuery {
   readonly stream = new AsyncQueue<SDKMessage>();
@@ -86,6 +99,28 @@ export class FakeQuery implements AgentQuery {
 
   supportedModels(): Promise<ModelInfo[]> {
     return Promise.resolve(this.models);
+  }
+
+  contextCalls = 0;
+  context: ContextReport = {
+    categories: [
+      { name: "Messages", tokens: 40_000, color: "", kind: "used" },
+      { name: "Free space", tokens: 127_000, color: "", kind: "free" },
+      { name: "Autocompact buffer", tokens: 33_000, color: "", kind: "buffer" },
+    ],
+  };
+
+  getContextUsage(): Promise<ContextReport> {
+    this.contextCalls += 1;
+    return Promise.resolve(this.context);
+  }
+
+  usageCalls = 0;
+  usage: UsageReport = USAGE_REPORT;
+
+  usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(): Promise<UsageReport> {
+    this.usageCalls += 1;
+    return Promise.resolve(this.usage);
   }
 
   [Symbol.asyncIterator](): AsyncIterator<SDKMessage> {

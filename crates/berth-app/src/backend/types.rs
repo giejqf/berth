@@ -511,6 +511,8 @@ pub enum UiEvent {
     },
     /// The models the agent can run on, as the SDK last reported them.
     Models(Vec<ModelChoice>),
+    /// The plan's limits as any session last reported them (ADR 0014).
+    Quota(berth_core::Quota),
     Toast {
         repo_id: Option<String>,
         level: ToastLevel,
