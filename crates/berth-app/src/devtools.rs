@@ -19,10 +19,16 @@
 //! term_type ls -la            # type into the selected slot's terminal (`keys enter` runs it)
 //! fake_node Title             # append a just-recorded decision to the flow (view only)
 //! fake_artifact /a.png | Title # append an artifact, the file used in place (view only)
+//! window 1                    # later commands act on the 2nd repo window (in opening order)
+//! windows                     # log every repo window: bounds and slots
+//! mouse_down 120 200          # press the left button at window coordinates (drags too:
+//! mouse_move -200 300         #   moves may leave the window, as a real drag does)
+//! mouse_up -200 300
 //! quit
 //! ```
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use berth_core::WorkflowState;
@@ -74,6 +80,7 @@ pub fn start(cx: &mut App) {
                             repo_id: s.repo_id().to_owned(),
                             slot_type: None,
                             slot_id: None,
+                            window_id: Some(s.window_id.clone()),
                             origin: Origin {
                                 kind: OriginKind::Thought,
                                 r#ref: String::new(),
@@ -85,7 +92,14 @@ pub fn start(cx: &mut App) {
                         }));
                     }
                 }),
-                "term_type" => cx.update(|cx| ui::type_in_terminal(arg, cx)),
+                "term_type" => cx.update(|cx| {
+                    let state = target_window(cx).and_then(|h| {
+                        cx.update_window(h.into(), |_, w, cx| ui::state_of(w, cx))
+                            .ok()
+                            .flatten()
+                    });
+                    ui::type_in_terminal(state, arg, cx);
+                }),
                 "secret" => cx.update(|cx| {
                     let mut parts = arg.splitn(3, ' ');
                     if let (Some(connector), Some(key), Some(value)) =
@@ -308,6 +322,11 @@ pub fn start(cx: &mut App) {
                         }
                     });
                 }),
+                "window" => {
+                    TARGET.store(arg.trim().parse().unwrap_or(0), Ordering::Relaxed);
+                }
+                "windows" => cx.update(log_windows),
+                "mouse_down" | "mouse_move" | "mouse_up" => cx.update(|cx| mouse(cmd, arg, cx)),
                 "quit" => cx.update(|cx| cx.quit()),
                 other => tracing::warn!(other, "unknown devtools command"),
             }
@@ -525,8 +544,76 @@ fn push_fake_node(payload: berth_protocol::NodePayload, cx: &mut App) {
     });
 }
 
+/// The repo window commands act on (`window <n>`).
+static TARGET: AtomicUsize = AtomicUsize::new(0);
+
+fn target_window(cx: &App) -> Option<gpui::WindowHandle<gpui_component::Root>> {
+    ui::repo_window_at(TARGET.load(Ordering::Relaxed), cx).or_else(|| ui::first_repo_window(cx))
+}
+
+fn log_windows(cx: &mut App) {
+    let mut n = 0;
+    while let Some(handle) = ui::repo_window_at(n, cx) {
+        let _ = cx.update_window(handle.into(), |_, window, cx| {
+            let state = ui::state_of(window, cx);
+            let slots: Vec<String> = state
+                .map(|s| {
+                    s.read(cx)
+                        .slots
+                        .iter()
+                        .map(|e| e.slot.name.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            tracing::info!(n, bounds = ?window.bounds(), ?slots, "devtools window");
+        });
+        n += 1;
+    }
+    tracing::info!(count = n, "devtools windows");
+}
+
+/// A left-button press, move or release at window coordinates, dispatched as
+/// the platform would (a fresh frame first, so hit tests see the UI).
+fn mouse(cmd: &str, arg: &str, cx: &mut App) {
+    use gpui::{Modifiers, MouseButton, PlatformInput, point, px};
+    let v: Vec<f32> = arg
+        .split_whitespace()
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    let (Some(&x), Some(&y)) = (v.first(), v.get(1)) else {
+        return;
+    };
+    let position = point(px(x), px(y));
+    let event = match cmd {
+        "mouse_down" => PlatformInput::MouseDown(gpui::MouseDownEvent {
+            button: MouseButton::Left,
+            position,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+            first_mouse: false,
+        }),
+        "mouse_move" => PlatformInput::MouseMove(gpui::MouseMoveEvent {
+            position,
+            pressed_button: Some(MouseButton::Left),
+            modifiers: Modifiers::default(),
+        }),
+        _ => PlatformInput::MouseUp(gpui::MouseUpEvent {
+            button: MouseButton::Left,
+            position,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        }),
+    };
+    if let Some(handle) = target_window(cx) {
+        let _ = cx.update_window(handle.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+            window.dispatch_event(event, cx);
+        });
+    }
+}
+
 fn with_window(cx: &mut App, f: impl FnOnce(&mut gpui::Window, &mut App)) {
-    if let Some(handle) = ui::first_repo_window(cx) {
+    if let Some(handle) = target_window(cx) {
         let _ = cx.update_window(handle.into(), |_, window, cx| f(window, cx));
     }
 }
@@ -547,6 +634,9 @@ fn dispatch(name: &str, cx: &mut App) {
         "ShowFiles" => Box::new(keymap::ShowFiles),
         "ShowFindings" => Box::new(keymap::ShowFindings),
         "OpenHistory" => Box::new(keymap::OpenHistory),
+        "MoveSlotToNewWindow" => Box::new(keymap::MoveSlotToNewWindow),
+        "MergeAllWindows" => Box::new(keymap::MergeAllWindows),
+        "CloseWindow" => Box::new(keymap::CloseWindow),
         "RewindConversation" => Box::new(keymap::RewindConversation),
         "NextFinding" => Box::new(keymap::NextFinding),
         "NextChoice" => Box::new(keymap::NextChoice),
@@ -581,7 +671,7 @@ fn dispatch(name: &str, cx: &mut App) {
 }
 
 fn shot(path: &std::path::Path, cx: &mut App) {
-    let Some(handle) = ui::first_repo_window(cx).or_else(|| ui::welcome_window(cx)) else {
+    let Some(handle) = target_window(cx).or_else(|| ui::welcome_window(cx)) else {
         tracing::warn!("no window to capture");
         return;
     };

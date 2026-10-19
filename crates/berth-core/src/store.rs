@@ -21,6 +21,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0003_slot_agent.sql"),
     include_str!("../migrations/0004_workflow_resume_at.sql"),
     include_str!("../migrations/0005_workflow_opened_at.sql"),
+    include_str!("../migrations/0006_slot_window.sql"),
 ];
 
 pub struct Store {
@@ -539,6 +540,60 @@ impl Store {
             "SELECT {SLOT_COLS} FROM slots WHERE repo_id = ?1 AND state != 'destroyed' ORDER BY created_at"
         ))?;
         collect(stmt.query_map([repo_id], slot_row)?, finish_slot)
+    }
+
+    /// The window that shows the slot (ADR 0011).
+    pub fn slot_window(&self, slot_id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT window_id FROM slots WHERE id = ?1",
+                [slot_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    pub fn set_slot_window(&self, slot_id: &str, window_id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE slots SET window_id = ?2 WHERE id = ?1",
+            params![slot_id, window_id],
+        )?;
+        Ok(())
+    }
+
+    /// Every slot of window `from` goes to window `into`.
+    pub fn merge_windows(&self, repo_id: &str, from: &str, into: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE slots SET window_id = ?3 WHERE repo_id = ?1 AND window_id = ?2",
+            params![repo_id, from, into],
+        )?;
+        Ok(())
+    }
+
+    /// The repo's windows, in the order their first slots were created; slots
+    /// without one (made before windows were) join the first, or `fallback`.
+    pub fn repo_windows(&self, repo_id: &str, fallback: &str) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT window_id FROM slots WHERE repo_id = ?1 AND state != 'destroyed' \
+             AND window_id IS NOT NULL GROUP BY window_id ORDER BY MIN(created_at)",
+        )?;
+        let mut windows = stmt
+            .query_map([repo_id], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let first = windows
+            .first()
+            .cloned()
+            .unwrap_or_else(|| fallback.to_owned());
+        self.conn.execute(
+            "UPDATE slots SET window_id = ?2 WHERE repo_id = ?1 AND window_id IS NULL",
+            params![repo_id, first],
+        )?;
+        if windows.is_empty() {
+            windows.push(first);
+        }
+        Ok(windows)
     }
 
     /// Move a slot along its lifecycle (§6.3); rejects invalid edges.

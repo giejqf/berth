@@ -109,6 +109,8 @@ pub struct TerminalView {
     /// Sub-line scroll distance not yet applied.
     scroll_rest: f32,
     geometry: Rc<Cell<Geometry>>,
+    /// Focus and blur reports, for the window that shows the terminal.
+    focus_reports: [gpui::Subscription; 2],
     _pump: gpui::Task<()>,
 }
 
@@ -159,14 +161,7 @@ impl TerminalView {
 
         let view = cx.new(|cx| {
             let focus = cx.focus_handle();
-            cx.on_focus(&focus, window, |this: &mut Self, _, cx| {
-                this.report_focus(true, cx);
-            })
-            .detach();
-            cx.on_blur(&focus, window, |this: &mut Self, _, cx| {
-                this.report_focus(false, cx);
-            })
-            .detach();
+            let focus_reports = Self::watch_focus(&focus, window, cx);
             let pump = cx.spawn(async move |this, cx| {
                 while let Some(first) = events.next().await {
                     let mut batch = vec![first];
@@ -192,10 +187,31 @@ impl TerminalView {
                 selecting: false,
                 scroll_rest: 0.,
                 geometry: Rc::default(),
+                focus_reports,
                 _pump: pump,
             }
         });
         Ok(view)
+    }
+
+    fn watch_focus(
+        focus: &FocusHandle,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> [gpui::Subscription; 2] {
+        [
+            cx.on_focus(focus, window, |this: &mut Self, _, cx| {
+                this.report_focus(true, cx);
+            }),
+            cx.on_blur(focus, window, |this: &mut Self, _, cx| {
+                this.report_focus(false, cx);
+            }),
+        ]
+    }
+
+    /// Its slot moved to another window (ADR 0011): report focus there.
+    pub fn moved_to(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.focus_reports = Self::watch_focus(&self.focus.clone(), window, cx);
     }
 
     pub fn title(&self) -> &str {

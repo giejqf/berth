@@ -29,6 +29,8 @@ actions!(
         ScrollToNewest,
         FocusAnswer,
         CloseWindow,
+        MoveSlotToNewWindow,
+        MergeAllWindows,
         Quit,
         // slot rail
         RailNext,
@@ -548,6 +550,12 @@ pub fn palette_actions() -> Vec<(&'static str, &'static str, Box<dyn Action>)> {
         ("Show the workflow's files", "", Box::new(ShowFiles)),
         ("Show the code review findings", "", Box::new(ShowFindings)),
         ("Rename slot…", "", Box::new(RenameSlot)),
+        (
+            "Move slot to a new window",
+            "",
+            Box::new(MoveSlotToNewWindow),
+        ),
+        ("Merge all windows", "", Box::new(MergeAllWindows)),
         ("Destroy slot…", "", Box::new(DestroySlot)),
         ("Close window", "⌘W", Box::new(CloseWindow)),
     ]

@@ -91,6 +91,10 @@ fn main() {
                     MenuItem::action("Rename Slot…", keymap::RenameSlot),
                     MenuItem::action("Destroy Slot…", keymap::DestroySlot),
                 ]),
+                Menu::new("Window").items([
+                    MenuItem::action("Move Slot to New Window", keymap::MoveSlotToNewWindow),
+                    MenuItem::action("Merge All Windows", keymap::MergeAllWindows),
+                ]),
                 Menu::new("Terminal").items([
                     MenuItem::action("New Terminal", keymap::NewTerminal),
                     MenuItem::action("Show or Collapse Terminal", keymap::ToggleTerminal),

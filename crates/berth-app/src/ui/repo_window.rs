@@ -6,10 +6,10 @@ use std::time::{Duration, Instant};
 
 use berth_protocol::DiffPreset;
 use gpui::{
-    AnyView, AppContext as _, Context, DismissEvent, Entity, EntityId, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
-    ParentElement as _, Pixels, Render, SharedString, Styled as _, Subscription, Window, div,
-    prelude::FluentBuilder as _, px,
+    AnyView, AppContext as _, Context, DismissEvent, DragMoveEvent, Entity, EntityId, EventEmitter,
+    FocusHandle, Focusable, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, SharedString, Styled as _,
+    Subscription, Window, div, point, prelude::FluentBuilder as _, px,
 };
 use gpui_component::notification::Notification;
 use gpui_component::{TitleBar, WindowExt as _};
@@ -29,15 +29,16 @@ use super::review_pane::ReviewPane;
 use super::settings::SettingsForm;
 use super::slot_rail::{self, SlotRail};
 use super::terminal::{self, TerminalEvent, TerminalView};
+use super::windows::{Dragged, SlotDrag, WindowDrag};
 use super::{RepoState, details};
 use crate::backend::{Command, ToastLevel};
 use crate::keymap::{
     AttachFiles, AttachPaths, ChooseModel, CloseWindow, CommandPalette, DestroySlot, FocusAnswer,
-    FocusComposer, FollowUpFromOutcome, Interrupt, JumpToNeeding, NewWorkflow, NewWorkflowHere,
-    NewWorkflowTab, NextChange, NextSlot, OpenHistory, OpenSettings, PrevChange, PrevSlot,
-    RefreshReview, RenameSlot, ReviewBranch, ReviewSection, ReviewWorkflow, RewindConversation,
-    RewindTo, SelectSlot, ShowFile, ShowFiles, ShowFindings, ShowReview, ToggleDiffMode,
-    ToggleRail, ToggleReview,
+    FocusComposer, FollowUpFromOutcome, Interrupt, JumpToNeeding, MergeAllWindows,
+    MoveSlotToNewWindow, NewWorkflow, NewWorkflowHere, NewWorkflowTab, NextChange, NextSlot,
+    OpenHistory, OpenSettings, PrevChange, PrevSlot, RefreshReview, RenameSlot, ReviewBranch,
+    ReviewSection, ReviewWorkflow, RewindConversation, RewindTo, SelectSlot, ShowFile, ShowFiles,
+    ShowFindings, ShowReview, ToggleDiffMode, ToggleRail, ToggleReview,
 };
 use crate::keymap::{
     CloseTerminal, HideTerminal, KillTerminal, NewTerminal, NextTerminal, PrevTerminal,
@@ -137,6 +138,12 @@ impl RepoWindow {
             }
         })
         .detach();
+        // Closing one of the repo's windows hands its slots to another.
+        let window_id = state.read(cx).window_id.clone();
+        window.on_window_should_close(cx, move |_, cx| {
+            super::windows::before_close(&window_id, cx);
+            true
+        });
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         Self {
@@ -160,6 +167,24 @@ impl RepoWindow {
             terminal_shown: PanelMode::Hidden,
             terminal_was: PanelMode::Hidden,
             terminal_moved: None,
+        }
+    }
+
+    /// Terminals its slots bring from another window (ADR 0011): they report
+    /// focus here, and their exits close them here.
+    pub fn adopt_terminals(
+        &mut self,
+        terminals: Vec<(String, super::repo_state::SlotTerminals)>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        for (slot_id, t) in terminals {
+            for v in &t.list {
+                v.update(cx, |v, cx| v.moved_to(window, cx));
+                cx.subscribe_in(v, window, Self::on_terminal_event).detach();
+            }
+            self.state
+                .update(cx, |s, cx| s.put_terminals(slot_id, t, cx));
         }
     }
 
@@ -741,6 +766,7 @@ impl Render for RepoWindow {
             }
         }
         let t = Tokens::get(cx);
+        let drop_hint = super::windows::hint_for(&self.state.read(cx).window_id, cx);
         let state = self.state.read(cx);
         let has_slots = !state.slots.is_empty();
         let has_workflow = state.selected_view().is_some();
@@ -947,7 +973,43 @@ impl Render for RepoWindow {
             .on_action(cx.listener(|this, _: &RefreshReview, _, cx| {
                 this.review.update(cx, ReviewPane::refresh);
             }))
-            .on_action(cx.listener(|_, _: &CloseWindow, window, _| window.remove_window()))
+            .on_action(cx.listener(|this, _: &CloseWindow, window, cx| {
+                let id = this.state.read(cx).window_id.clone();
+                super::windows::before_close(&id, cx);
+                window.remove_window();
+            }))
+            .on_action(cx.listener(|this, _: &MoveSlotToNewWindow, window, cx| {
+                let s = this.state.read(cx);
+                let (Some(slot), from) = (s.selected_slot.clone(), s.window_id.clone()) else {
+                    return;
+                };
+                let origin = window.bounds().origin + point(px(40.), px(40.));
+                let display = window.display(cx).map(|d| d.id());
+                cx.defer(move |cx| super::windows::detach_slot(&slot, &from, origin, display, cx));
+            }))
+            .on_action(cx.listener(|this, _: &MergeAllWindows, _, cx| {
+                let id = this.state.read(cx).window_id.clone();
+                cx.defer(move |cx| super::windows::merge_all(&id, cx));
+            }))
+            // A slot (or the rail's header) dragged out of the window: show and
+            // decide where it lands (`windows`).
+            .on_drag_move::<SlotDrag>(cx.listener(|_, e: &DragMoveEvent<SlotDrag>, window, cx| {
+                let d = e.drag(cx).clone();
+                super::windows::moved(Dragged::Slot(d), window, e.event.position, cx);
+            }))
+            .on_drag_move::<WindowDrag>(cx.listener(
+                |_, e: &DragMoveEvent<WindowDrag>, window, cx| {
+                    let d = e.drag(cx).clone();
+                    super::windows::moved(Dragged::Window(d), window, e.event.position, cx);
+                },
+            ))
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|_, e: &MouseUpEvent, window, cx| {
+                    super::windows::released(window, e.position, cx);
+                }),
+            )
+            .capture_any_mouse_up(cx.listener(|_, _, _, cx| super::windows::cancelled(cx)))
             .on_action(cx.listener(|this, _: &ToggleTerminal, window, cx| {
                 this.toggle_terminal(window, cx);
             }))
@@ -1117,6 +1179,9 @@ impl Render for RepoWindow {
                         )
                     }),
             )
+            .when_some(drop_hint, |d, (label, target)| {
+                d.child(drop_overlay(&t, label, target))
+            })
             .when_some(closing, |d, (view, p)| {
                 d.child(modal::fading(&t, view.into_any_element(), p))
             })
@@ -1131,6 +1196,50 @@ impl Render for RepoWindow {
                     },
                 ))
             })
+    }
+}
+
+/// While a slot is dragged between windows: the window it would land in is
+/// outlined with what dropping does; the window it came from says what
+/// releasing does.
+fn drop_overlay(t: &Tokens, label: String, target: bool) -> gpui::AnyElement {
+    let pill = div()
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .px(px(14.))
+        .py(px(8.))
+        .rounded(px(8.))
+        .bg(t.card)
+        .border_1()
+        .border_color(if target { t.accent } else { t.border_strong })
+        .shadow(super::kit::dialog_shadow())
+        .text_color(t.text)
+        .medium()
+        .child(super::kit::icon("panel-left", 14., t.accent))
+        .child(label);
+    if target {
+        div()
+            .absolute()
+            .inset_0()
+            .border_2()
+            .border_color(t.accent)
+            .bg(t.accent_soft)
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(pill)
+            .into_any_element()
+    } else {
+        div()
+            .absolute()
+            .left_0()
+            .right_0()
+            .bottom(px(24.))
+            .flex()
+            .justify_center()
+            .child(pill)
+            .into_any_element()
     }
 }
 

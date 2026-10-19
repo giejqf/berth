@@ -238,6 +238,8 @@ impl NewWorkflowForm {
             repo_id: s.repo_id().to_owned(),
             slot_type: self.slot_type.clone().filter(|_| slot_id.is_none()),
             slot_id,
+            // A new slot shows in the window it was made from.
+            window_id: Some(s.window_id.clone()),
             origin,
         }));
         cx.emit(DismissEvent);

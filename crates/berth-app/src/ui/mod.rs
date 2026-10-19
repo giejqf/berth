@@ -1,4 +1,5 @@
-//! GPUI side: one window per repo, fed by backend events.
+//! GPUI side: a repo's windows (one or more, each a group of its slots; ADR
+//! 0011), fed by backend events.
 
 mod agent_dialog;
 mod answer_card;
@@ -25,14 +26,15 @@ mod settings;
 mod slot_rail;
 mod terminal;
 mod welcome;
+pub mod windows;
 
 use std::collections::HashMap;
 
 use futures::StreamExt as _;
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
-    App, AppContext as _, Bounds, Entity, Global, PathPromptOptions, Pixels, Size, WeakEntity,
-    WindowBounds, WindowHandle, WindowOptions, point, px, size,
+    App, AppContext as _, Bounds, DisplayId, Entity, Global, PathPromptOptions, Pixels, Size,
+    WeakEntity, WindowBounds, WindowHandle, WindowOptions, point, px, size,
 };
 use gpui_component::{Root, TitleBar};
 
@@ -56,10 +58,21 @@ pub fn window_options(sz: Size<Pixels>, min: Size<Pixels>, cx: &App) -> WindowOp
     options
 }
 
+/// One open window of a repo.
+#[derive(Clone)]
+pub struct RepoWindowRef {
+    pub repo_id: String,
+    pub window_id: String,
+    pub state: WeakEntity<RepoState>,
+    pub view: WeakEntity<repo_window::RepoWindow>,
+    pub handle: WindowHandle<Root>,
+}
+
 /// App-wide state: the backend handle and the open repo windows.
 pub struct Berth {
     pub backend: BackendHandle,
-    repos: HashMap<String, (WeakEntity<RepoState>, WindowHandle<Root>)>,
+    /// Each repo's windows, in the order they opened.
+    repos: HashMap<String, Vec<RepoWindowRef>>,
     welcome: Option<WindowHandle<Root>>,
     /// The models the agent can run on, as the SDK last reported them.
     pub models: Vec<berth_protocol::ModelChoice>,
@@ -109,10 +122,10 @@ pub fn prompt_open_repository(cx: &mut App) {
     .detach();
 }
 
-/// Type into the selected slot's active terminal (devtools).
+/// Type into the selected slot's active terminal, in `state`'s window (devtools).
 #[cfg(feature = "devtools")]
-pub fn type_in_terminal(text: &str, cx: &mut App) {
-    let Some(state) = first_repo_state(cx) else {
+pub fn type_in_terminal(state: Option<Entity<RepoState>>, text: &str, cx: &mut App) {
+    let Some(state) = state.or_else(|| first_repo_state(cx)) else {
         return;
     };
     let view = state
@@ -134,11 +147,33 @@ pub fn first_repo_state(cx: &App) -> Option<Entity<RepoState>> {
 
 #[allow(dead_code)]
 pub fn first_repo_window(cx: &App) -> Option<WindowHandle<Root>> {
+    repo_window_at(0, cx)
+}
+
+/// The `n`th open repo window, in the order they opened (devtools).
+#[allow(dead_code)]
+pub fn repo_window_at(n: usize, cx: &App) -> Option<WindowHandle<Root>> {
+    let mut all: Vec<&RepoWindowRef> = cx
+        .global::<Berth>()
+        .repos
+        .values()
+        .flatten()
+        .filter(|w| w.state.upgrade().is_some())
+        .collect();
+    all.sort_by_key(|w| w.handle.window_id().as_u64());
+    all.get(n).map(|w| w.handle)
+}
+
+/// The repo state of the window `window` (devtools).
+#[allow(dead_code)]
+pub fn state_of(window: &gpui::Window, cx: &App) -> Option<Entity<RepoState>> {
+    let handle = window.window_handle();
     cx.global::<Berth>()
         .repos
         .values()
-        .find(|(s, _)| s.upgrade().is_some())
-        .map(|(_, w)| *w)
+        .flatten()
+        .find(|w| gpui::AnyWindowHandle::from(w.handle) == handle)
+        .and_then(|w| w.state.upgrade())
 }
 
 #[allow(dead_code)]
@@ -150,15 +185,25 @@ fn live_repos(cx: &App) -> Vec<Entity<RepoState>> {
     cx.global::<Berth>()
         .repos
         .values()
-        .filter_map(|(state, _)| state.upgrade())
+        .flatten()
+        .filter_map(|w| w.state.upgrade())
         .collect()
 }
 
-fn repo(repo_id: &str, cx: &App) -> Option<Entity<RepoState>> {
+/// Every open window's state for the repo.
+fn repo_states(repo_id: &str, cx: &App) -> Vec<Entity<RepoState>> {
     cx.global::<Berth>()
         .repos
         .get(repo_id)
-        .and_then(|(s, _)| s.upgrade())
+        .map(|v| v.iter().filter_map(|w| w.state.upgrade()).collect())
+        .unwrap_or_default()
+}
+
+/// The repo's frontmost window's state (for what one window should show).
+fn repo(repo_id: &str, cx: &App) -> Option<Entity<RepoState>> {
+    windows::of_repo(repo_id, cx)
+        .into_iter()
+        .find_map(|w| w.state.upgrade())
 }
 
 fn route(event: UiEvent, cx: &mut App) {
@@ -187,15 +232,30 @@ fn route(event: UiEvent, cx: &mut App) {
         UiEvent::ShowWelcome { recent, error } => show_welcome(recent, error, cx),
         UiEvent::RepoOpened(snapshot) => {
             let repo_id = snapshot.repo.id.clone();
-            if let Some(entry) = cx.global::<Berth>().repos.get(&repo_id).cloned()
-                && let Some(state) = entry.0.upgrade()
-            {
-                state.update(cx, |s, cx| s.refresh_snapshot(*snapshot, cx));
-                let _ = entry.1.update(cx, |_, window, _| window.activate_window());
+            // Open already: its windows take the fresh snapshot, the front one
+            // comes forward.
+            let open = windows::of_repo(&repo_id, cx);
+            if let Some(front) = open.first() {
+                let handle = front.handle;
+                for state in repo_states(&repo_id, cx) {
+                    let snapshot = (*snapshot).clone();
+                    state.update(cx, |s, cx| s.refresh_snapshot(snapshot, cx));
+                }
+                let _ = handle.update(cx, |_, window, _| window.activate_window());
                 return;
             }
             let gh = snapshot.gh.clone();
-            open_repo_window(*snapshot, cx);
+            // One window per group of slots, each a little down and right of
+            // the last.
+            let windows = snapshot.windows.clone();
+            for (i, window_id) in windows.into_iter().enumerate() {
+                let placement = (i > 0).then(|| {
+                    let mut b = Bounds::centered(None, size(px(1280.), px(800.)), cx);
+                    b.origin += point(px(32. * i as f32), px(32. * i as f32));
+                    (b, None)
+                });
+                open_repo_window((*snapshot).clone(), window_id, placement, Vec::new(), cx);
+            }
             if !gh.logged_in
                 && let Some(state) = repo(&repo_id, cx)
             {
@@ -233,35 +293,52 @@ fn route(event: UiEvent, cx: &mut App) {
             entries,
             unlisted,
         } => {
-            if let Some(state) = repo(&repo_id, cx) {
+            for state in repo_states(&repo_id, cx) {
+                let (entries, unlisted) = (entries.clone(), unlisted.clone());
                 state.update(cx, |s, cx| s.set_history(entries, unlisted, cx));
             }
         }
         UiEvent::Slots { repo_id, slots } => {
-            if let Some(state) = repo(&repo_id, cx) {
+            for state in repo_states(&repo_id, cx) {
+                let slots = slots.clone();
                 state.update(cx, |s, cx| s.set_slots(slots, cx));
             }
         }
         UiEvent::Workflow { repo_id, view } => {
-            if let Some(state) = repo(&repo_id, cx) {
+            for state in repo_states(&repo_id, cx) {
+                let view = view.clone();
                 state.update(cx, |s, cx| s.set_workflow(view, cx));
             }
         }
+        // Asked in the window that shows the asking workflow.
         UiEvent::SlotRequest {
             repo_id,
             workflow_id,
             request,
         } => {
-            if let Some(state) = repo(&repo_id, cx) {
+            let shows = |s: &RepoState| {
+                s.slots
+                    .iter()
+                    .any(|e| e.workflow.as_ref().is_some_and(|w| w.id == workflow_id))
+            };
+            let target = repo_states(&repo_id, cx)
+                .into_iter()
+                .find(|s| shows(s.read(cx)))
+                .or_else(|| repo(&repo_id, cx));
+            if let Some(state) = target {
                 state.update(cx, |s, cx| s.slot_request(workflow_id, request, cx));
             }
         }
+        // A terminal starts in the window that shows its slot.
         UiEvent::TerminalSpec {
             repo_id,
             slot_id,
             result,
         } => {
-            if let Some(state) = repo(&repo_id, cx) {
+            let target = repo_states(&repo_id, cx)
+                .into_iter()
+                .find(|s| s.read(cx).slots.iter().any(|e| e.slot.id == slot_id));
+            if let Some(state) = target {
                 state.update(cx, |s, cx| s.terminal_spec(slot_id, result, cx));
             }
         }
@@ -270,7 +347,8 @@ fn route(event: UiEvent, cx: &mut App) {
             source,
             result,
         } => {
-            if let Some(state) = repo(&repo_id, cx) {
+            for state in repo_states(&repo_id, cx) {
+                let (source, result) = (source.clone(), result.clone());
                 state.update(cx, |s, cx| s.set_origins(source, result, cx));
             }
         }
@@ -283,27 +361,52 @@ fn route(event: UiEvent, cx: &mut App) {
     }
 }
 
-fn open_repo_window(snapshot: crate::backend::RepoSnapshot, cx: &mut App) {
+/// Open window `window_id` of the repo: centered, or at `placement` (bounds on
+/// a display), with terminals its slots bring from another window.
+pub(crate) fn open_repo_window(
+    snapshot: crate::backend::RepoSnapshot,
+    window_id: String,
+    placement: Option<(Bounds<Pixels>, Option<DisplayId>)>,
+    terminals: Vec<(String, repo_state::SlotTerminals)>,
+    cx: &mut App,
+) {
     let repo_id = snapshot.repo.id.clone();
     let title = format!("{} — Berth", snapshot.repo.name());
     let mut options = window_options(size(px(1280.), px(800.)), size(px(900.), px(560.)), cx);
     if let Some(titlebar) = options.titlebar.as_mut() {
         titlebar.title = Some(title.into());
     }
+    if let Some((bounds, display)) = placement {
+        options.window_bounds = Some(WindowBounds::Windowed(bounds));
+        options.display_id = display;
+    }
     let backend = Berth::backend(cx);
-    let mut created: Option<WeakEntity<RepoState>> = None;
+    let mut created = None;
+    let id = window_id.clone();
     let handle = cx.open_window(options, |window, cx| {
         crate::theme::apply(window, cx);
-        let state = cx.new(|_| RepoState::new(snapshot, backend));
-        created = Some(state.downgrade());
-        let view = cx.new(|cx| repo_window::RepoWindow::new(state, window, cx));
+        let state = cx.new(|_| RepoState::new(snapshot, id, backend));
+        let view = cx.new(|cx| {
+            let mut v = repo_window::RepoWindow::new(state.clone(), window, cx);
+            v.adopt_terminals(terminals, window, cx);
+            v
+        });
+        created = Some((state.downgrade(), view.downgrade()));
         cx.new(|cx| Root::new(view, window, cx))
     });
     match (handle, created) {
-        (Ok(handle), Some(state)) => {
+        (Ok(handle), Some((state, view))) => {
             cx.global_mut::<Berth>()
                 .repos
-                .insert(repo_id, (state, handle));
+                .entry(repo_id.clone())
+                .or_default()
+                .push(RepoWindowRef {
+                    repo_id,
+                    window_id,
+                    state,
+                    view,
+                    handle,
+                });
             close_welcome(cx);
         }
         (Err(e), _) => tracing::error!(error = %e, "open repo window"),
@@ -337,9 +440,10 @@ fn close_welcome(cx: &mut App) {
 /// Forget windows that were closed; quit when none remain.
 pub fn window_closed(cx: &mut App) {
     let berth = cx.global_mut::<Berth>();
-    berth
-        .repos
-        .retain(|_, (state, _)| state.upgrade().is_some());
+    for windows in berth.repos.values_mut() {
+        windows.retain(|w| w.state.upgrade().is_some());
+    }
+    berth.repos.retain(|_, windows| !windows.is_empty());
     if cx.windows().is_empty() {
         cx.quit();
     }

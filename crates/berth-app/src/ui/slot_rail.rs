@@ -8,10 +8,10 @@ use std::time::Instant;
 use berth_core::{SlotState, WorkflowState};
 use berth_protocol::OutcomeKind;
 use gpui::{
-    AnyElement, App, BoxShadow, Context, Div, Entity, FocusHandle, Focusable, FontWeight, Hsla,
-    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, div, point, prelude::FluentBuilder as _,
-    px,
+    AnyElement, App, AppContext as _, BoxShadow, Context, Div, Entity, FocusHandle, Focusable,
+    FontWeight, Hsla, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _,
+    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, point,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::scroll::ScrollableElement as _;
@@ -22,11 +22,12 @@ use super::kit::{
 };
 use super::motion;
 use super::repo_state::{RailGroup, rail_group};
+use super::windows::{DragChip, Dragged, SlotDrag, WindowDrag};
 use super::{EnvGlobal, RepoState};
 use crate::backend::{SlotEntry, ToolState, ToolStatus};
 use crate::keymap::{
-    DestroySlot, NewWorkflow, NewWorkflowHere, OpenHistory, RailNext, RailOpen, RailPrev,
-    RenameSlot, ToggleRail,
+    DestroySlot, MoveSlotToNewWindow, NewWorkflow, NewWorkflowHere, OpenHistory, RailNext,
+    RailOpen, RailPrev, RenameSlot, ToggleRail,
 };
 use crate::theme::{Tokens, ty};
 
@@ -167,6 +168,34 @@ pub fn rail_lines(entry: &SlotEntry, state: &RepoState) -> (String, String) {
     (title, sub)
 }
 
+/// The color of a slot's mark (for the chip a dragged slot shows).
+fn status_color(t: &Tokens, entry: &SlotEntry) -> Hsla {
+    if entry.slot.state == SlotState::Failed {
+        return t.danger;
+    }
+    match rail_group(entry) {
+        RailGroup::NeedsYou => t.attention,
+        RailGroup::Working | RailGroup::Review => t.accent,
+        RailGroup::Done => t.done,
+    }
+}
+
+/// A slot's row (or strip dot) drags it out to a window of its own, or into
+/// another window of the repo (ADR 0011).
+fn slot_drag(entry: &SlotEntry, title: &str, state: &RepoState, t: &Tokens) -> SlotDrag {
+    SlotDrag {
+        repo_id: state.repo_id().to_owned(),
+        slot_id: entry.slot.id.clone(),
+        title: title.to_owned(),
+        color: status_color(t, entry),
+        from: state.window_id.clone(),
+    }
+}
+
+fn drag_chip(d: &SlotDrag, cx: &mut gpui::App) -> Entity<DragChip> {
+    cx.new(|_| DragChip::new(&Dragged::Slot(d.clone())))
+}
+
 /// The status mark for a rail group: filled, danger, or, while the slot is
 /// busy (its agent working, the slot being created or destroyed), the
 /// working spinner: the ring of a waiting dot, turning. `size` is 8 or 10.
@@ -259,6 +288,11 @@ impl Render for SlotRail {
         let selected = state.selected_slot.clone();
         let focused = self.focus.is_focused(window) && window.last_input_was_keyboard();
         let order = state.rail_order();
+        let window_drag = WindowDrag {
+            repo_id: state.repo_id().to_owned(),
+            from: state.window_id.clone(),
+            slots: state.slots.len(),
+        };
 
         let mut list = div()
             .id("slot-list")
@@ -335,8 +369,10 @@ impl Render for SlotRail {
                 Some(color.opacity(1. - p * p))
             });
             let arrived = motion::arrival(entry.slot.created_at, motion::BASE, window, cx);
+            let drag = slot_drag(entry, &title, state, &t);
             let row = div()
                 .id(SharedString::from(format!("slot-{id}")))
+                .on_drag(drag, |d, _, _, cx| drag_chip(d, cx))
                 .relative()
                 .flex()
                 .flex_none()
@@ -429,6 +465,7 @@ impl Render for SlotRail {
                 menu.menu("New workflow here…", Box::new(NewWorkflowHere))
                     .menu("Open from history here…", Box::new(OpenHistory))
                     .separator()
+                    .menu("Move to a new window", Box::new(MoveSlotToNewWindow))
                     .menu("Rename…", Box::new(RenameSlot))
                     .menu("Destroy slot…", Box::new(DestroySlot))
             }));
@@ -462,7 +499,22 @@ impl Render for SlotRail {
                     .justify_between()
                     .px(px(8.))
                     .pb(px(8.))
-                    .child(caption("Slots", t.text3))
+                    // The header drags the window's slots onto another window
+                    // of the repo, to merge them there.
+                    .child(
+                        div()
+                            .id("rail-header")
+                            .flex_1()
+                            .cursor_grab()
+                            .on_drag(window_drag, |d, _, _, cx| {
+                                cx.new(|_| DragChip::new(&Dragged::Window(d.clone())))
+                            })
+                            .tooltip(|w, cx| {
+                                Tooltip::new("Drag onto another window to merge its slots")
+                                    .build(w, cx)
+                            })
+                            .child(caption("Slots", t.text3)),
+                    )
                     .child(
                         div()
                             .flex()
@@ -536,9 +588,11 @@ pub fn collapsed(state: &Entity<RepoState>, t: &Tokens, cx: &App) -> Div {
         let tip: SharedString = format!("{title} — {sub}").into();
         let st = state.clone();
         let hover = t.card;
+        let drag = slot_drag(entry, &title, s, t);
         col = col.child(
             div()
                 .id(SharedString::from(format!("slot-dot-{id}")))
+                .on_drag(drag, |d, _, _, cx| drag_chip(d, cx))
                 .size(px(36.))
                 .flex_none()
                 .rounded(px(6.))

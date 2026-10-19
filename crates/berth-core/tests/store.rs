@@ -128,3 +128,47 @@ fn which_slots_can_take_a_new_workflow() {
     assert_eq!(at(S::Failed).reuse(None), Err(ReuseBlocked::Failed));
     assert_eq!(at(S::Destroying).reuse(None), Err(ReuseBlocked::Destroying));
 }
+
+#[test]
+fn slots_are_grouped_into_windows() {
+    let store = Store::open_in_memory().unwrap();
+    let repo = store.upsert_repo(Path::new("/tmp/repo")).unwrap();
+    let slot = |name: &str, at: i64| {
+        let s = Slot {
+            id: new_id(),
+            repo_id: repo.id.clone(),
+            slot_type: "worktree".into(),
+            name: name.into(),
+            custom_name: None,
+            model: None,
+            effort: None,
+            state: SlotState::Ready,
+            state_detail: None,
+            checkout_path: Some(format!("/tmp/{name}")),
+            placement: "host".into(),
+            branch: format!("berth/{name}"),
+            base_ref: "main".into(),
+            created_at: at,
+        };
+        store.insert_slot(&s).unwrap();
+        s
+    };
+    // Slots from before windows join the first window.
+    let a = slot("a", 1);
+    let b = slot("b", 2);
+    assert_eq!(store.repo_windows(&repo.id, "w1").unwrap(), ["w1"]);
+    assert_eq!(store.slot_window(&a.id).unwrap().as_deref(), Some("w1"));
+    assert_eq!(store.slot_window(&b.id).unwrap().as_deref(), Some("w1"));
+    // A slot dragged out makes a second window; windows keep their order.
+    store.set_slot_window(&b.id, "w2").unwrap();
+    assert_eq!(
+        store.repo_windows(&repo.id, "unused").unwrap(),
+        ["w1", "w2"]
+    );
+    // Merging moves every slot of one window into the other.
+    store.merge_windows(&repo.id, "w2", "w1").unwrap();
+    assert_eq!(store.repo_windows(&repo.id, "unused").unwrap(), ["w1"]);
+    // A repo without slots still opens one window.
+    let other = store.upsert_repo(Path::new("/tmp/other")).unwrap();
+    assert_eq!(store.repo_windows(&other.id, "fresh").unwrap(), ["fresh"]);
+}

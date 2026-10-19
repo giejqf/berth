@@ -52,7 +52,13 @@ pub enum RepoEvent {
 pub struct RepoState {
     pub backend: BackendHandle,
     pub snapshot: RepoSnapshot,
+    /// The window this state belongs to: it shows the repo's slots of that
+    /// window (ADR 0011).
+    pub window_id: String,
+    /// This window's slots.
     pub slots: Vec<SlotEntry>,
+    /// Every live slot of the repo, whichever window shows it.
+    pub repo_slots: Vec<SlotEntry>,
     pub selected_slot: Option<String>,
     pub views: HashMap<String, Arc<WorkflowView>>,
     /// The open round's activity, per workflow.
@@ -117,6 +123,15 @@ impl RailGroup {
     }
 }
 
+/// The slots `window_id` shows.
+fn in_window(slots: &[SlotEntry], window_id: &str) -> Vec<SlotEntry> {
+    slots
+        .iter()
+        .filter(|s| s.window_id.as_deref() == Some(window_id))
+        .cloned()
+        .collect()
+}
+
 /// The rail group a slot belongs to.
 pub fn rail_group(entry: &SlotEntry) -> RailGroup {
     if entry.slot.state == SlotState::Failed {
@@ -140,8 +155,9 @@ pub fn rail_group(entry: &SlotEntry) -> RailGroup {
 impl EventEmitter<RepoEvent> for RepoState {}
 
 impl RepoState {
-    pub fn new(snapshot: RepoSnapshot, backend: BackendHandle) -> Self {
-        let slots = snapshot.slots.clone();
+    pub fn new(snapshot: RepoSnapshot, window_id: String, backend: BackendHandle) -> Self {
+        let repo_slots = snapshot.slots.clone();
+        let slots = in_window(&repo_slots, &window_id);
         let connectors = snapshot.connectors.clone();
         // Start where the user is needed, else the newest open workflow.
         let selected_slot = slots
@@ -158,7 +174,9 @@ impl RepoState {
         let this = Self {
             backend,
             snapshot,
+            window_id,
             slots,
+            repo_slots,
             selected_slot,
             views: HashMap::new(),
             activity: HashMap::new(),
@@ -333,10 +351,10 @@ impl RepoState {
     // ---- backend events ----
 
     pub fn refresh_snapshot(&mut self, snapshot: RepoSnapshot, cx: &mut Context<'_, Self>) {
-        self.slots = snapshot.slots.clone();
         self.connectors = snapshot.connectors.clone();
+        let slots = snapshot.slots.clone();
         self.snapshot = snapshot;
-        cx.notify();
+        self.set_slots(slots, cx);
     }
 
     pub fn toast(&mut self, level: ToastLevel, message: String, cx: &mut Context<'_, Self>) {
@@ -345,7 +363,8 @@ impl RepoState {
 
     pub fn set_slots(&mut self, slots: Vec<SlotEntry>, cx: &mut Context<'_, Self>) {
         let had = self.slots.len();
-        self.slots = slots;
+        self.slots = in_window(&slots, &self.window_id);
+        self.repo_slots = slots;
         // A newly created slot becomes the selection.
         if self.slots.len() > had
             && let Some(newest) = self.slots.iter().max_by_key(|s| s.slot.created_at)
@@ -363,6 +382,33 @@ impl RepoState {
             .map(|s| s.slot.id.as_str())
             .collect();
         self.terminals.retain(|id, _| live.contains(id.as_str()));
+        cx.notify();
+    }
+
+    /// Show `slot_id` in window `window_id` now, before the backend confirms
+    /// it (a drag between windows; every window of the repo hears of it).
+    pub fn reassign(&mut self, slot_id: &str, window_id: &str, cx: &mut Context<'_, Self>) {
+        let mut all = std::mem::take(&mut self.repo_slots);
+        for e in &mut all {
+            if e.slot.id == slot_id {
+                e.window_id = Some(window_id.to_owned());
+            }
+        }
+        if window_id == self.window_id {
+            self.selected_slot = Some(slot_id.to_owned());
+        }
+        self.set_slots(all, cx);
+    }
+
+    /// Hand a slot's terminals to the window it moves to (their shells live on).
+    pub fn take_terminals(&mut self, slot_id: &str) -> Option<SlotTerminals> {
+        self.terminal_pending.remove(slot_id);
+        self.terminals.remove(slot_id)
+    }
+
+    /// Terminals a slot brought from another window.
+    pub fn put_terminals(&mut self, slot_id: String, t: SlotTerminals, cx: &mut Context<'_, Self>) {
+        self.terminals.insert(slot_id, t);
         cx.notify();
     }
 

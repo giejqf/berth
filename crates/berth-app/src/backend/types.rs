@@ -39,6 +39,17 @@ pub enum Command {
         question_id: String,
         text: String,
     },
+    /// Show the slot in another window of its repo (ADR 0011).
+    MoveSlotToWindow {
+        slot_id: String,
+        window_id: String,
+    },
+    /// Every slot of window `from` goes to window `into`.
+    MergeWindows {
+        repo_id: String,
+        from: String,
+        into: String,
+    },
     /// The repo's session history: Claude Code's sessions and Berth's
     /// workflows (ADR 0010).
     LoadHistory {
@@ -149,6 +160,8 @@ pub struct NewWorkflow {
     pub slot_type: Option<String>,
     /// Reuse this slot, its checkout as it is, instead of creating one (§6.3).
     pub slot_id: Option<String>,
+    /// The window a new slot shows in; `None` is the repo's first.
+    pub window_id: Option<String>,
     pub origin: Origin,
 }
 
@@ -227,6 +240,8 @@ pub struct SlotTypeInfo {
 #[derive(Debug, Clone)]
 pub struct SlotEntry {
     pub slot: Slot,
+    /// The window that shows it (ADR 0011).
+    pub window_id: Option<String>,
     /// The slot's most recent workflow.
     pub workflow: Option<Workflow>,
     /// What the rail says about that workflow.
@@ -380,6 +395,8 @@ pub struct RepoSnapshot {
     pub slot_types: Vec<SlotTypeInfo>,
     pub default_slot: Option<String>,
     pub slots: Vec<SlotEntry>,
+    /// One window per group of slots, in order (ADR 0011).
+    pub windows: Vec<String>,
     pub gh: GhInfo,
     pub connectors: Vec<ConnectorInfo>,
 }

@@ -133,6 +133,7 @@ impl Shared {
             Command::RefreshRepo { repo_id }
             | Command::ListOrigins { repo_id, .. }
             | Command::LoadHistory { repo_id }
+            | Command::MergeWindows { repo_id, .. }
             | Command::OpenFromHistory { repo_id, .. }
             | Command::TerminalSpec { repo_id, .. } => {
                 return Some(repo_id.clone());
@@ -153,6 +154,7 @@ impl Shared {
             Command::AddReviewComment(c) => c.workflow_id.clone(),
             Command::DestroySlot { slot_id }
             | Command::RenameSlot { slot_id, .. }
+            | Command::MoveSlotToWindow { slot_id, .. }
             | Command::SetSlotAgent { slot_id, .. } => {
                 return self.core().store.slot(slot_id).ok().map(|s| s.repo_id);
             }
@@ -225,6 +227,24 @@ impl Shared {
                 node_id,
             } => self.rewind(&workflow_id, &node_id).await,
             Command::LoadHistory { repo_id } => self.load_history(&repo_id).await,
+            Command::MoveSlotToWindow { slot_id, window_id } => {
+                let repo_id = {
+                    let core = self.core();
+                    core.store.set_slot_window(&slot_id, &window_id)?;
+                    core.store.slot(&slot_id)?.repo_id
+                };
+                self.emit_slots(&repo_id);
+                Ok(())
+            }
+            Command::MergeWindows {
+                repo_id,
+                from,
+                into,
+            } => {
+                self.core().store.merge_windows(&repo_id, &from, &into)?;
+                self.emit_slots(&repo_id);
+                Ok(())
+            }
             Command::OpenFromHistory {
                 repo_id,
                 slot_id,
@@ -326,10 +346,17 @@ impl Shared {
                 } else {
                     None
                 };
+                // A new slot opens beside the one the follow-up came from.
+                let window_id = {
+                    let core = self.core();
+                    core.store
+                        .slot_window(&core.store.workflow(&workflow_id)?.slot_id)?
+                };
                 let req = NewWorkflow {
                     repo_id,
                     slot_type: None,
                     slot_id,
+                    window_id,
                     origin: berth_core::prompt::follow_up_origin(&follow_up),
                 };
                 let (wf, _) = self.prepare_workflow(&req).await?;
@@ -431,6 +458,7 @@ impl Shared {
                     None => berth_core::WorkflowFacts::default(),
                 };
                 Ok(SlotEntry {
+                    window_id: core.store.slot_window(&slot.id)?,
                     slot,
                     workflow,
                     facts,

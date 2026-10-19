@@ -224,8 +224,12 @@ impl HistoryDialog {
             }
             Opens::AlreadyHere => cx.emit(DismissEvent),
             Opens::GoTo { slot_id, .. } => {
-                self.state.update(cx, |s, cx| s.select_slot(slot_id, cx));
+                // It may be in another window of the repo.
+                let repo_id = self.state.read(cx).repo_id().to_owned();
                 cx.emit(DismissEvent);
+                cx.defer(move |cx| {
+                    super::windows::reveal_slot(&repo_id, &slot_id, cx);
+                });
             }
             Opens::Blocked(_) => {}
         }
@@ -540,6 +544,7 @@ mod tests {
     #[test]
     fn what_opening_an_entry_in_a_slot_does() {
         let target = SlotEntry {
+            window_id: Some("w".into()),
             slot: slot("a", "host"),
             workflow: Some(workflow("now", "a", WorkflowState::Idle)),
             facts: WorkflowFacts::default(),
@@ -599,6 +604,7 @@ mod tests {
             "Claude Code · main · main checkout"
         );
         let boxed_target = SlotEntry {
+            window_id: Some("w".into()),
             slot: slot("c", "inside"),
             workflow: None,
             facts: WorkflowFacts::default(),

@@ -85,6 +85,8 @@ impl Shared {
                 }
             }
         };
+        // Slots from before windows join the first; a repo without slots gets one.
+        let windows = self.core().store.repo_windows(&repo.id, &new_id())?;
         let slots = self.slot_entries(&repo.id)?;
         self.remember_repo(&root);
         self.emit(UiEvent::RepoOpened(Box::new(RepoSnapshot {
@@ -92,6 +94,7 @@ impl Shared {
             slot_types: infos,
             default_slot,
             slots,
+            windows,
             gh,
             connectors: self.connector_infos(),
         })));
@@ -287,6 +290,12 @@ impl Shared {
         let wf = {
             let core = self.core();
             core.store.insert_slot(&slot)?;
+            // In the window that asked for it, else the repo's first.
+            let window = match &req.window_id {
+                Some(w) => w.clone(),
+                None => core.store.repo_windows(&req.repo_id, &new_id())?.remove(0),
+            };
+            core.store.set_slot_window(&slot.id, &window)?;
             Engine::create_workflow(&core.store, &slot.id, origin.clone())?
         };
         self.link_origin(&req.repo_id, &wf.id, &origin).await;
@@ -486,11 +495,18 @@ impl Shared {
         }
         let repo_id = self.repo_of_workflow(workflow_id)?;
         let origin = self.slot_request_origin(workflow_id, &request)?;
+        // The agent's new slot opens beside its own.
+        let window_id = {
+            let core = self.core();
+            core.store
+                .slot_window(&core.store.workflow(workflow_id)?.slot_id)?
+        };
         match self
             .prepare_workflow(&NewWorkflow {
                 repo_id,
                 slot_type: None,
                 slot_id: None,
+                window_id,
                 origin,
             })
             .await

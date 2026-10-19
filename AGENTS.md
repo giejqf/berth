@@ -29,8 +29,10 @@ If a design decision is not here, it has not been made. Record new decisions her
    "show details" on a node.
 6. **Always auto-approve.** Claude Code runs with all permissions pre-approved in every
    slot. Isolation is the slot's job, not the permission prompt's.
-7. **One repo per window. Workflows never span slots.** Cross-slot continuity happens
-   only through "create slot from follow-up".
+7. **One repo per window. Workflows never span slots.** A repo may have several
+   windows, each showing a group of its slots; a window never shows another repo's
+   (ADR 0011). Cross-slot continuity happens only through "create slot from
+   follow-up".
 8. **License: MIT.** Dependencies must be MIT/Apache-2.0/BSD-compatible.
 
 ---
@@ -540,7 +542,7 @@ Core tables (see migrations for exact columns):
 ```
 repos            id, path, default_slot_type, created_at
 slots            id, repo_id, type, name, custom_name, state, state_detail, checkout_path, placement, branch,
-                 base_ref, created_at, model, effort
+                 base_ref, created_at, model, effort, window_id
 workflows        id, slot_id, origin_json, state, claude_session_id, section_no, total_cost_usd, last_error,
                  created_at, closed_at, resume_at, opened_at
 rounds           id, workflow_id, section_no, started_at, ended_at, terminal_kind, nudges, cost_usd, duration_ms
@@ -616,9 +618,22 @@ stdin EOF stops the session; stdout carries protocol lines only (logs go to
 
 ## 11. GPUI app structure
 
-- One `Window` per repo (`ui::repo_window::RepoWindow`), model = `ui::RepoState`
-  (slots, selected slot, workflow views, activity, diffs, comments). A welcome window
-  opens when no repo is open; launch reopens the last repo (or the path in argv[1]).
+- **Windows** (`ui::repo_window::RepoWindow`, ADR 0011): a repo has one or more, each
+  showing a group of its slots (`slots.window_id`); each window has its own
+  `ui::RepoState` (its slots, selection, workflow views, activity, diffs, comments).
+  Drag a slot's row (or strip dot) out of the window to open it in a new window where
+  it is dropped, or onto another window of the repo to move it there; drag the rail's
+  **Slots** header onto another window to merge all of this window's slots into it.
+  While dragging, the window it would land in is outlined with what dropping does,
+  and the window it came from says what releasing does (`ui/windows.rs`: GPUI keeps
+  sending the pointer to the window a drag started in, which finds the window under
+  it from screen positions). Also: Window › Move Slot to New Window (the rail's
+  context menu, ⌘K) and Merge All Windows. Closing one of a repo's windows merges its
+  slots into another; a window whose last slot leaves closes. A slot's terminals go
+  with it, shells and all. New slots open in the window that made them (follow-ups
+  and agent requests beside their source). The repo reopens with all its windows. A
+  welcome window opens when no repo is open; launch reopens the last repo (or the
+  path in argv[1]).
 - Primary layout: 45px title bar; left **slot rail** (257px as rendered), center
   **event flow** + composer, right **review pane** (521px). The rail collapses to a
   57px strip of state dots: by hand (the button next to + in its header, the one at
@@ -771,6 +786,9 @@ stdin EOF stops the session; stdout carries protocol lines only (logs go to
   `keys` forces it. Screenshots can then trail an `action` by a step, and an action
   sent right after its target appeared is routed against a frame without it and
   lost. When a sequence looks wrong, log the state before suspecting the app.
+  `window <n>` points later commands at another repo window, `windows` logs them
+  all, and `mouse_down`/`mouse_move`/`mouse_up <x> <y>` drive real drags (positions
+  may leave the window, as a drag between windows does).
 
 
 ### 11.1 Terminals
