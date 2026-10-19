@@ -57,6 +57,46 @@ export type Question = { question_id: string, question: string, options: Array<s
  */
 answered_at?: number, };
 
+export type FindingLevel = "low" | "mid" | "high";
+
+export type FindingAction = "fix" | "dismiss" | "decide";
+
+export type Finding = { level: FindingLevel, 
+/**
+ * One line: what is wrong.
+ */
+title: string, 
+/**
+ * Why it matters and what a fix would be.
+ */
+detail: string, 
+/**
+ * Where it is, relative to the checkout.
+ */
+path?: string, line?: number, 
+/**
+ * What the agent recommends; the user's choice starts here.
+ */
+suggested: FindingAction, 
+/**
+ * What the user chose, once the decisions are sent.
+ */
+choice?: FindingAction, 
+/**
+ * The user's own words, for `decide`.
+ */
+note?: string, };
+
+export type Review = { review_id: string, 
+/**
+ * What was reviewed, and the overall verdict.
+ */
+summary?: string, findings: Array<Finding>, 
+/**
+ * When the user sent their decisions (unix epoch milliseconds).
+ */
+answered_at?: number, };
+
 export type Decision = { title: string, rationale: string, affects: Array<string>, reversible: boolean, };
 
 export type Summary = { done: Array<string>, remaining: Array<string>, follow_ups: Array<FollowUp>, notes?: string, };
@@ -85,11 +125,11 @@ export type Artifact = { artifact_id: string, title: string, description?: strin
  */
 error?: string, };
 
-export type NodeKind = "origin" | "prompt" | "question" | "decision" | "summary" | "outcome" | "subagent_spawn" | "collect_results" | "artifact";
+export type NodeKind = "origin" | "prompt" | "question" | "decision" | "summary" | "outcome" | "subagent_spawn" | "collect_results" | "artifact" | "review";
 
-export type NodePayload = { "kind": "origin", "payload": Origin } | { "kind": "prompt", "payload": Prompt } | { "kind": "question", "payload": Question } | { "kind": "decision", "payload": Decision } | { "kind": "summary", "payload": Summary } | { "kind": "outcome", "payload": Outcome } | { "kind": "subagent_spawn", "payload": SubagentSpawn } | { "kind": "collect_results", "payload": CollectResults } | { "kind": "artifact", "payload": Artifact };
+export type NodePayload = { "kind": "origin", "payload": Origin } | { "kind": "prompt", "payload": Prompt } | { "kind": "question", "payload": Question } | { "kind": "decision", "payload": Decision } | { "kind": "summary", "payload": Summary } | { "kind": "outcome", "payload": Outcome } | { "kind": "subagent_spawn", "payload": SubagentSpawn } | { "kind": "collect_results", "payload": CollectResults } | { "kind": "artifact", "payload": Artifact } | { "kind": "review", "payload": Review };
 
-export type ToolName = "record_decision" | "ask_user" | "write_summary" | "record_outcome" | "request_slot" | "present_artifact";
+export type ToolName = "record_decision" | "ask_user" | "write_summary" | "record_outcome" | "request_slot" | "present_artifact" | "present_review";
 
 export type FollowUpInput = { id?: string, title: string, description: string, };
 
@@ -110,6 +150,10 @@ export type PresentArtifactInput = {
  * Path to the file, absolute or relative to the checkout.
  */
 path: string, title: string, description?: string, };
+
+export type FindingInput = { level: FindingLevel, title: string, detail: string, path?: string, line?: number, suggested: FindingAction, };
+
+export type PresentReviewInput = { findings: Array<FindingInput>, summary?: string, };
 
 export type ConnectorSkill = { name: string, description: string, };
 
@@ -174,9 +218,11 @@ path: string, mime: string, };
 
 export type QuestionAnswer = { question_id: string, text: string, };
 
+export type ReviewAnswer = { review_id: string, text: string, };
+
 export type SlotRequestResolved = { request_id: string, approved: boolean, slot_id?: string, };
 
-export type AppToSidecar = { "type": "session.start" } & SessionStart | { "type": "session.resume" } & SessionResume | { "type": "session.turn" } & SessionTurn | { "type": "session.interrupt" } | { "type": "session.stop" } | { "type": "question.answer" } & QuestionAnswer | { "type": "slot_request.resolved" } & SlotRequestResolved | { "type": "session.configure" } & SessionConfigure;
+export type AppToSidecar = { "type": "session.start" } & SessionStart | { "type": "session.resume" } & SessionResume | { "type": "session.turn" } & SessionTurn | { "type": "session.interrupt" } | { "type": "session.stop" } | { "type": "question.answer" } & QuestionAnswer | { "type": "review.answer" } & ReviewAnswer | { "type": "slot_request.resolved" } & SlotRequestResolved | { "type": "session.configure" } & SessionConfigure;
 
 export type SessionStarted = { claude_session_id: string, };
 
@@ -208,6 +254,8 @@ export type NodeArtifact = { artifact_id: string,
  */
 path: string, title: string, description?: string, size_bytes: number, };
 
+export type NodeReview = { review_id: string, summary?: string, findings: Array<FindingInput>, };
+
 export type BranchSpawned = { branch_id: string, 
 /**
  * The `Agent` tool_use id; subagent events carry it as `parent_tool_use_id`.
@@ -235,11 +283,11 @@ export type SessionCost = { total_usd: number, };
 
 export type SessionError = { message: string, fatal: boolean, };
 
-export type SidecarToApp = { "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.artifact" } & NodeArtifact | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels;
+export type SidecarToApp = { "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.artifact" } & NodeArtifact | { "type": "node.review" } & NodeReview | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels;
 
-export type AppMessage = { id: string, } & ({ "type": "session.start" } & SessionStart | { "type": "session.resume" } & SessionResume | { "type": "session.turn" } & SessionTurn | { "type": "session.interrupt" } | { "type": "session.stop" } | { "type": "question.answer" } & QuestionAnswer | { "type": "slot_request.resolved" } & SlotRequestResolved | { "type": "session.configure" } & SessionConfigure);
+export type AppMessage = { id: string, } & ({ "type": "session.start" } & SessionStart | { "type": "session.resume" } & SessionResume | { "type": "session.turn" } & SessionTurn | { "type": "session.interrupt" } | { "type": "session.stop" } | { "type": "question.answer" } & QuestionAnswer | { "type": "review.answer" } & ReviewAnswer | { "type": "slot_request.resolved" } & SlotRequestResolved | { "type": "session.configure" } & SessionConfigure);
 
-export type SidecarMessage = { id: string, reply_to?: string, } & ({ "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.artifact" } & NodeArtifact | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels);
+export type SidecarMessage = { id: string, reply_to?: string, } & ({ "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.artifact" } & NodeArtifact | { "type": "node.review" } & NodeReview | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels);
 
 export const MCP_SERVER_NAME = "berth" as const;
 
@@ -250,4 +298,5 @@ export const TOOLS: Record<ToolName, { terminal: boolean; subagent: boolean; des
   record_outcome: { terminal: true, subagent: false, description: "Record how the workflow ended (usually the PR you opened with `gh`). Ends the workflow. Use kind=pr with the PR URL as ref." },
   request_slot: { terminal: false, subagent: false, description: "Ask the app to create a new slot with its own workflow (for example to pursue a follow-up in parallel). The user must approve. The current workflow continues here." },
   present_artifact: { terminal: false, subagent: false, description: "Show the user a file you made: a screenshot, a screen recording, a rendered chart or page, a report. Save it first, then pass its path and a short title. The app copies it and shows it as a card in the event flow. Non-blocking." },
+  present_review: { terminal: true, subagent: false, description: "Present code review findings and wait for the user's decision on each. One finding per issue: its level (high: a bug, data loss or a security hole; mid: worth fixing before merge; low: a nit), a one-line title, the detail (why it matters, what a fix would be), where it is, and what you suggest: fix, dismiss (not worth changing), or decide (a judgment call that is theirs). The user picks for each and the decisions come back as the result: fix what they marked fix, leave the dismissed ones, follow their words on the rest. Ends the round while waiting; the decisions resume it." },
 };

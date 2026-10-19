@@ -36,7 +36,7 @@ use crate::keymap::{
     FocusComposer, FollowUpFromOutcome, Interrupt, JumpToNeeding, NewWorkflow, NewWorkflowHere,
     NewWorkflowTab, NextChange, NextSlot, OpenSettings, PrevChange, PrevSlot, RefreshReview,
     RenameSlot, ReviewBranch, ReviewSection, ReviewWorkflow, SelectSlot, ShowFile, ShowFiles,
-    ToggleDiffMode, ToggleRail, ToggleReview,
+    ShowFindings, ShowReview, ToggleDiffMode, ToggleRail, ToggleReview,
 };
 use crate::keymap::{
     CloseTerminal, HideTerminal, KillTerminal, NewTerminal, NextTerminal, PrevTerminal,
@@ -365,6 +365,7 @@ impl RepoWindow {
     ) {
         match event {
             RepoEvent::OpenReview => self.set_review(true, cx),
+            RepoEvent::ShowFindings => self.show_findings(None, window, cx),
             RepoEvent::TerminalSpec { slot_id, result } => match result {
                 Ok(spec) => self.start_terminal(slot_id, spec, window, cx),
                 Err(message) => {
@@ -491,6 +492,20 @@ impl RepoWindow {
         self.review.update(cx, |r, cx| r.show_file(file, cx));
         self.set_review(true, cx);
         let focus = self.review.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+    }
+
+    /// Open the review pane on its Findings tab (on `review`, a `review_id`)
+    /// and give it the keys.
+    fn show_findings(
+        &mut self,
+        review: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.review.update(cx, |r, cx| r.show_findings(review, cx));
+        self.set_review(true, cx);
+        let focus = self.review.read(cx).findings_focus(cx);
         window.focus(&focus, cx);
     }
 
@@ -818,6 +833,12 @@ impl Render for RepoWindow {
             .on_action(cx.listener(|this, _: &ShowFiles, window, cx| {
                 this.show_files(None, window, cx);
             }))
+            .on_action(cx.listener(|this, _: &ShowFindings, window, cx| {
+                this.show_findings(None, window, cx);
+            }))
+            .on_action(cx.listener(|this, a: &ShowReview, window, cx| {
+                this.show_findings(Some(a.0.clone()), window, cx);
+            }))
             .on_action(
                 cx.listener(|this, _: &ToggleReview, _, cx| this.set_review(!this.review_open, cx)),
             )
@@ -830,7 +851,16 @@ impl Render for RepoWindow {
                 this.composer.update(cx, |c, cx| c.focus(window, cx));
             }))
             .on_action(cx.listener(|this, _: &FocusAnswer, window, cx| {
-                this.flow.update(cx, |f, cx| f.focus_answer(window, cx));
+                // A review is answered in the review pane, a question in its card.
+                let review = this
+                    .state
+                    .read(cx)
+                    .selected_view()
+                    .and_then(|v| v.pending_review().map(|(_, r)| r.review_id.clone()));
+                match review {
+                    Some(id) => this.show_findings(Some(id), window, cx),
+                    None => this.flow.update(cx, |f, cx| f.focus_answer(window, cx)),
+                }
             }))
             .on_action(cx.listener(|this, _: &AttachFiles, _, cx| {
                 this.composer.update(cx, Composer::pick_files);

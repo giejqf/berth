@@ -20,6 +20,8 @@ use crate::backend::{
 #[derive(Debug, Clone)]
 pub enum RepoEvent {
     OpenReview,
+    /// A review arrived in the selected workflow: open its findings.
+    ShowFindings,
     /// A terminal's spec arrived: the window starts it (it needs a window).
     TerminalSpec {
         slot_id: String,
@@ -480,6 +482,11 @@ impl RepoState {
                 if self.selected_workflow_id().as_deref() == Some(workflow_id.as_str()) {
                     self.load_diff(&workflow_id, DiffPreset::Section, None, cx);
                     cx.emit(RepoEvent::OpenReview);
+                }
+            }
+            UiEvent::ShowFindings { workflow_id } if self.knows(&workflow_id) => {
+                if self.selected_workflow_id().as_deref() == Some(workflow_id.as_str()) {
+                    cx.emit(RepoEvent::ShowFindings);
                 }
             }
             UiEvent::Diff(diff) if self.knows(&diff.request.workflow_id) => {

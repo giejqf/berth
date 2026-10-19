@@ -3,7 +3,8 @@
 //! real git worktrees; the flow is written straight into the store.
 //!
 //! Scenarios: `question` (default), `working`, `review`, `comments`, `done`,
-//! `empty` (a repo without workflows), `welcome` (only recent repositories).
+//! `findings` (the third slot waits on decisions about a code review), `empty`
+//! (a repo without workflows), `welcome` (only recent repositories).
 
 use std::path::{Path, PathBuf};
 use std::process::Command as Proc;
@@ -14,8 +15,9 @@ use berth_core::{
     WorkflowState, ids::new_id, paths,
 };
 use berth_protocol::{
-    BranchStatus, CollectResults, Decision, DiffPreset, DiffSide, FollowUp, NodePayload, Origin,
-    OriginKind, Outcome, OutcomeKind, Prompt, Question, ReviewComment, SubagentSpawn, Summary,
+    BranchStatus, CollectResults, Decision, DiffPreset, DiffSide, Finding, FindingAction,
+    FindingLevel, FollowUp, NodePayload, Origin, OriginKind, Outcome, OutcomeKind, Prompt,
+    Question, Review, ReviewComment, SubagentSpawn, Summary,
 };
 use chrono::{Local, TimeZone as _};
 
@@ -352,9 +354,92 @@ pub fn seed(scenario: &str) -> Result<Option<PathBuf>> {
         "Move the app's settings from `config.json` to `config.toml`.",
         at(12, 5, 0),
     )?;
-    s.round(&wc.id, 1, at(12, 5, 10))?;
-    s.store.set_workflow_state(&wc.id, WorkflowState::Running)?;
+    let rc = s.round(&wc.id, 1, at(12, 5, 10))?;
+    if scenario == "findings" {
+        seed_findings(&s, &s.checkout(&c), &wc.id, &rc, at(12, 9, 0))?;
+    } else {
+        s.store.set_workflow_state(&wc.id, WorkflowState::Running)?;
+    }
     Ok(Some(repo_dir))
+}
+
+/// The `findings` scenario: the agent migrated the config, reviewed its own
+/// change and waits on the user's decision about five findings.
+fn seed_findings(s: &Seeder<'_>, checkout: &Path, wf: &str, round: &str, at: i64) -> Result<()> {
+    std::fs::write(
+        checkout.join("config.toml"),
+        "[server]\nport = 8080\ntimeout = 30\n\n[log]\nlevel = \"info\"\n",
+    )?;
+    std::fs::write(
+        checkout.join("config.rs"),
+        "pub fn load(path: &str) -> Config {\n    let text = std::fs::read_to_string(path).unwrap();\n    toml::from_str(&text).unwrap()\n}\n",
+    )?;
+    s.node(wf, Some(round), None, NodePayload::Decision(Decision {
+        title: "Read `config.json` once more on first launch".into(),
+        rationale: "Existing installs still have a JSON file; reading it once and writing `config.toml` keeps their settings without a separate migration step.".into(),
+        affects: vec!["config.rs".into()],
+        reversible: true,
+    }), at)?;
+    let finding = |level, title: &str, detail: &str, path: &str, line, suggested| Finding {
+        level,
+        title: title.into(),
+        detail: detail.into(),
+        path: Some(path.into()),
+        line,
+        suggested,
+        choice: None,
+        note: None,
+    };
+    s.node(wf, Some(round), None, NodePayload::Review(Review {
+        review_id: "rv-toml".into(),
+        summary: Some("I reviewed the TOML migration (2 files) before opening a PR. One real bug, one risk worth fixing, and three smaller points.".into()),
+        findings: vec![
+            finding(
+                FindingLevel::High,
+                "A missing config file panics at startup",
+                "`load` calls `unwrap()` on `read_to_string`, so a first launch without `config.toml` (every new install) crashes before the window opens.\n\nFix: return the defaults when the file does not exist, and surface any other read error to the caller.",
+                "config.rs",
+                Some(2),
+                FindingAction::Fix,
+            ),
+            finding(
+                FindingLevel::Mid,
+                "Malformed TOML is not reported",
+                "A typo in `config.toml` makes `toml::from_str` fail, and the second `unwrap()` turns it into a panic with no line number.\n\nFix: map the error to one that names the file and the line, and show it in the settings window.",
+                "config.rs",
+                Some(3),
+                FindingAction::Fix,
+            ),
+            finding(
+                FindingLevel::Mid,
+                "The JSON file is left behind",
+                "After the one-time import, `config.json` stays on disk. Nothing reads it again, but a user editing it would see no effect.\n\nOptions: delete it after a successful import, rename it to `config.json.bak`, or leave it. This changes users' files, so it is your call.",
+                "config.rs",
+                None,
+                FindingAction::Decide,
+            ),
+            finding(
+                FindingLevel::Low,
+                "`timeout` has no unit",
+                "`timeout = 30` reads as seconds, but nothing says so. Renaming it to `timeout_secs` makes it self-describing; it is a breaking change for anyone who already wrote the key.",
+                "config.toml",
+                Some(3),
+                FindingAction::Dismiss,
+            ),
+            finding(
+                FindingLevel::Low,
+                "Sections are not sorted",
+                "`[log]` comes after `[server]`; most of the repo's TOML files sort sections alphabetically. Purely cosmetic.",
+                "config.toml",
+                Some(5),
+                FindingAction::Dismiss,
+            ),
+        ],
+        answered_at: None,
+    }), berth_core::ids::now_ms() - 25_000)?;
+    s.store
+        .set_workflow_state(wf, WorkflowState::AwaitingAnswer)?;
+    Ok(())
 }
 
 struct Seeder<'a> {

@@ -7,15 +7,16 @@
 use std::collections::{HashMap, HashSet};
 
 use berth_protocol::{
-    BranchStatus, CollectResults, Decision, NodePayload, Origin, Outcome, Prompt, Question,
-    ReviewComment, SidecarToApp, SlotRequest, SubagentSpawn, Summary, TerminalKind,
+    BranchStatus, CollectResults, Decision, Finding, FindingAction, NodePayload, Origin, Outcome,
+    Prompt, Question, Review, ReviewComment, SidecarToApp, SlotRequest, SubagentSpawn, Summary,
+    TerminalKind,
 };
 
 use crate::activity::RoundActivity;
 use crate::error::{CoreError, Result};
 use crate::ids::{new_id, now_ms};
 use crate::model::{Branch, BranchState, Node, SnapshotKind, Workflow, WorkflowState};
-use crate::prompt::{answer_as_turn, serialize_prompt};
+use crate::prompt::{answer_as_turn, review_as_turn, review_decisions, serialize_prompt};
 use crate::store::{NewRawEvent, Store};
 
 /// Work the app performs on the engine's behalf.
@@ -35,6 +36,10 @@ pub enum Effect {
     },
     /// Open the review pane (on Summary and Outcome, §11).
     OpenReview {
+        workflow_id: String,
+    },
+    /// Open the review pane on its Findings tab (a review arrived).
+    ShowFindings {
         workflow_id: String,
     },
     /// Link the outcome to a GitHub entity (kind = pr).
@@ -85,6 +90,8 @@ pub enum Effect {
 pub enum AnswerDelivery {
     /// The `ask_user` call is still blocked in this sidecar: send `question.answer`.
     Answer { question_id: String, text: String },
+    /// The `present_review` call is still blocked: send `review.answer`.
+    Review { review_id: String, text: String },
     /// The sidecar restarted since the question was asked: send a new turn.
     Turn(String),
 }
@@ -102,8 +109,9 @@ struct Live {
     latest_raw: Option<i64>,
     /// Last raw event id already covered by a node, per lane (`None` = main).
     lane_cursor: HashMap<Option<String>, i64>,
-    /// Questions whose `ask_user` call is blocked in the current sidecar.
-    live_questions: HashSet<String>,
+    /// Questions and reviews whose `ask_user` / `present_review` call is
+    /// blocked in the current sidecar.
+    blocked: HashSet<String>,
     /// What the open round is doing (the live card, the rail's second line).
     activity: Option<RoundActivity>,
 }
@@ -267,7 +275,7 @@ impl Engine {
         q.answered_at = Some(now_ms());
         store.update_node_payload(&node.id, &NodePayload::Question(q.clone()))?;
         let live = self.live(workflow_id);
-        let delivery = if live.live_questions.remove(question_id) {
+        let delivery = if live.blocked.remove(question_id) {
             AnswerDelivery::Answer {
                 question_id: question_id.to_owned(),
                 text: text.to_owned(),
@@ -279,6 +287,72 @@ impl Engine {
                 store.insert_round(workflow_id, wf.section_no, now_ms())?;
             }
             AnswerDelivery::Turn(answer_as_turn(&q.question, text))
+        };
+        store.set_workflow_state(workflow_id, WorkflowState::Running)?;
+        Ok(delivery)
+    }
+
+    /// Record the user's decision on each finding of a review (`(choice,
+    /// note)`, in the findings' order) and decide how to deliver them. A
+    /// `decide` needs the user's words.
+    pub fn answer_review(
+        &mut self,
+        store: &Store,
+        workflow_id: &str,
+        review_id: &str,
+        choices: &[(FindingAction, Option<String>)],
+    ) -> Result<AnswerDelivery> {
+        let node =
+            store
+                .review_node(workflow_id, review_id)?
+                .ok_or_else(|| CoreError::NotFound {
+                    kind: "review",
+                    id: review_id.to_owned(),
+                })?;
+        let NodePayload::Review(mut r) = node.payload else {
+            return Err(CoreError::Corrupt {
+                what: "review node",
+                value: node.id,
+            });
+        };
+        if r.answered_at.is_some() {
+            return Err(CoreError::InvalidTransition(format!(
+                "review {review_id} already answered"
+            )));
+        }
+        if choices.len() != r.findings.len() {
+            return Err(CoreError::InvalidTransition(format!(
+                "review {review_id} has {} findings, got {} decisions",
+                r.findings.len(),
+                choices.len()
+            )));
+        }
+        for (i, (f, (choice, note))) in r.findings.iter_mut().zip(choices).enumerate() {
+            let note = note.as_deref().map(str::trim).filter(|n| !n.is_empty());
+            if *choice == FindingAction::Decide && note.is_none() {
+                return Err(CoreError::InvalidTransition(format!(
+                    "finding {} is yours to decide: say what to do",
+                    i + 1
+                )));
+            }
+            f.choice = Some(*choice);
+            f.note = note
+                .filter(|_| *choice == FindingAction::Decide)
+                .map(str::to_owned);
+        }
+        r.answered_at = Some(now_ms());
+        store.update_node_payload(&node.id, &NodePayload::Review(r.clone()))?;
+        let delivery = if self.live(workflow_id).blocked.remove(review_id) {
+            AnswerDelivery::Review {
+                review_id: review_id.to_owned(),
+                text: review_decisions(&r),
+            }
+        } else {
+            if store.open_round(workflow_id)?.is_none() {
+                let wf = store.workflow(workflow_id)?;
+                store.insert_round(workflow_id, wf.section_no, now_ms())?;
+            }
+            AnswerDelivery::Turn(review_as_turn(&r))
         };
         store.set_workflow_state(workflow_id, WorkflowState::Running)?;
         Ok(delivery)
@@ -387,10 +461,37 @@ impl Engine {
                     answered_at: None,
                 });
                 self.insert_lane_node(store, workflow_id, None, payload)?;
-                self.live(workflow_id)
-                    .live_questions
-                    .insert(q.question_id.clone());
+                self.live(workflow_id).blocked.insert(q.question_id.clone());
                 self.set_state(store, workflow_id, WorkflowState::AwaitingAnswer, &mut fx)?;
+                fx.push(Effect::FlowChanged { workflow_id: wf_id });
+            }
+            SidecarToApp::NodeReview(r) => {
+                let findings = r
+                    .findings
+                    .iter()
+                    .map(|f| Finding {
+                        level: f.level,
+                        title: f.title.clone(),
+                        detail: f.detail.clone(),
+                        path: f.path.clone(),
+                        line: f.line,
+                        suggested: f.suggested,
+                        choice: None,
+                        note: None,
+                    })
+                    .collect();
+                let payload = NodePayload::Review(Review {
+                    review_id: r.review_id.clone(),
+                    summary: r.summary.clone(),
+                    findings,
+                    answered_at: None,
+                });
+                self.insert_lane_node(store, workflow_id, None, payload)?;
+                self.live(workflow_id).blocked.insert(r.review_id.clone());
+                self.set_state(store, workflow_id, WorkflowState::AwaitingAnswer, &mut fx)?;
+                fx.push(Effect::ShowFindings {
+                    workflow_id: wf_id.clone(),
+                });
                 fx.push(Effect::FlowChanged { workflow_id: wf_id });
             }
             SidecarToApp::NodeSummary(s) => {
@@ -561,8 +662,8 @@ impl Engine {
                     )?;
                     self.end_section(store, workflow_id, &mut fx)?;
                 }
-                // Questions that were still pending when the round ended are moot.
-                self.live(workflow_id).live_questions.clear();
+                // Questions and reviews still pending when the round ended are moot.
+                self.live(workflow_id).blocked.clear();
                 let wf = store.workflow(workflow_id)?;
                 if wf.state.is_open() {
                     self.set_state(store, workflow_id, WorkflowState::Idle, &mut fx)?;

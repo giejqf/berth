@@ -70,6 +70,15 @@ actions!(
         ToggleZoom,
         QuickLookFile,
         CopyShownFile,
+        // review pane: findings
+        ShowFindings,
+        NextFinding,
+        PrevFinding,
+        NextChoice,
+        PrevChoice,
+        WriteDecision,
+        FocusFindings,
+        SendDecisions,
         // dialogs
         Confirm,
         // terminal
@@ -122,6 +131,17 @@ pub struct ExpandLane(pub usize);
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = berth, no_json)]
 pub struct ShowFile(pub String);
+
+/// Show this review (by `review_id`) in the review pane's Findings tab (its
+/// node in the flow; no binding).
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = berth, no_json)]
+pub struct ShowReview(pub String);
+
+/// 1–3 on a finding: fix, dismiss, decide (0-based).
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = berth, no_json)]
+pub struct PickChoice(pub usize);
 
 /// Copy this file (the app's copy): an image as image data, anything else as a
 /// Finder file reference (a file's right-click menu; no binding).
@@ -376,6 +396,26 @@ pub const SHORTCUTS: &[Shortcut] = &[
         group: "Review pane",
     },
     Shortcut {
+        keys: "↑ ↓",
+        label: "Move between findings (Findings; hover or move to read one)",
+        group: "Review pane",
+    },
+    Shortcut {
+        keys: "1 2 3",
+        label: "Fix, dismiss, or decide yourself (Findings; ← → also switch)",
+        group: "Review pane",
+    },
+    Shortcut {
+        keys: "Tab",
+        label: "Write your decision on the finding (Findings)",
+        group: "Review pane",
+    },
+    Shortcut {
+        keys: "⌘↩",
+        label: "Send your decisions to the agent (Findings)",
+        group: "Review pane",
+    },
+    Shortcut {
         keys: "C",
         label: "Comment on the hovered or focused line",
         group: "Comments & dialogs",
@@ -487,6 +527,7 @@ pub fn palette_actions() -> Vec<(&'static str, &'static str, Box<dyn Action>)> {
             Box::new(ToggleTerminalSize),
         ),
         ("Show the workflow's files", "", Box::new(ShowFiles)),
+        ("Show the code review findings", "", Box::new(ShowFindings)),
         ("Rename slot…", "", Box::new(RenameSlot)),
         ("Destroy slot…", "", Box::new(DestroySlot)),
         ("Close window", "⌘W", Box::new(CloseWindow)),
@@ -567,6 +608,16 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("z", ToggleZoom, Some("ReviewFiles")),
         KeyBinding::new("space", QuickLookFile, Some("ReviewFiles")),
         KeyBinding::new("cmd-c", CopyShownFile, Some("ReviewFiles")),
+        KeyBinding::new("down", NextFinding, Some("ReviewFindings")),
+        KeyBinding::new("up", PrevFinding, Some("ReviewFindings")),
+        KeyBinding::new("j", NextFinding, Some("ReviewFindings")),
+        KeyBinding::new("k", PrevFinding, Some("ReviewFindings")),
+        KeyBinding::new("right", NextChoice, Some("ReviewFindings")),
+        KeyBinding::new("left", PrevChoice, Some("ReviewFindings")),
+        KeyBinding::new("tab", WriteDecision, Some("ReviewFindings")),
+        // A decision field passes esc on: back to the findings.
+        KeyBinding::new("escape", FocusFindings, Some("ReviewFindings")),
+        KeyBinding::new("cmd-enter", SendDecisions, Some("ReviewFindings")),
         // dialogs
         KeyBinding::new("cmd-enter", Confirm, Some("Dialog")),
     ];
@@ -580,6 +631,13 @@ pub fn bindings() -> Vec<KeyBinding> {
             &format!("{}", n + 1),
             PickOption(n),
             Some("AnswerCard"),
+        ));
+    }
+    for n in 0..3 {
+        b.push(KeyBinding::new(
+            &format!("{}", n + 1),
+            PickChoice(n),
+            Some("ReviewFindings"),
         ));
     }
     for n in 0..4 {
@@ -665,6 +723,17 @@ mod tests {
         assert!(resolve("r", &["RepoWindow", "EventFlow"]).is_empty());
         // The rename field itself takes the letter.
         assert!(resolve("r", &["RepoWindow", "Dialog", "Input"]).is_empty());
+    }
+
+    #[test]
+    fn findings_take_arrows_but_their_note_fields_keep_them() {
+        let findings = ["RepoWindow", "ReviewPane", "ReviewFindings"];
+        assert_eq!(resolve("right", &findings), ["berth::NextChoice"]);
+        assert_eq!(resolve("2", &findings), ["berth::PickChoice"]);
+        assert_eq!(resolve("cmd-enter", &findings), ["berth::SendDecisions"]);
+        let note = ["RepoWindow", "ReviewPane", "ReviewFindings", "Input"];
+        assert!(resolve("2", &note).is_empty());
+        assert!(resolve("j", &note).is_empty());
     }
 
     #[test]

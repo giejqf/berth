@@ -11,6 +11,7 @@ import {
   TOOLS,
   type AskUserInput,
   type PresentArtifactInput,
+  type PresentReviewInput,
   type RecordDecisionInput,
   type RecordOutcomeInput,
   type RequestSlotInput,
@@ -53,6 +54,21 @@ export const shapes = {
     title: z.string().min(1).describe("What it shows, in a few words"),
     description: z.string().optional().describe("One or two sentences of context"),
   },
+  present_review: {
+    findings: z
+      .array(
+        z.object({
+          level: z.enum(["low", "mid", "high"]).describe("high: a bug, data loss or security; mid: fix before merge; low: a nit"),
+          title: z.string().min(1).describe("What is wrong, in one line"),
+          detail: z.string().describe("Why it matters and what a fix would be"),
+          path: z.string().optional().describe("File, relative to the checkout"),
+          line: z.number().int().positive().optional(),
+          suggested: z.enum(["fix", "dismiss", "decide"]).describe("What you recommend; decide = the user's call"),
+        }),
+      )
+      .min(1),
+    summary: z.string().optional().describe("What you reviewed, and the overall verdict"),
+  },
   request_slot: {
     name: z.string().min(1).describe("Short name for the new slot"),
     purpose: z.string().describe("What the new workflow should do"),
@@ -70,6 +86,7 @@ const schemaMatchesProtocol: {
   record_outcome: Same<Infer<typeof shapes.record_outcome>, RecordOutcomeInput>;
   request_slot: Same<Infer<typeof shapes.request_slot>, RequestSlotInput>;
   present_artifact: Same<Infer<typeof shapes.present_artifact>, PresentArtifactInput>;
+  present_review: Same<Infer<typeof shapes.present_review>, PresentReviewInput>;
 } = {
   record_decision: true,
   ask_user: true,
@@ -77,6 +94,7 @@ const schemaMatchesProtocol: {
   record_outcome: true,
   request_slot: true,
   present_artifact: true,
+  present_review: true,
 };
 void schemaMatchesProtocol;
 
@@ -95,6 +113,7 @@ export interface ToolHost {
   recordOutcome(input: RecordOutcomeInput, call: CallContext): Promise<ToolOutcome>;
   requestSlot(input: RequestSlotInput, call: CallContext): Promise<ToolOutcome>;
   presentArtifact(input: PresentArtifactInput, call: CallContext): Promise<ToolOutcome>;
+  presentReview(input: PresentReviewInput, call: CallContext): Promise<ToolOutcome>;
 }
 
 /** Fully qualified name the model sees, e.g. `mcp__berth__ask_user`. */
@@ -147,6 +166,9 @@ export function createBerthServer(host: ToolHost): McpSdkServerConfigWithInstanc
       ),
       tool("present_artifact", TOOLS.present_artifact.description, shapes.present_artifact, async (args, extra) =>
         result(await host.presentArtifact(args, callContext(extra))),
+      ),
+      tool("present_review", TOOLS.present_review.description, shapes.present_review, async (args, extra) =>
+        result(await host.presentReview(args, callContext(extra))),
       ),
     ],
   });

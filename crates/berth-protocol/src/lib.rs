@@ -47,6 +47,10 @@ pub fn typescript() -> String {
         FileRef,
         Prompt,
         Question,
+        FindingLevel,
+        FindingAction,
+        Finding,
+        Review,
         Decision,
         Summary,
         OutcomeKind,
@@ -67,6 +71,8 @@ pub fn typescript() -> String {
         RequestSlotInput,
         RequestSlotResult,
         PresentArtifactInput,
+        FindingInput,
+        PresentReviewInput,
         // messages
         ConnectorSkill,
         SessionStart,
@@ -78,6 +84,7 @@ pub fn typescript() -> String {
         SessionTurn,
         TurnAttachment,
         QuestionAnswer,
+        ReviewAnswer,
         SlotRequestResolved,
         AppToSidecar,
         SessionStarted,
@@ -87,6 +94,7 @@ pub fn typescript() -> String {
         NodeSummary,
         NodeOutcome,
         NodeArtifact,
+        NodeReview,
         BranchSpawned,
         BranchCollected,
         SlotRequest,
@@ -315,6 +323,54 @@ mod tests {
         });
         let json = node.payload_json().unwrap();
         assert_eq!(NodePayload::from_parts(node.kind(), &json).unwrap(), node);
+    }
+
+    #[test]
+    fn reviews_roundtrip() {
+        let msg: SidecarMessage = serde_json::from_value(serde_json::json!({
+            "id": "r",
+            "type": "node.review",
+            "review_id": "rv",
+            "findings": [
+                {"level": "high", "title": "Unchecked unwrap", "detail": "Panics on empty input.",
+                 "path": "src/parse.rs", "line": 42, "suggested": "fix"},
+                {"level": "low", "title": "Naming", "detail": "Shadows std.", "suggested": "decide"}
+            ]
+        }))
+        .unwrap();
+        let SidecarToApp::NodeReview(r) = &msg.body else {
+            panic!("not node.review");
+        };
+        assert_eq!(r.findings[0].level, FindingLevel::High);
+        assert_eq!(r.findings[1].suggested, FindingAction::Decide);
+        assert_eq!(r.findings[1].line, None);
+        roundtrip_sidecar(&msg);
+        roundtrip_app(&AppMessage {
+            id: "a".into(),
+            body: AppToSidecar::ReviewAnswer(ReviewAnswer {
+                review_id: "rv".into(),
+                text: "1. fix it".into(),
+            }),
+        });
+        let node = NodePayload::Review(Review {
+            review_id: "rv".into(),
+            summary: None,
+            findings: vec![Finding {
+                level: FindingLevel::Mid,
+                title: "t".into(),
+                detail: "d".into(),
+                path: None,
+                line: None,
+                suggested: FindingAction::Dismiss,
+                choice: Some(FindingAction::Decide),
+                note: Some("keep it, rename later".into()),
+            }],
+            answered_at: Some(1),
+        });
+        let json = node.payload_json().unwrap();
+        assert_eq!(NodePayload::from_parts(node.kind(), &json).unwrap(), node);
+        assert!(ToolName::PresentReview.is_terminal());
+        assert!(!ToolName::PresentReview.allowed_in_subagent());
     }
 
     #[test]

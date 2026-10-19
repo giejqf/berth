@@ -8,8 +8,8 @@ use std::time::Duration;
 use anyhow::{Result, anyhow};
 use berth_core::{AnswerDelivery, Effect, WorkflowState, prompt};
 use berth_protocol::{
-    AppToSidecar, ConnectorSkill, QuestionAnswer, SessionResume, SessionStart, SessionTurn,
-    TurnAttachment,
+    AppToSidecar, ConnectorSkill, FindingAction, QuestionAnswer, ReviewAnswer, SessionResume,
+    SessionStart, SessionTurn, TurnAttachment,
 };
 use berth_sidecar_client::{Sidecar, SidecarEvent};
 use berth_slot::Placement;
@@ -216,12 +216,40 @@ impl Shared {
             let super::Core { store, engine } = &mut *core;
             engine.answer(store, workflow_id, question_id, text)?
         };
+        Self::deliver(&session, delivery)?;
+        self.emit_workflow(workflow_id);
+        Ok(())
+    }
+
+    pub(super) async fn answer_review(
+        self: &Arc<Self>,
+        workflow_id: &str,
+        review_id: &str,
+        choices: &[(FindingAction, Option<String>)],
+    ) -> Result<()> {
+        let session = self.ensure_session(workflow_id).await?;
+        let delivery = {
+            let mut core = self.core();
+            let super::Core { store, engine } = &mut *core;
+            engine.answer_review(store, workflow_id, review_id, choices)?
+        };
+        Self::deliver(&session, delivery)?;
+        self.emit_workflow(workflow_id);
+        Ok(())
+    }
+
+    /// Send an answer (or review decisions) to the blocked tool call, or as a
+    /// new turn when that call died with an earlier sidecar.
+    fn deliver(session: &Session, delivery: AnswerDelivery) -> Result<()> {
         match delivery {
             AnswerDelivery::Answer { question_id, text } => {
                 session.send(AppToSidecar::QuestionAnswer(QuestionAnswer {
                     question_id,
                     text,
                 }))?;
+            }
+            AnswerDelivery::Review { review_id, text } => {
+                session.send(AppToSidecar::ReviewAnswer(ReviewAnswer { review_id, text }))?;
             }
             AnswerDelivery::Turn(text) => {
                 session.send(AppToSidecar::SessionTurn(SessionTurn {
@@ -230,7 +258,6 @@ impl Shared {
                 }))?;
             }
         }
-        self.emit_workflow(workflow_id);
         Ok(())
     }
 
@@ -319,6 +346,9 @@ impl Shared {
                 }
                 Effect::OpenReview { workflow_id } => {
                     self.emit(UiEvent::OpenReview { workflow_id });
+                }
+                Effect::ShowFindings { workflow_id } => {
+                    self.emit(UiEvent::ShowFindings { workflow_id });
                 }
                 Effect::FetchArtifact {
                     workflow_id,

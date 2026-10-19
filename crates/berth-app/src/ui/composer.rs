@@ -243,6 +243,7 @@ impl Render for Composer {
             .last()
             .is_some_and(|n| matches!(n.payload, berth_protocol::NodePayload::Summary(_)));
 
+        let reviewing = view.pending_review().is_some();
         let status: gpui::AnyElement = match wf.state {
             WorkflowState::Running | WorkflowState::Starting => div()
                 .flex()
@@ -255,6 +256,19 @@ impl Render for Composer {
                         .child("The agent is working. Interrupt ")
                         .child(kbd("⌘."))
                         .child(" to steer it now, or wait for the round to end."),
+                )
+                .into_any_element(),
+            WorkflowState::AwaitingAnswer if reviewing => div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(dot(8., t.attention))
+                .child(
+                    div()
+                        .flex()
+                        .child("Waiting for your decisions on the findings. Press ")
+                        .child(kbd("A"))
+                        .child(" to go to them; the composer unlocks when the round resumes."),
                 )
                 .into_any_element(),
             WorkflowState::AwaitingAnswer => div()
@@ -293,6 +307,9 @@ impl Render for Composer {
         let footer_hint: gpui::AnyElement = match wf.state {
             WorkflowState::Running | WorkflowState::Starting => div()
                 .child("Unlocks when the agent asks or summarizes")
+                .into_any_element(),
+            WorkflowState::AwaitingAnswer if reviewing => div()
+                .child("Decisions go through the review pane, not here")
                 .into_any_element(),
             WorkflowState::AwaitingAnswer => div()
                 .child("Answers go through the card, not here")

@@ -8,10 +8,10 @@ use berth_core::{
     ids::{new_id, now_ms},
 };
 use berth_protocol::{
-    BranchCollected, BranchSpawned, BranchStatus, Decision, DiffPreset, DiffSide, NodeArtifact,
-    NodeDecision, NodeOutcome, NodePayload, NodeQuestion, NodeSummary, Origin, OriginKind, Outcome,
-    OutcomeKind, RawEvent, RoundEnded, SessionCost, SessionError, SessionStarted, SidecarToApp,
-    Summary, TerminalKind,
+    BranchCollected, BranchSpawned, BranchStatus, Decision, DiffPreset, DiffSide, FindingAction,
+    FindingInput, FindingLevel, NodeArtifact, NodeDecision, NodeOutcome, NodePayload, NodeQuestion,
+    NodeReview, NodeSummary, Origin, OriginKind, Outcome, OutcomeKind, RawEvent, RoundEnded,
+    SessionCost, SessionError, SessionStarted, SidecarToApp, Summary, TerminalKind,
 };
 
 fn setup() -> (Store, Engine, String) {
@@ -267,6 +267,134 @@ fn questions_answer_live_or_as_turn_after_restart() {
     };
     assert!(text.contains("Which DB?") && text.contains("postgres"));
     assert!(store.open_round(&wf).unwrap().is_some());
+}
+
+#[test]
+fn reviews_wait_for_a_decision_on_every_finding() {
+    let (store, mut engine, wf) = setup();
+    engine.session_started(&wf);
+    engine
+        .submit_prompt(&store, &wf, "review it", vec![])
+        .unwrap();
+    let finding = |title: &str, suggested| FindingInput {
+        level: FindingLevel::High,
+        title: title.into(),
+        detail: "why".into(),
+        path: Some("src/a.rs".into()),
+        line: Some(3),
+        suggested,
+    };
+    let review = |id: &str| {
+        SidecarToApp::NodeReview(NodeReview {
+            review_id: id.into(),
+            summary: Some("Two findings.".into()),
+            findings: vec![
+                finding("Unchecked unwrap", FindingAction::Fix),
+                finding("Naming", FindingAction::Decide),
+            ],
+        })
+    };
+    let fx = engine.apply(&store, &wf, &review("r1")).unwrap();
+    assert!(fx.iter().any(|e| matches!(e, Effect::ShowFindings { .. })));
+    assert_eq!(
+        store.workflow(&wf).unwrap().state,
+        WorkflowState::AwaitingAnswer
+    );
+    let facts = store.workflow_facts(&wf).unwrap();
+    assert_eq!(facts.review.map(|(_, n)| n), Some(2));
+    assert!(facts.question_at.is_none());
+
+    // Every finding needs a decision, and a decide needs words.
+    let fix = (FindingAction::Fix, None);
+    assert!(
+        engine
+            .answer_review(&store, &wf, "r1", std::slice::from_ref(&fix))
+            .is_err()
+    );
+    assert!(
+        engine
+            .answer_review(
+                &store,
+                &wf,
+                "r1",
+                &[fix.clone(), (FindingAction::Decide, Some("  ".into()))]
+            )
+            .is_err()
+    );
+    let d = engine
+        .answer_review(
+            &store,
+            &wf,
+            "r1",
+            &[
+                (FindingAction::Dismiss, Some("ignored".into())),
+                (FindingAction::Decide, Some("rename it later".into())),
+            ],
+        )
+        .unwrap();
+    let AnswerDelivery::Review { review_id, text } = d else {
+        panic!("{d:?}")
+    };
+    assert_eq!(review_id, "r1");
+    assert_eq!(
+        text,
+        "1. [high] Unchecked unwrap (src/a.rs:3): dismissed, leave it as it is\n\
+         2. [high] Naming (src/a.rs:3): my call: rename it later"
+    );
+    assert_eq!(store.workflow(&wf).unwrap().state, WorkflowState::Running);
+    let view = store.workflow_view(&wf).unwrap();
+    assert!(view.pending_review().is_none());
+    let NodePayload::Review(r) = &view.nodes.last().unwrap().payload else {
+        panic!()
+    };
+    assert_eq!(r.findings[0].choice, Some(FindingAction::Dismiss));
+    // Only a decide keeps its note.
+    assert_eq!(r.findings[0].note, None);
+    assert_eq!(r.findings[1].note.as_deref(), Some("rename it later"));
+    assert!(
+        engine
+            .answer_review(&store, &wf, "r1", &[fix.clone(), fix.clone()])
+            .is_err()
+    );
+    assert!(store.workflow_facts(&wf).unwrap().review.is_none());
+
+    // The sidecar dies while a review waits: the decisions go as a new turn.
+    engine.apply(&store, &wf, &review("r2")).unwrap();
+    engine.sidecar_exited(&store, &wf, None).unwrap();
+    engine.session_started(&wf);
+    let d = engine
+        .answer_review(&store, &wf, "r2", &[fix.clone(), fix])
+        .unwrap();
+    let AnswerDelivery::Turn(text) = d else {
+        panic!("{d:?}")
+    };
+    assert!(text.starts_with("Earlier you presented code review findings."));
+    assert!(store.open_round(&wf).unwrap().is_some());
+
+    // A question the round ended on stays unanswered, but the workflow waits
+    // on the review that came after it, not on that question.
+    engine
+        .apply(
+            &store,
+            &wf,
+            &SidecarToApp::NodeQuestion(NodeQuestion {
+                question_id: "q-old".into(),
+                question: "?".into(),
+                options: vec![],
+                allow_free_text: true,
+            }),
+        )
+        .unwrap();
+    engine
+        .apply(&store, &wf, &ended(TerminalKind::Interrupted, None))
+        .unwrap();
+    engine
+        .submit_prompt(&store, &wf, "review again", vec![])
+        .unwrap();
+    engine.apply(&store, &wf, &review("r3")).unwrap();
+    let view = store.workflow_view(&wf).unwrap();
+    assert!(view.pending_question().is_none());
+    assert_eq!(view.pending_review().unwrap().1.review_id, "r3");
 }
 
 #[test]

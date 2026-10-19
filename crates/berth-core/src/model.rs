@@ -363,6 +363,8 @@ pub struct ConnectorRow {
 pub struct WorkflowFacts {
     /// When the pending question was asked.
     pub question_at: Option<i64>,
+    /// When the pending review was presented, and how many findings it has.
+    pub review: Option<(i64, usize)>,
     /// When the last section was summarized.
     pub summary_at: Option<i64>,
     pub outcome: Option<berth_protocol::Outcome>,
@@ -386,10 +388,33 @@ impl WorkflowView {
         self.branches.iter().find(|b| b.id == id)
     }
 
+    /// What the workflow waits on while `awaiting_answer`: its latest question
+    /// or review, unanswered. An older one left unanswered (the round ended
+    /// first) is not.
+    fn waiting_on(&self) -> Option<&Node> {
+        if self.workflow.state != WorkflowState::AwaitingAnswer {
+            return None;
+        }
+        self.nodes
+            .iter()
+            .rev()
+            .find(|n| matches!(n.payload, NodePayload::Question(_) | NodePayload::Review(_)))
+    }
+
+    /// The question the workflow waits on.
     #[must_use]
     pub fn pending_question(&self) -> Option<(&Node, &berth_protocol::Question)> {
-        self.nodes.iter().rev().find_map(|n| match &n.payload {
+        self.waiting_on().and_then(|n| match &n.payload {
             NodePayload::Question(q) if q.answer.is_none() => Some((n, q)),
+            _ => None,
+        })
+    }
+
+    /// The review the workflow waits on.
+    #[must_use]
+    pub fn pending_review(&self) -> Option<(&Node, &berth_protocol::Review)> {
+        self.waiting_on().and_then(|n| match &n.payload {
+            NodePayload::Review(r) if r.answered_at.is_none() => Some((n, r)),
             _ => None,
         })
     }

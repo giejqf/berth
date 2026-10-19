@@ -1,8 +1,10 @@
 //! Review pane (AGENTS.md §7): read-only diff between two tree snapshots,
 //! with presets, a file list, line comments, and "ask agent about this hunk";
-//! and the workflow's files (`files`). No editing.
+//! the workflow's files (`files`); and the agent's code review findings
+//! (`findings`). No editing.
 
 mod files;
+pub mod findings;
 
 use std::sync::Arc;
 
@@ -14,6 +16,7 @@ use gpui::{
 };
 use gpui_component::input::{InputEvent, InputState};
 
+use self::findings::FindingsView;
 use super::RepoState;
 use super::diff_view::DiffView;
 use super::kit::{Btn, Size, TypeExt as _, caption, dot, field_frame, icon, spinner};
@@ -42,13 +45,15 @@ pub struct ReviewPane {
     /// Files: the image at its actual size (scrolling) instead of fitted.
     actual_size: bool,
     strip: ScrollHandle,
+    findings: Entity<FindingsView>,
 }
 
-/// What the pane shows: the diff, or the workflow's files.
+/// What the pane shows: the diff, the workflow's files, or a code review.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Changes,
     Files,
+    Findings,
 }
 
 impl ReviewPane {
@@ -66,6 +71,7 @@ impl ReviewPane {
             cx.new(|cx| InputState::new(window, cx).placeholder("from: tree SHA or ref"));
         let custom_to = cx.new(|cx| InputState::new(window, cx).placeholder("to: tree SHA or ref"));
         cx.observe(&state, |this, _, cx| this.sync(cx)).detach();
+        let findings = cx.new(|cx| FindingsView::new(state.clone(), cx));
         let mut this = Self {
             state,
             diff,
@@ -81,6 +87,7 @@ impl ReviewPane {
             file: None,
             actual_size: false,
             strip: ScrollHandle::new(),
+            findings,
         };
         this.sync(cx);
         this
@@ -123,6 +130,18 @@ impl ReviewPane {
             self.actual_size = false;
         }
         cx.notify();
+    }
+
+    /// Show the Findings tab, on `review` (a `review_id`) if given, else the newest.
+    pub fn show_findings(&mut self, review: Option<String>, cx: &mut Context<'_, Self>) {
+        self.tab = Tab::Findings;
+        self.findings.update(cx, |f, cx| f.show(review, cx));
+        cx.notify();
+    }
+
+    /// What takes the keys on the Findings tab.
+    pub fn findings_focus(&self, cx: &gpui::App) -> FocusHandle {
+        self.findings.read(cx).focus_handle(cx)
     }
 
     pub fn load(&mut self, preset: DiffPreset, section: Option<u32>, cx: &mut Context<'_, Self>) {
@@ -215,11 +234,20 @@ impl Render for ReviewPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let t = Tokens::get(cx);
         let on_files = self.tab == Tab::Files;
+        let on_findings = self.tab == Tab::Findings;
+        // Neither shows the diff's controls.
+        let off_diff = on_files || on_findings;
         let files_body = on_files.then(|| self.files_body(&t, window, cx));
         let state = self.state.read(cx);
         let file_count = state
             .selected_view()
             .map_or(0, |v| files::workflow_files(&v).len());
+        // The Findings tab shows once the agent presented a review: the newest
+        // one's count, with the attention dot while it waits on you.
+        let (finding_count, findings_waiting) = state.selected_view().map_or((None, false), |v| {
+            let count = findings::reviews(&v).last().map(|(_, r)| r.findings.len());
+            (count, v.pending_review().is_some())
+        });
         let wf = state.selected_workflow_id();
         let loading = wf
             .as_ref()
@@ -303,7 +331,7 @@ impl Render for ReviewPane {
             .items_center()
             .gap(px(14.))
             .child(
-                title_tab("tab-changes", "Changes", None, !on_files).on_click(cx.listener(
+                title_tab("tab-changes", "Changes", None, !off_diff).on_click(cx.listener(
                     |this, _, _, cx| {
                         this.tab = Tab::Changes;
                         cx.notify();
@@ -318,8 +346,19 @@ impl Render for ReviewPane {
                     on_files,
                 )
                 .on_click(cx.listener(|this, _, _, cx| this.show_file(None, cx))),
-            );
-        if let Some(d) = shown.as_ref().filter(|_| !on_files) {
+            )
+            .when_some(finding_count, |d, n| {
+                d.child(
+                    title_tab("tab-findings", "Findings", Some(n), on_findings)
+                        .when(findings_waiting, |d| d.child(dot(6., t.attention)))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.show_findings(None, cx);
+                            let f = this.findings_focus(cx);
+                            window.focus(&f, cx);
+                        })),
+                )
+            });
+        if let Some(d) = shown.as_ref().filter(|_| !off_diff) {
             row1 = row1.child(diff_stats(
                 &t,
                 d.stats.files,
@@ -329,7 +368,7 @@ impl Render for ReviewPane {
         }
         row1 = row1
             .child(div().flex_1())
-            .when(!on_files, |d| {
+            .when(!off_diff, |d| {
                 d.child(
                     div()
                         .flex()
@@ -493,7 +532,7 @@ impl Render for ReviewPane {
             .border_b_1()
             .border_color(t.border)
             .child(row1)
-            .when(!on_files, |d| d.child(row2).children(custom));
+            .when(!off_diff, |d| d.child(row2).children(custom));
 
         // ---- files ----
         let filter_focused = self.filter.read(cx).focus_handle(cx).is_focused(window);
@@ -596,6 +635,12 @@ impl Render for ReviewPane {
         // ---- body ----
         let body = if let Some(files) = files_body {
             files
+        } else if on_findings {
+            div()
+                .flex_1()
+                .min_h_0()
+                .child(self.findings.clone())
+                .into_any_element()
         } else if let Some(e) = error {
             div()
                 .flex_1()
@@ -734,6 +779,7 @@ impl Render for ReviewPane {
                     let f = match this.tab {
                         Tab::Changes => this.diff.read(cx).focus_handle(cx),
                         Tab::Files => this.focus.clone(),
+                        Tab::Findings => this.findings_focus(cx),
                     };
                     window.focus(&f, cx);
                 }
@@ -745,10 +791,11 @@ impl Render for ReviewPane {
             .border_l_1()
             .border_color(t.border)
             .child(header)
-            .when(!on_files && self.files_open && !files.is_empty(), |d| {
+            .when(!off_diff && self.files_open && !files.is_empty(), |d| {
                 d.child(file_list)
             })
             .child(body)
-            .child(footer)
+            // The Findings tab has its own footer (Send).
+            .when(!on_findings, |d| d.child(footer))
     }
 }

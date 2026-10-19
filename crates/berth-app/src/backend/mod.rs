@@ -136,6 +136,7 @@ impl Shared {
             }
             Command::SendPrompt { workflow_id, .. }
             | Command::Answer { workflow_id, .. }
+            | Command::AnswerReview { workflow_id, .. }
             | Command::Interrupt { workflow_id }
             | Command::ResolveSlotRequest { workflow_id, .. }
             | Command::LoadWorkflow { workflow_id }
@@ -210,6 +211,11 @@ impl Shared {
                 question_id,
                 text,
             } => self.answer(&workflow_id, &question_id, &text).await,
+            Command::AnswerReview {
+                workflow_id,
+                review_id,
+                choices,
+            } => self.answer_review(&workflow_id, &review_id, &choices).await,
             Command::Interrupt { workflow_id } => {
                 let session = lock(&self.sessions).get(&workflow_id).cloned();
                 if let Some(s) = session {

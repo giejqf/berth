@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::nodes::OutcomeKind;
+use crate::nodes::{FindingAction, FindingLevel, OutcomeKind};
 
 /// MCP server name; tools surface to the agent as `mcp__berth__<tool>`.
 pub const MCP_SERVER_NAME: &str = "berth";
@@ -20,16 +20,18 @@ pub enum ToolName {
     RecordOutcome,
     RequestSlot,
     PresentArtifact,
+    PresentReview,
 }
 
 impl ToolName {
-    pub const ALL: [ToolName; 6] = [
+    pub const ALL: [ToolName; 7] = [
         Self::RecordDecision,
         Self::AskUser,
         Self::WriteSummary,
         Self::RecordOutcome,
         Self::RequestSlot,
         Self::PresentArtifact,
+        Self::PresentReview,
     ];
 
     #[must_use]
@@ -41,6 +43,7 @@ impl ToolName {
             Self::RecordOutcome => "record_outcome",
             Self::RequestSlot => "request_slot",
             Self::PresentArtifact => "present_artifact",
+            Self::PresentReview => "present_review",
         }
     }
 
@@ -49,7 +52,7 @@ impl ToolName {
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
-            Self::AskUser | Self::WriteSummary | Self::RecordOutcome
+            Self::AskUser | Self::PresentReview | Self::WriteSummary | Self::RecordOutcome
         )
     }
 
@@ -91,6 +94,16 @@ impl ToolName {
                 "Show the user a file you made: a screenshot, a screen recording, a rendered chart or \
                  page, a report. Save it first, then pass its path and a short title. The app copies \
                  it and shows it as a card in the event flow. Non-blocking."
+            }
+            Self::PresentReview => {
+                "Present code review findings and wait for the user's decision on each. One \
+                 finding per issue: its level (high: a bug, data loss or a security hole; mid: \
+                 worth fixing before merge; low: a nit), a one-line title, the detail (why it \
+                 matters, what a fix would be), where it is, and what you suggest: fix, dismiss \
+                 (not worth changing), or decide (a judgment call that is theirs). The user picks \
+                 for each and the decisions come back as the result: fix what they marked fix, \
+                 leave the dismissed ones, follow their words on the rest. Ends the round while \
+                 waiting; the decisions resume it."
             }
         }
     }
@@ -168,6 +181,29 @@ pub struct PresentArtifactInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub description: Option<String>,
+}
+
+/// One finding as the agent writes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct FindingInput {
+    pub level: FindingLevel,
+    pub title: String,
+    pub detail: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub line: Option<u32>,
+    pub suggested: FindingAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct PresentReviewInput {
+    pub findings: Vec<FindingInput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub summary: Option<String>,
 }
 
 /// What `request_slot` returns to the agent.

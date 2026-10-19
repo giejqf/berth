@@ -23,6 +23,9 @@ export function dispatch(session: Session, msg: AppMessage, emitter: Emitter): v
     case "question.answer":
       session.answer(msg.question_id, msg.text);
       break;
+    case "review.answer":
+      session.answerReview(msg.review_id, msg.text);
+      break;
     case "slot_request.resolved":
       session.resolveSlotRequest(msg.request_id, msg.approved, msg.slot_id);
       break;

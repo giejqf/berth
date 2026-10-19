@@ -105,6 +105,7 @@ fn main() {
                     MenuItem::action("Section Diff", keymap::ReviewSection),
                     MenuItem::action("Workflow Diff", keymap::ReviewWorkflow),
                     MenuItem::action("Branch Diff", keymap::ReviewBranch),
+                    MenuItem::action("Code Review Findings", keymap::ShowFindings),
                     MenuItem::separator(),
                     MenuItem::action("Split / Unified", keymap::ToggleDiffMode),
                     MenuItem::action("Next Change", keymap::NextChange),

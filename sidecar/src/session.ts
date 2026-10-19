@@ -27,6 +27,7 @@ import type {
   FollowUpInput,
   JsonValue,
   PresentArtifactInput,
+  PresentReviewInput,
   RecordDecisionInput,
   RecordOutcomeInput,
   RequestSlotInput,
@@ -50,6 +51,7 @@ How to work:
 - Use \`gh\` for GitHub. Open PRs with \`gh pr create\`, then call \`record_outcome\` with kind "pr" and the PR URL as ref.
 - Use the connector CLIs described by their skills for external systems (Linear, PostHog, ...).
 - Run the repository's gates (tests, lint, typecheck) before \`write_summary\` when you changed code.
+- When you review code (because the user asked, or a reviewer subagent reported back), present the findings with \`present_review\` rather than listing them in prose or a summary, then act on the decisions it returns: fix what the user marked fix, leave the dismissed ones, follow their words on the rest.
 - When you make something the user should see (a screenshot, a screen recording, a rendered chart or page, a report), save it to a file and call \`present_artifact\` with its path and a short title. Never paste images or long output into text.
 - Files the user attached are listed at the end of their message, with paths you can read; attached images are also shown to you directly.
 - Subagents may only call \`record_decision\`; they report everything else back to you.`;
@@ -86,13 +88,13 @@ export function claudePath(): string | undefined {
   return existsSync(bundled) ? bundled : undefined;
 }
 
-type TerminalTool = "ask_user" | "write_summary" | "record_outcome";
+type TerminalTool = "ask_user" | "present_review" | "write_summary" | "record_outcome";
 
 interface Round {
   startedAt: number;
   startTotalUsd: number;
   nudges: number;
-  /** Accepted terminal call; `ask_user` clears again once answered (§5.3). */
+  /** Accepted terminal call; `ask_user` and `present_review` clear again once answered (§5.3). */
   terminal: TerminalTool | null;
   interrupted: boolean;
   lastText?: string;
@@ -128,6 +130,7 @@ export class Session implements ToolHost {
   private readonly toolUses = new Map<string, ObservedToolUse>();
   private readonly toolUseWaiters = new Map<string, Array<(t: ObservedToolUse) => void>>();
   private readonly questions = new Map<string, Pending<string>>();
+  private readonly reviews = new Map<string, Pending<string>>();
   private readonly slotRequests = new Map<string, Pending<RequestSlotResult>>();
 
   private q?: AgentQuery;
@@ -224,9 +227,11 @@ export class Session implements ToolHost {
   async interrupt(): Promise<void> {
     if (!this.q || !this.round) return;
     this.round.interrupted = true;
-    for (const [id, p] of this.questions) {
-      p.reject(new Error("Interrupted by the user."));
-      this.questions.delete(id);
+    for (const pending of [this.questions, this.reviews]) {
+      for (const [id, p] of pending) {
+        p.reject(new Error("Interrupted by the user."));
+        pending.delete(id);
+      }
     }
     for (const [id, p] of this.slotRequests) {
       p.resolve({ approved: false });
@@ -251,6 +256,16 @@ export class Session implements ToolHost {
       return;
     }
     this.questions.delete(questionId);
+    pending.resolve(text);
+  }
+
+  answerReview(reviewId: string, text: string): void {
+    const pending = this.reviews.get(reviewId);
+    if (!pending) {
+      this.error(`no pending review ${reviewId}`, false);
+      return;
+    }
+    this.reviews.delete(reviewId);
     pending.resolve(text);
   }
 
@@ -299,8 +314,10 @@ export class Session implements ToolHost {
     } catch (e) {
       this.error(`agent stream failed: ${(e as Error).message}`, true);
     } finally {
-      for (const p of this.questions.values()) p.reject(new Error("Session ended."));
-      this.questions.clear();
+      for (const pending of [this.questions, this.reviews]) {
+        for (const p of pending.values()) p.reject(new Error("Session ended."));
+        pending.clear();
+      }
     }
   }
 
@@ -579,6 +596,31 @@ export class Session implements ToolHost {
     } finally {
       // The answer resumes the same round; it still needs its own terminal call.
       if (this.round?.terminal === "ask_user") this.round.terminal = null;
+    }
+  }
+
+  async presentReview(input: PresentReviewInput, call: CallContext): Promise<ToolOutcome> {
+    if ((await this.attribute(call, input, "present_review")).inSubagent) {
+      return { ok: false, error: SUBAGENT_TOOL_ERROR };
+    }
+    const rejected = this.claimTerminal("present_review");
+    if (rejected) return { ok: false, error: rejected };
+    const reviewId = randomUUID();
+    const decisions = new Promise<string>((resolve, reject) => this.reviews.set(reviewId, { resolve, reject }));
+    this.emitter.emit({
+      type: "node.review",
+      review_id: reviewId,
+      findings: input.findings,
+      ...(input.summary ? { summary: input.summary } : {}),
+    });
+    try {
+      const text = await decisions;
+      return { ok: true, text: `The user's decisions on your findings:\n${text}` };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    } finally {
+      // Like an answer, the decisions resume the round; it still needs its own terminal call.
+      if (this.round?.terminal === "present_review") this.round.terminal = null;
     }
   }
 

@@ -952,6 +952,16 @@ impl Store {
                 |r| r.get(0),
             )
             .optional()?;
+        let review: Option<(i64, i64)> = self
+            .conn
+            .query_row(
+                "SELECT created_at, json_array_length(payload_json, '$.findings') FROM nodes \
+                 WHERE workflow_id = ?1 AND kind = 'review' \
+                 AND json_extract(payload_json, '$.answered_at') IS NULL ORDER BY seq DESC LIMIT 1",
+                [workflow_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
         let summary_at: Option<i64> = self.conn.query_row(
             "SELECT MAX(created_at) FROM nodes WHERE workflow_id = ?1 AND kind = 'summary'",
             [workflow_id],
@@ -982,6 +992,7 @@ impl Store {
         )?;
         Ok(WorkflowFacts {
             question_at,
+            review: review.map(|(at, n)| (at, usize::try_from(n).unwrap_or(0))),
             summary_at,
             outcome,
             rounds: usize::try_from(rounds).unwrap_or(0),
@@ -991,12 +1002,28 @@ impl Store {
 
     /// The Question node with this question id.
     pub fn question_node(&self, workflow_id: &str, question_id: &str) -> Result<Option<Node>> {
+        self.node_by_key(workflow_id, "question", "$.question_id", question_id)
+    }
+
+    /// The Review node with this review id.
+    pub fn review_node(&self, workflow_id: &str, review_id: &str) -> Result<Option<Node>> {
+        self.node_by_key(workflow_id, "review", "$.review_id", review_id)
+    }
+
+    /// The `kind` node whose payload has `key` (a JSON path) equal to `value`.
+    fn node_by_key(
+        &self,
+        workflow_id: &str,
+        kind: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<Option<Node>> {
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT {NODE_COLS} FROM nodes WHERE workflow_id = ?1 AND kind = 'question' \
-             AND json_extract(payload_json, '$.question_id') = ?2"
+            "SELECT {NODE_COLS} FROM nodes WHERE workflow_id = ?1 AND kind = ?2 \
+             AND json_extract(payload_json, ?3) = ?4"
         ))?;
         let mut nodes = collect(
-            stmt.query_map(params![workflow_id, question_id], node_row)?,
+            stmt.query_map(params![workflow_id, kind, key, value], node_row)?,
             finish_node,
         )?;
         Ok(nodes.pop())

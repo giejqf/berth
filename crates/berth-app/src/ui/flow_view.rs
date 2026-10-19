@@ -306,6 +306,11 @@ impl FlowView {
             WorkflowState::Running | WorkflowState::Starting => chip(t, Tone::Accent, "Working")
                 .child(spinner("header-spin", 10, t.accent))
                 .flex_row_reverse(),
+            WorkflowState::AwaitingAnswer if view.pending_review().is_some() => {
+                chip(t, Tone::Attention, "Needs decisions")
+                    .child(icon("findings-bold", 12., t.on_attention))
+                    .flex_row_reverse()
+            }
             WorkflowState::AwaitingAnswer => chip(t, Tone::Attention, "Needs answer")
                 .child(icon("question-bold", 12., t.on_attention))
                 .flex_row_reverse(),

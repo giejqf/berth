@@ -8,7 +8,8 @@ use berth_core::transcript::TranscriptEntry;
 use berth_core::{Repo, ReviewCommentRow, Slot, Workflow, WorkflowFacts, WorkflowView};
 use berth_git::DiffStats;
 use berth_protocol::{
-    DiffPreset, DiffSide, Effort, FollowUp, ModelChoice, Origin, OriginKind, SlotRequest,
+    DiffPreset, DiffSide, Effort, FindingAction, FollowUp, ModelChoice, Origin, OriginKind,
+    SlotRequest,
 };
 
 /// UI -> backend.
@@ -37,6 +38,12 @@ pub enum Command {
         workflow_id: String,
         question_id: String,
         text: String,
+    },
+    /// The user's decision on each finding of a review, in order.
+    AnswerReview {
+        workflow_id: String,
+        review_id: String,
+        choices: Vec<(FindingAction, Option<String>)>,
     },
     Interrupt {
         workflow_id: String,
@@ -377,6 +384,10 @@ pub enum UiEvent {
     },
     Environment(EnvStatus),
     OpenReview {
+        workflow_id: String,
+    },
+    /// A review arrived: show its findings.
+    ShowFindings {
         workflow_id: String,
     },
     Diff(Arc<DiffResult>),

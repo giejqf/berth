@@ -2,7 +2,9 @@
 
 use std::fmt::Write as _;
 
-use berth_protocol::{DiffPreset, FollowUp, Origin, OriginKind, Prompt, ReviewComment};
+use berth_protocol::{
+    DiffPreset, FindingAction, FollowUp, Origin, OriginKind, Prompt, Review, ReviewComment,
+};
 
 /// Serialize a Prompt as the next user turn, with review comments grouped by preset:
 ///
@@ -181,6 +183,50 @@ pub fn answer_as_turn(question: &str, answer: &str) -> String {
     )
 }
 
+/// The user's decisions on a review, one numbered line per finding:
+///
+/// ```text
+/// 1. [high] Unchecked unwrap in the parser (src/parse.rs:42): fix it
+/// 2. [low] Magic number (src/config.rs): my call: make it a setting
+/// ```
+#[must_use]
+pub fn review_decisions(review: &Review) -> String {
+    let mut out = String::new();
+    for (i, f) in review.findings.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        let _ = write!(out, "{}. [{}] {}", i + 1, f.level.as_str(), f.title.trim());
+        match (&f.path, f.line) {
+            (Some(path), Some(line)) => {
+                let _ = write!(out, " ({path}:{line})");
+            }
+            (Some(path), None) => {
+                let _ = write!(out, " ({path})");
+            }
+            _ => {}
+        }
+        let note = f.note.as_deref().unwrap_or("").trim().replace('\n', " ");
+        let what = match f.choice.unwrap_or(f.suggested) {
+            FindingAction::Fix => "fix it".to_owned(),
+            FindingAction::Dismiss => "dismissed, leave it as it is".to_owned(),
+            FindingAction::Decide => format!("my call: {note}"),
+        };
+        let _ = write!(out, ": {what}");
+    }
+    out
+}
+
+/// How to deliver review decisions when the `present_review` call no longer
+/// exists (the sidecar restarted while it was pending).
+#[must_use]
+pub fn review_as_turn(review: &Review) -> String {
+    format!(
+        "Earlier you presented code review findings. My decisions:\n{}",
+        review_decisions(review)
+    )
+}
+
 /// A git branch name for a new workflow: `berth/<slug>-<short id>`.
 #[must_use]
 pub fn branch_name(title: &str, id: &str) -> String {
@@ -318,6 +364,63 @@ mod tests {
         assert!(reused.contains("`git status`"));
         assert!(reused.contains("branch `berth/fix`"));
         assert!(!reused.contains("Work on branch"));
+    }
+
+    #[test]
+    fn review_decisions_are_numbered_lines() {
+        use berth_protocol::{Finding, FindingLevel};
+        let finding =
+            |level, title: &str, path: Option<&str>, line, choice, note: Option<&str>| Finding {
+                level,
+                title: title.into(),
+                detail: "why".into(),
+                path: path.map(Into::into),
+                line,
+                suggested: FindingAction::Fix,
+                choice: Some(choice),
+                note: note.map(Into::into),
+            };
+        let review = Review {
+            review_id: "r".into(),
+            summary: None,
+            findings: vec![
+                finding(
+                    FindingLevel::High,
+                    "Unchecked unwrap",
+                    Some("src/a.rs"),
+                    Some(42),
+                    FindingAction::Fix,
+                    None,
+                ),
+                finding(
+                    FindingLevel::Mid,
+                    "Shadows std",
+                    Some("src/lib.rs"),
+                    None,
+                    FindingAction::Dismiss,
+                    None,
+                ),
+                finding(
+                    FindingLevel::Low,
+                    "Magic number",
+                    None,
+                    None,
+                    FindingAction::Decide,
+                    Some(" make it\na setting "),
+                ),
+            ],
+            answered_at: None,
+        };
+        assert_eq!(
+            review_decisions(&review),
+            "1. [high] Unchecked unwrap (src/a.rs:42): fix it\n\
+             2. [mid] Shadows std (src/lib.rs): dismissed, leave it as it is\n\
+             3. [low] Magic number: my call: make it a setting"
+        );
+        assert!(
+            review_as_turn(&review)
+                .starts_with("Earlier you presented code review findings. My decisions:\n1. ")
+        );
     }
 
     #[test]

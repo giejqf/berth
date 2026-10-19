@@ -47,6 +47,7 @@ If a design decision is not here, it has not been made. Record new decisions her
 | **Origin** | What sparked the workflow: a GitHub issue/PR, a Linear issue, a PostHog error, a user thought, or a follow-up from another workflow. |
 | **Outcome** | How the workflow ends — usually a PR. Workflow is closed after an Outcome. |
 | **Branch** | A subagent's lane in the event flow. Opens at a `SubagentSpawn` node and closes at a `CollectResults` node on the main lane. Depth 1 today (Claude Code subagents cannot spawn subagents); modeled as a tree anyway. |
+| **Finding** | One issue in a code review the agent presents (`present_review`): a level (high, mid, low), a one-line title, the detail, where it is, and a suggested action (fix, dismiss, decide). The user picks the action for each; decide means they say what to do. |
 | **Gate** | Anything the repo wants to run before a PR (tests, lint, typecheck). Not a Berth concept; just commands run through the slot's `exec`. |
 | **Integration** | First-class, app-owned: **GitHub** via `gh`. PR, Issue, Branch, Commit, Comment are typed entities in SQLite. |
 | **Connector** | User-defined, global, extensible: a CLI tool plus a `SKILL.md` (§8). Linear, PostHog, etc. Not MCP. |
@@ -175,6 +176,7 @@ The event flow is the primary UI. It is an ordered list of **nodes** per workflo
 | `SubagentSpawn` | Sidecar (from an `Agent` tool_use) | `{ branch_id, agent_name, description, prompt, parallel_group? }` — opens a branch |
 | `CollectResults` | Sidecar (from that tool_use's result) | `{ branch_id, result_text, duration_ms, cost_usd, tool_calls, touched_files: [path], status: ok \| error \| cancelled }` — closes the branch |
 | `Artifact` | Agent (`present_artifact`) | `{ artifact_id, title, description?, file: FileRef, error? }` — a file the agent made for the user (screenshot, recording, rendered page) |
+| `Review` | Agent (`present_review`) | `{ review_id, summary?, findings: [Finding], answered_at? }`, `Finding = { level: low \| mid \| high, title, detail, path?, line?, suggested: fix \| dismiss \| decide, choice?, note? }` — code review findings; `choice` (and `note`, for decide) once the user sent their decisions |
 
 `FollowUp = { id, title, description }`. Each follow-up renders a **"Create slot from
 this"** button that starts a new workflow with `Origin.kind = follow_up`.
@@ -214,12 +216,19 @@ present_artifact { path, title, description? }
   → non-blocking, not terminal, not available to subagents. Emits Artifact node.
      `path` is absolute or relative to the checkout; the app copies the file out of
      the slot (ADR 0002).
+
+present_review  { findings: [{ level, title, detail, path?, line?, suggested }], summary? }
+  → BLOCKS until the app sends review.answer. Terminal, like ask_user; not
+     available to subagents. Emits Review node. Returns the user's decisions, one
+     numbered line per finding ("1. [high] Title (path:line): fix it",
+     "…: dismissed, leave it as it is", "…: my call: <their words>") (ADR 0008).
 ```
 
 The agent's system prompt (sidecar `src/session.ts`, `BERTH_SYSTEM_PROMPT`) instructs:
 announce decisions as you make them, never narrate file edits, end every round with
 exactly one of `ask_user` / `write_summary` / `record_outcome`, use `gh` for PRs,
-use connector CLIs for external systems, show files it made with `present_artifact`.
+use connector CLIs for external systems, show files it made with `present_artifact`,
+present code review findings with `present_review` and act on the decisions.
 The app appends repo/slot/origin context via
 `session.start.system_prompt` (for host placement with a non-worktree slot it also
 tells the agent to run gates through `"$BERTH_SLOT_SCRIPT" exec -- <cmd>`). Claude
@@ -237,8 +246,10 @@ A round must end with **exactly one** terminal tool call.
 - `ask_user` suspends the round; the user's answer resumes the **same** round. A
   pending `ask_user` counts as the round's terminal call; an *answered* one does not,
   so the resumed round still ends with its own terminal call (ADR 0001).
+  `present_review` works the same way, its decisions in place of the answer (ADR 0008).
 - If the sidecar died while a question was pending, the answer is sent as a new turn
-  ("Earlier you asked: … My answer: …") on a resumed session.
+  ("Earlier you asked: … My answer: …") on a resumed session; review decisions too
+  ("Earlier you presented code review findings. My decisions: …").
 - A turn Claude Code starts by itself (e.g. a background subagent finished) opens an
   implicit round with the same rules.
 - The stub Summary is a real Summary node: it ends the section and is snapshotted.
@@ -567,6 +578,7 @@ session.stop
 question.answer  { question_id, text }
 slot_request.resolved { request_id, approved, slot_id? }
 session.configure { model, effort }   # mid-session switch; null = default (ADR 0007)
+review.answer    { review_id, text }  # the decisions on a review's findings, as the agent reads them
 ```
 
 **Sidecar → app**
@@ -576,6 +588,7 @@ raw.event        { seq, kind, json, branch_id? }   # every SDK message, verbatim
 node.decision    { …, branch_id? }   node.question { question_id, … }
 node.summary     { … }               node.outcome  { … }
 node.artifact    { artifact_id, path, title, description?, size_bytes }
+node.review      { review_id, summary?, findings: [{ level, title, detail, path?, line?, suggested }] }
 branch.spawned   { branch_id, parent_tool_use_id, parent_branch_id?, agent_name, description, prompt, parallel_group? }
 branch.collected { branch_id, result_text, status, duration_ms, cost_usd, tool_calls, touched_files }
 slot.request     { request_id, … }
@@ -607,19 +620,19 @@ stdin EOF stops the session; stdout carries protocol lines only (logs go to
 - The rail groups slots by what they need: **Needs you** (a question, an idle workflow
   awaiting its next prompt, a failed slot), **Working**, **Ready to review** (idle after
   a summary), **Done**. The second line says what is happening (the live round's
-  current step from `berth_core::activity`, "Asked a question · 40s ago", "Committed ·
-  1 follow-up"). The footer shows Claude Code / GitHub CLI status (`backend/env.rs`).
+  current step from `berth_core::activity`, "Asked a question · 40s ago", "Review: 5
+  findings to decide · 1m ago", "Committed · 1 follow-up"). The footer shows Claude Code / GitHub CLI status (`backend/env.rs`).
 - A slot's first line is its workflow's title, or the name the user gave it: **Rename
   slot** (R with the rail focused, a double-click, the row's context menu, the flow's
   More menu, ⌘K) stores `slots.custom_name`; an empty name goes back to the title.
   `slots.name` stays as it was (the agent's context uses it).
-- The flow header carries the title, one state chip (Working, Needs answer, Ready to
-  review, Done · …, Failed, Interrupted), Interrupt while running, the review toggle and
-  a More menu; the meta line shows origin, branch, slot type, section and round. A
-  running round renders a **live card** (the agent's latest line, its tool steps with
-  durations, subagent and tool-call counts). After a Summary a marker says where the
-  section ends. Summary and outcome cards show diff stats (the flow fetches the diff
-  they describe).
+- The flow header carries the title, one state chip (Working, Needs answer, Needs
+  decisions, Ready to review, Done · …, Failed, Interrupted), Interrupt while running,
+  the review toggle and a More menu; the meta line shows origin, branch, slot type,
+  section and round. A running round renders a **live card** (the agent's latest line,
+  its tool steps with durations, subagent and tool-call counts). After a Summary a
+  marker says where the section ends. Summary and outcome cards show diff stats (the
+  flow fetches the diff they describe).
 - Views are GPUI `Render` entities; app state is held in `RepoState` entities in
   `berth-app`, fed by the tokio-side backend (`berth-app/src/backend/`) through a
   `Command` / `UiEvent` channel pair. The backend executes `berth_core::Engine`
@@ -639,13 +652,25 @@ stdin EOF stops the session; stdout carries protocol lines only (logs go to
   else opens in Quick Look (`qlmanage -p`). Both are
   read-only; never an editor (§1.1). See `ui/composer.rs`, `ui/files.rs`,
   `backend/files.rs`.
-- The review pane has two tabs: **Changes** (the diff, §7) and **Files**
+- The review pane has two tabs, three once the agent presented a review: **Changes**
+  (the diff, §7), **Files**
   (`ui/review_pane/files.rs`): every file in the workflow, presented by the agent or
   attached, one at a time above a strip of thumbnails (newest unless one is picked).
   Images fit the pane, never past their actual size (one image pixel per screen
   pixel), or show at actual size and scroll (Z, or a click); GIFs animate. ← → step
   through the files, Space opens Quick Look. Other files show their thumbnail and
   open in Quick Look. Asking for a diff switches back to Changes.
+- **Findings** (`ui/review_pane/findings.rs`, ADR 0008): a code review the agent
+  presented, one row per finding: its level and title, and Fix | Dismiss | Decide
+  starting on the agent's suggestion (marked with a dot). Hovering a row, after a
+  moment, or moving to it with ↑↓, shows the rest beside the pane: where it is and
+  the detail. Decide opens a field for the user's own words, which it needs before
+  sending; 1 2 3 or ← → choose, Tab writes, ↩ in the field moves on, ⌘↩ sends every
+  decision at once. A review that arrives opens the tab and takes the keys; A goes
+  there while one waits. In the flow, the Review node shows the counts by level and
+  "Decide on the findings" while it waits, what was decided after. The rail says
+  "Review: N findings to decide", the header "Needs decisions". Several reviews in a
+  workflow step with ‹ ›; a sent one is read-only.
 - Right-click a file (its tile in the flow, the image in the Files tab, a thumbnail
   in its strip) for **Copy** and **Show in Finder**; ⌘C on the Files tab copies the
   shown file. Images copy as image data (they paste into chats and documents), other
@@ -699,7 +724,7 @@ stdin EOF stops the session; stdout carries protocol lines only (logs go to
   activity, `berth_core::activity`).
 - Feature `devtools` (dev only): `BERTH_DEV_SCRIPT` drives the live UI and
   `BERTH_DEV_SHOTS` receives window screenshots (see `src/devtools.rs`).
-  `BERTH_DEV_SEED=question|working|review|comments|done|empty|welcome` seeds the
+  `BERTH_DEV_SEED=question|working|review|comments|done|findings|empty|welcome` seeds the
   design's scenario into a fresh `BERTH_HOME` (`src/seed.rs`), so screenshots line up
   with the design artboards. Use it to check UI changes without a human.
   `BERTH_DEV_SLOW_MOTION=<factor>` stretches every animation so a shot can catch

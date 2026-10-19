@@ -11,7 +11,7 @@ use berth_core::flow::{FlowItem, Lane, SubagentGroup};
 use berth_core::{BranchState, Node, WorkflowState, WorkflowView};
 use berth_protocol::{
     Artifact, Decision, FollowUp, NodePayload, Origin, OriginKind, Outcome, OutcomeKind, Prompt,
-    Question, Summary,
+    Question, Review, Summary,
 };
 use std::f32::consts::FRAC_PI_2;
 
@@ -31,7 +31,7 @@ use super::motion;
 use super::rich::{self, clamped, overflows, rich};
 use super::{RepoState, files};
 use crate::backend::{BackendHandle, Command, SlotEntry};
-use crate::keymap::ToggleReview;
+use crate::keymap::{ShowReview, ToggleReview};
 use crate::theme::{MONO, Tokens, ty};
 
 /// One row of the flow list.
@@ -223,6 +223,7 @@ fn node_row(t: &Tokens, node: &Node, ctx: &RowCtx, line: bool, cx: &mut App) -> 
         NodePayload::Summary(s) => summary(t, node, s, ctx, line),
         NodePayload::Outcome(o) => outcome(t, node, o, ctx, line),
         NodePayload::Artifact(a) => artifact(t, node, a, ctx, line),
+        NodePayload::Review(r) => review(t, node, r, ctx, line),
         // Spawn/Collect are folded into their group; never laid out alone.
         NodePayload::SubagentSpawn(_) | NodePayload::CollectResults(_) => div(),
     }
@@ -957,7 +958,10 @@ fn first_line(s: &str, fallback: &str) -> String {
 // ---- questions ----
 
 fn question(t: &Tokens, node: &Node, q: &Question, ctx: &RowCtx, line: bool, _cx: &mut App) -> Div {
-    let pending = q.answer.is_none() && ctx.view.workflow.state == WorkflowState::AwaitingAnswer;
+    let pending = ctx
+        .view
+        .pending_question()
+        .is_some_and(|(n, _)| n.id == node.id);
     if pending {
         let round = round_no(&ctx.view, node);
         let card = div()
@@ -1036,6 +1040,142 @@ fn question(t: &Tokens, node: &Node, q: &Question, ctx: &RowCtx, line: bool, _cx
             } else {
                 div().ty(ty::META).text_color(t.text3).child("Unanswered.")
             }),
+    )
+}
+
+// ---- code review ----
+
+/// A code review: in the flow, what it found; the findings themselves are
+/// decided on in the review pane's Findings tab.
+fn review(t: &Tokens, node: &Node, r: &Review, ctx: &RowCtx, line: bool) -> Div {
+    use super::review_pane::findings::{choice_counts, level_counts};
+    let pending = ctx
+        .view
+        .pending_review()
+        .is_some_and(|(n, _)| n.id == node.id);
+    let n = r.findings.len();
+    let id = r.review_id.clone();
+    let open = move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
+        window.dispatch_action(Box::new(ShowReview(id.clone())), cx);
+    };
+    let summary = r.summary.as_deref().filter(|s| !s.trim().is_empty());
+    if pending {
+        let round = round_no(&ctx.view, node);
+        let card = div()
+            .flex()
+            .flex_col()
+            .bg(t.card)
+            .border_1()
+            .border_color(t.attention)
+            .rounded(px(10.))
+            .overflow_hidden()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .px(px(14.))
+                    .py(px(10.))
+                    .border_b_1()
+                    .border_color(t.border)
+                    .child(tag(t, Tone::Attention, "Needs your decisions"))
+                    .child(div().ty(ty::META).text_color(t.text3).child(format!(
+                        "presented {} · round {round} is paused",
+                        super::kit::ago(node.created_at)
+                    )))
+                    .child(div().ml_auto().children(details_link(t, node, ctx))),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .px(px(14.))
+                    .py(px(12.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(10.))
+                            .child(div().semibold().child(format!(
+                                "Code review · {}",
+                                plural(n, "finding", "findings")
+                            )))
+                            .child(level_counts(t, &r.findings)),
+                    )
+                    .children(summary.map(|s| clamped(t, s, t.text2, 3)))
+                    .child(
+                        div().flex().items_center().gap(px(8.)).pt(px(4.)).child(
+                            Btn::new(SharedString::from(format!("findings-{}", node.id)))
+                                .primary()
+                                .icon("panel-right", 14.)
+                                .label("Decide on the findings")
+                                .hint("A")
+                                .on_click(open),
+                        ),
+                    ),
+            );
+        return row(
+            t,
+            glyph(t.attention, icon("findings-bold", 14., t.on_attention)),
+            line,
+            div().pb(px(16.)).child(card),
+        );
+    }
+    let status = match r.answered_at {
+        Some(at) => div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(icon("check-bold", 14., t.done))
+            .child(div().medium().child(choice_counts(&r.findings)))
+            .child(
+                div()
+                    .ty(ty::META)
+                    .text_color(t.text2)
+                    .child(format!("decided {}", clock(at))),
+            ),
+        None => div()
+            .ty(ty::META)
+            .text_color(t.text3)
+            .child("Not decided: the round ended first."),
+    };
+    row(
+        t,
+        glyph(t.card, icon("findings", 15., t.text)),
+        line,
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .pt(px(3.))
+            .pb(px(20.))
+            .child(title_line(
+                t,
+                div()
+                    .child(format!(
+                        "Code review · {}",
+                        plural(n, "finding", "findings")
+                    ))
+                    .into_any_element(),
+                details_link(t, node, ctx),
+                Some(clock(node.created_at)),
+            ))
+            .children(summary.map(|s| clamped(t, s, t.text2, 3)))
+            .child(level_counts(t, &r.findings))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .child(status)
+                    .child(link(
+                        SharedString::from(format!("findings-{}", node.id)),
+                        "Findings",
+                        t,
+                        open,
+                    )),
+            ),
     )
 }
 

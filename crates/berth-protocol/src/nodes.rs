@@ -184,6 +184,112 @@ pub struct Question {
     pub answered_at: Option<i64>,
 }
 
+/// How much a review finding matters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum FindingLevel {
+    Low,
+    Mid,
+    High,
+}
+
+impl FindingLevel {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Mid => "mid",
+            Self::High => "high",
+        }
+    }
+
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Low => "Low",
+            Self::Mid => "Mid",
+            Self::High => "High",
+        }
+    }
+}
+
+/// What to do about a finding: the agent suggests one, the user picks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum FindingAction {
+    /// Change the code.
+    Fix,
+    /// Leave it as it is.
+    Dismiss,
+    /// The user says what to do, in their own words.
+    Decide,
+}
+
+impl FindingAction {
+    pub const ALL: [Self; 3] = [Self::Fix, Self::Dismiss, Self::Decide];
+
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fix => "fix",
+            Self::Dismiss => "dismiss",
+            Self::Decide => "decide",
+        }
+    }
+
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Fix => "Fix",
+            Self::Dismiss => "Dismiss",
+            Self::Decide => "Decide",
+        }
+    }
+}
+
+/// One code review finding, and what the user chose to do about it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct Finding {
+    pub level: FindingLevel,
+    /// One line: what is wrong.
+    pub title: String,
+    /// Why it matters and what a fix would be.
+    pub detail: String,
+    /// Where it is, relative to the checkout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub line: Option<u32>,
+    /// What the agent recommends; the user's choice starts here.
+    pub suggested: FindingAction,
+    /// What the user chose, once the decisions are sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub choice: Option<FindingAction>,
+    /// The user's own words, for `decide`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub note: Option<String>,
+}
+
+/// Code review findings the agent presented (`present_review`); the round
+/// waits for the user's decision on each.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct Review {
+    pub review_id: String,
+    /// What was reviewed, and the overall verdict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub summary: Option<String>,
+    pub findings: Vec<Finding>,
+    /// When the user sent their decisions (unix epoch milliseconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub answered_at: Option<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct Decision {
     pub title: String,
@@ -295,10 +401,11 @@ pub enum NodeKind {
     SubagentSpawn,
     CollectResults,
     Artifact,
+    Review,
 }
 
 impl NodeKind {
-    pub const ALL: [NodeKind; 9] = [
+    pub const ALL: [NodeKind; 10] = [
         Self::Origin,
         Self::Prompt,
         Self::Question,
@@ -308,6 +415,7 @@ impl NodeKind {
         Self::SubagentSpawn,
         Self::CollectResults,
         Self::Artifact,
+        Self::Review,
     ];
 
     #[must_use]
@@ -322,6 +430,7 @@ impl NodeKind {
             Self::SubagentSpawn => "subagent_spawn",
             Self::CollectResults => "collect_results",
             Self::Artifact => "artifact",
+            Self::Review => "review",
         }
     }
 
@@ -346,6 +455,7 @@ pub enum NodePayload {
     SubagentSpawn(SubagentSpawn),
     CollectResults(CollectResults),
     Artifact(Artifact),
+    Review(Review),
 }
 
 impl NodePayload {
@@ -361,6 +471,7 @@ impl NodePayload {
             Self::SubagentSpawn(_) => NodeKind::SubagentSpawn,
             Self::CollectResults(_) => NodeKind::CollectResults,
             Self::Artifact(_) => NodeKind::Artifact,
+            Self::Review(_) => NodeKind::Review,
         }
     }
 
@@ -376,6 +487,7 @@ impl NodePayload {
             Self::SubagentSpawn(p) => serde_json::to_string(p),
             Self::CollectResults(p) => serde_json::to_string(p),
             Self::Artifact(p) => serde_json::to_string(p),
+            Self::Review(p) => serde_json::to_string(p),
         }
     }
 
@@ -391,6 +503,7 @@ impl NodePayload {
             NodeKind::SubagentSpawn => Self::SubagentSpawn(serde_json::from_str(json)?),
             NodeKind::CollectResults => Self::CollectResults(serde_json::from_str(json)?),
             NodeKind::Artifact => Self::Artifact(serde_json::from_str(json)?),
+            NodeKind::Review => Self::Review(serde_json::from_str(json)?),
         })
     }
 }

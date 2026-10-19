@@ -117,9 +117,14 @@ pub fn rail_lines(entry: &SlotEntry, state: &RepoState) -> (String, String) {
                 .unwrap_or_default()
         ),
         (_, Some(w)) => match w.state {
-            WorkflowState::AwaitingAnswer => match f.question_at {
-                Some(at) => format!("Asked a question · {}", ago(at)),
-                None => "Asked a question".to_owned(),
+            WorkflowState::AwaitingAnswer => match (f.review, f.question_at) {
+                (Some((at, n)), _) => format!(
+                    "Review: {} to decide · {}",
+                    plural(n, "finding", "findings"),
+                    ago(at)
+                ),
+                (None, Some(at)) => format!("Asked a question · {}", ago(at)),
+                (None, None) => "Asked a question".to_owned(),
             },
             WorkflowState::Running | WorkflowState::Starting => match state.activity.get(&w.id) {
                 Some(a) => format!("{} · {}", a.headline(), dur(now_ms() - a.started_at)),

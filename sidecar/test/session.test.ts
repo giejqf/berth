@@ -196,6 +196,55 @@ describe("ask_user", () => {
   });
 });
 
+describe("present_review", () => {
+  const findings = [
+    { level: "high" as const, title: "Unchecked unwrap", detail: "Panics.", path: "src/a.rs", line: 4, suggested: "fix" as const },
+    { level: "low" as const, title: "Naming", detail: "Shadows std.", suggested: "decide" as const },
+  ];
+
+  it("blocks until the decisions arrive, and like an answer they resume the round", async () => {
+    const { emitter, session, q } = setup();
+    session.turn("review this");
+    const pending = session.presentReview({ findings, summary: "Two things." }, {});
+    await flush();
+    const review = emitter.ofType("node.review")[0];
+    expect(review).toMatchObject({ findings, summary: "Two things." });
+
+    // Pending, it is the round's terminal call.
+    expect((await session.writeSummary({ done: [], remaining: [] }, {})).ok).toBe(false);
+
+    session.answerReview(review?.review_id ?? "", "1. fix it");
+    expect(await pending).toEqual({ ok: true, text: "The user's decisions on your findings:\n1. fix it" });
+    expect((await session.writeSummary({ done: ["fixed"], remaining: [] }, {})).ok).toBe(true);
+    q.send(sdk.result(0.1));
+    await flush();
+    expect(emitter.ofType("round.ended")[0]?.terminal_kind).toBe("write_summary");
+  });
+
+  it("interrupt rejects the pending review", async () => {
+    const { session } = setup();
+    session.turn("go");
+    const pending = session.presentReview({ findings }, {});
+    await flush();
+    await session.interrupt();
+    expect(await pending).toEqual({ ok: false, error: "Interrupted by the user." });
+  });
+
+  it("is not available to subagents, and an unknown review is a non-fatal error", async () => {
+    const { emitter, session, q } = setup();
+    session.turn("go");
+    q.send(sdk.toolUse("agent-9", "Agent", { description: "x", prompt: "p" }));
+    q.send(sdk.toolUse("pr1", "mcp__berth__present_review", { findings }, "agent-9"));
+    await flush();
+    expect(await session.presentReview({ findings }, { toolUseId: "pr1" })).toEqual({
+      ok: false,
+      error: SUBAGENT_TOOL_ERROR,
+    });
+    session.answerReview("nope", "x");
+    expect(emitter.ofType("session.error")[0]).toMatchObject({ fatal: false });
+  });
+});
+
 describe("subagent branches (§5.4)", () => {
   it("spawns, attributes events and decisions, restricts tools, and collects", async () => {
     const { emitter, session, q, tick } = setup();

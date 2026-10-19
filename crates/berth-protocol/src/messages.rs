@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::nodes::{BranchStatus, Decision, Outcome, Summary};
+use crate::tools::FindingInput;
 
 /// A connector skill installed into the slot (§8.2); mentioned in the system prompt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -140,6 +141,13 @@ pub struct QuestionAnswer {
     pub text: String,
 }
 
+/// The user's decisions on a review's findings, as text for the agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ReviewAnswer {
+    pub review_id: String,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct SlotRequestResolved {
     pub request_id: String,
@@ -165,6 +173,8 @@ pub enum AppToSidecar {
     SessionStop,
     #[serde(rename = "question.answer")]
     QuestionAnswer(QuestionAnswer),
+    #[serde(rename = "review.answer")]
+    ReviewAnswer(ReviewAnswer),
     #[serde(rename = "slot_request.resolved")]
     SlotRequestResolved(SlotRequestResolved),
     #[serde(rename = "session.configure")]
@@ -181,6 +191,7 @@ impl AppToSidecar {
             Self::SessionInterrupt => "session.interrupt",
             Self::SessionStop => "session.stop",
             Self::QuestionAnswer(_) => "question.answer",
+            Self::ReviewAnswer(_) => "review.answer",
             Self::SlotRequestResolved(_) => "slot_request.resolved",
             Self::SessionConfigure(_) => "session.configure",
         }
@@ -222,6 +233,16 @@ pub struct NodeQuestion {
     #[serde(default)]
     pub options: Vec<String>,
     pub allow_free_text: bool,
+}
+
+/// `present_review` was called: findings wait for the user's decisions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct NodeReview {
+    pub review_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub summary: Option<String>,
+    pub findings: Vec<FindingInput>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -375,6 +396,8 @@ pub enum SidecarToApp {
     NodeOutcome(NodeOutcome),
     #[serde(rename = "node.artifact")]
     NodeArtifact(NodeArtifact),
+    #[serde(rename = "node.review")]
+    NodeReview(NodeReview),
     #[serde(rename = "branch.spawned")]
     BranchSpawned(BranchSpawned),
     #[serde(rename = "branch.collected")]
@@ -402,6 +425,7 @@ impl SidecarToApp {
             Self::NodeSummary(_) => "node.summary",
             Self::NodeOutcome(_) => "node.outcome",
             Self::NodeArtifact(_) => "node.artifact",
+            Self::NodeReview(_) => "node.review",
             Self::BranchSpawned(_) => "branch.spawned",
             Self::BranchCollected(_) => "branch.collected",
             Self::SlotRequest(_) => "slot.request",
