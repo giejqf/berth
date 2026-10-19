@@ -34,9 +34,10 @@ use crate::backend::{Command, ToastLevel};
 use crate::keymap::{
     AttachFiles, AttachPaths, ChooseModel, CloseWindow, CommandPalette, DestroySlot, FocusAnswer,
     FocusComposer, FollowUpFromOutcome, Interrupt, JumpToNeeding, NewWorkflow, NewWorkflowHere,
-    NewWorkflowTab, NextChange, NextSlot, OpenSettings, PrevChange, PrevSlot, RefreshReview,
-    RenameSlot, ReviewBranch, ReviewSection, ReviewWorkflow, SelectSlot, ShowFile, ShowFiles,
-    ShowFindings, ShowReview, ToggleDiffMode, ToggleRail, ToggleReview,
+    NewWorkflowTab, NextChange, NextSlot, OpenHistory, OpenSettings, PrevChange, PrevSlot,
+    RefreshReview, RenameSlot, ReviewBranch, ReviewSection, ReviewWorkflow, RewindConversation,
+    RewindTo, SelectSlot, ShowFile, ShowFiles, ShowFindings, ShowReview, ToggleDiffMode,
+    ToggleRail, ToggleReview,
 };
 use crate::keymap::{
     CloseTerminal, HideTerminal, KillTerminal, NewTerminal, NextTerminal, PrevTerminal,
@@ -387,6 +388,14 @@ impl RepoWindow {
                 self.composer
                     .update(cx, |c, cx| c.set_text(&text, window, cx));
             }
+            RepoEvent::Rewound { text, attachments } => {
+                let (text, attachments) = (text.clone(), attachments.clone());
+                self.composer.update(cx, |c, cx| {
+                    c.set_text(&text, window, cx);
+                    c.add_paths(&attachments, cx);
+                    c.focus(window, cx);
+                });
+            }
             RepoEvent::Details { title, entries } => {
                 let (title, entries) = (title.clone(), entries.clone());
                 window.open_sheet(cx, move |sheet, _, cx| {
@@ -572,6 +581,17 @@ impl RepoWindow {
     fn palette(&mut self, _: &CommandPalette, window: &mut Window, cx: &mut Context<'_, Self>) {
         let p = cx.new(|cx| Palette::new(window, cx));
         self.open_modal(p, window, cx);
+    }
+
+    /// Rewind conversation, on your message `node_id` or the newest.
+    fn rewind(&mut self, node_id: Option<&str>, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let state = self.state.read(cx);
+        let Some(view) = state.selected_view() else {
+            return;
+        };
+        let backend = state.backend.clone();
+        let dialog = cx.new(|cx| super::rewind::RewindDialog::new(&view, node_id, backend, cx));
+        self.open_modal(dialog, window, cx);
     }
 
     fn rename_slot(&mut self, _: &RenameSlot, window: &mut Window, cx: &mut Context<'_, Self>) {
@@ -832,6 +852,17 @@ impl Render for RepoWindow {
             }))
             .on_action(cx.listener(|this, _: &ShowFiles, window, cx| {
                 this.show_files(None, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &OpenHistory, window, cx| {
+                let state = this.state.clone();
+                let dialog = cx.new(|cx| super::history::HistoryDialog::new(state, window, cx));
+                this.open_modal(dialog, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &RewindConversation, window, cx| {
+                this.rewind(None, window, cx);
+            }))
+            .on_action(cx.listener(|this, a: &RewindTo, window, cx| {
+                this.rewind(Some(&a.0), window, cx);
             }))
             .on_action(cx.listener(|this, _: &ShowFindings, window, cx| {
                 this.show_findings(None, window, cx);

@@ -12,8 +12,8 @@ use gpui::{Context, Entity, EntityId, EventEmitter};
 
 use super::terminal::TerminalView;
 use crate::backend::{
-    BackendHandle, Command, ConnectorInfo, DiffRequest, DiffResult, OriginChoice, OriginSource,
-    RepoSnapshot, SlotEntry, TerminalSpec, ToastLevel, UiEvent,
+    BackendHandle, Command, ConnectorInfo, DiffRequest, DiffResult, HistoryEntry, OriginChoice,
+    OriginSource, RepoSnapshot, SlotEntry, TerminalSpec, ToastLevel, UiEvent,
 };
 
 /// One-shot things the window reacts to (dialogs, sheets, toasts).
@@ -41,6 +41,12 @@ pub enum RepoEvent {
     },
     /// Put text into the composer (e.g. "ask agent about this hunk").
     Compose(String),
+    /// The selected workflow was rewound: its dropped message, back in the
+    /// composer with its attachments.
+    Rewound {
+        text: String,
+        attachments: Vec<std::path::PathBuf>,
+    },
 }
 
 pub struct RepoState {
@@ -68,6 +74,14 @@ pub struct RepoState {
     pub terminals: HashMap<String, SlotTerminals>,
     /// Slots with a terminal on its way.
     pub terminal_pending: HashSet<String>,
+    /// The repo's session history (ADR 0010), once loaded; `None` while it loads.
+    pub history: Option<History>,
+}
+
+/// The repo's history, and why Claude Code's sessions are missing from it.
+pub struct History {
+    pub entries: Vec<HistoryEntry>,
+    pub unlisted: Option<String>,
 }
 
 /// A slot's terminals: newest last, and the one the panel shows.
@@ -159,6 +173,7 @@ impl RepoState {
             theme_setting: None,
             terminals: HashMap::new(),
             terminal_pending: HashSet::new(),
+            history: None,
             review_open: false,
         };
         if let Some(wf) = this.selected_workflow_id() {
@@ -289,6 +304,25 @@ impl RepoState {
         self.diff_loading.insert(workflow_id.clone(), req.clone());
         self.diff_errors.remove(&workflow_id);
         self.backend.send(Command::LoadDiff(req));
+        cx.notify();
+    }
+
+    /// Read the history again (it is shown loading until it arrives).
+    pub fn load_history(&mut self, cx: &mut Context<'_, Self>) {
+        self.history = None;
+        self.backend.send(Command::LoadHistory {
+            repo_id: self.repo_id().to_owned(),
+        });
+        cx.notify();
+    }
+
+    pub fn set_history(
+        &mut self,
+        entries: Vec<HistoryEntry>,
+        unlisted: Option<String>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.history = Some(History { entries, unlisted });
         cx.notify();
     }
 
@@ -482,6 +516,15 @@ impl RepoState {
                 if self.selected_workflow_id().as_deref() == Some(workflow_id.as_str()) {
                     self.load_diff(&workflow_id, DiffPreset::Section, None, cx);
                     cx.emit(RepoEvent::OpenReview);
+                }
+            }
+            UiEvent::Rewound {
+                workflow_id,
+                text,
+                attachments,
+            } if self.knows(&workflow_id) => {
+                if self.selected_workflow_id().as_deref() == Some(workflow_id.as_str()) {
+                    cx.emit(RepoEvent::Rewound { text, attachments });
                 }
             }
             UiEvent::ShowFindings { workflow_id } if self.knows(&workflow_id) => {

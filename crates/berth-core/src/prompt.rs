@@ -3,7 +3,8 @@
 use std::fmt::Write as _;
 
 use berth_protocol::{
-    DiffPreset, FindingAction, FollowUp, Origin, OriginKind, Prompt, Review, ReviewComment,
+    DiffPreset, FindingAction, FollowUp, Origin, OriginKind, Prompt, Reopened, Review,
+    ReviewComment,
 };
 
 /// Serialize a Prompt as the next user turn, with review comments grouped by preset:
@@ -59,6 +60,37 @@ fn comment_line(c: &ReviewComment) -> String {
     )
 }
 
+/// Leads the first prompt after a rewind (ADR 0009): the agent's memory went
+/// back, the checkout did not.
+pub const REWIND_NOTE: &str = "(The conversation was rewound to this point; what came after it \
+was dropped. Files were not rewound: changes made after this point may still be in the checkout, \
+so check `git status` and `git diff` before relying on what you remember.)";
+
+/// Leads the first prompt after a session was opened from the history (ADR
+/// 0010): where the conversation is now, and where it ran before.
+#[must_use]
+pub fn reopen_note(r: &Reopened) -> String {
+    let here = format!(
+        "slot `{}`, checkout `{}` on branch `{}`",
+        r.slot, r.checkout, r.branch
+    );
+    match (&r.from_checkout, &r.from_branch) {
+        (Some(from), branch) => format!(
+            "(This conversation was reopened in another checkout: {here}. Earlier messages ran in \
+             `{from}`{}; changes made there are here only if this branch has them. Work in this \
+             checkout, and check `git status` and `git log` before relying on what you remember.)",
+            branch
+                .as_deref()
+                .map(|b| format!(" (branch `{b}`)"))
+                .unwrap_or_default()
+        ),
+        (None, _) => format!(
+            "(This conversation was reopened after a pause, in {here}; the checkout may have \
+             changed since. Check `git status` and `git log` before relying on what you remember.)"
+        ),
+    }
+}
+
 /// The first turn of a workflow, built from its Origin.
 #[must_use]
 pub fn origin_turn(origin: &Origin) -> String {
@@ -79,6 +111,7 @@ pub fn origin_turn(origin: &Origin) -> String {
             origin.r#ref, origin.title
         ),
         OriginKind::FollowUp => format!("Follow-up: {}", origin.title),
+        OriginKind::Session => format!("Continue: {}", origin.title),
         OriginKind::Thought => origin.title.clone(),
     };
     if !origin.body.trim().is_empty() {

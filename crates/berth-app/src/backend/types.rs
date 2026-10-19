@@ -9,7 +9,7 @@ use berth_core::{Repo, ReviewCommentRow, Slot, Workflow, WorkflowFacts, Workflow
 use berth_git::DiffStats;
 use berth_protocol::{
     DiffPreset, DiffSide, Effort, FindingAction, FollowUp, ModelChoice, Origin, OriginKind,
-    SlotRequest,
+    PastSession, SlotRequest,
 };
 
 /// UI -> backend.
@@ -38,6 +38,22 @@ pub enum Command {
         workflow_id: String,
         question_id: String,
         text: String,
+    },
+    /// The repo's session history: Claude Code's sessions and Berth's
+    /// workflows (ADR 0010).
+    LoadHistory {
+        repo_id: String,
+    },
+    /// Open an entry of the history in this slot of the repo, to go on there.
+    OpenFromHistory {
+        repo_id: String,
+        slot_id: String,
+        open: HistoryOpen,
+    },
+    /// Rewind the conversation to this Prompt node (ADR 0009).
+    Rewind {
+        workflow_id: String,
+        node_id: String,
     },
     /// The user's decision on each finding of a review, in order.
     AnswerReview {
@@ -217,6 +233,36 @@ pub struct SlotEntry {
     pub facts: WorkflowFacts,
 }
 
+/// What to open from the history.
+#[derive(Debug, Clone)]
+pub enum HistoryOpen {
+    /// A Berth workflow, flow and all.
+    Workflow(String),
+    /// A Claude Code session Berth has no workflow for.
+    Session(PastSession),
+}
+
+/// One session of the repo's history (ADR 0010): a Berth workflow, a Claude
+/// Code session, or both (a workflow whose session Claude Code still lists).
+#[derive(Debug, Clone)]
+pub struct HistoryEntry {
+    pub title: String,
+    /// Claude Code's record of it on this machine, when it has one.
+    pub session: Option<PastSession>,
+    pub workflow: Option<HistoryWorkflow>,
+    /// Latest activity (ms).
+    pub last_active: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct HistoryWorkflow {
+    pub workflow: Workflow,
+    pub slot: Slot,
+    /// The slot shows it now (it is that slot's latest).
+    pub shown: bool,
+    pub facts: WorkflowFacts,
+}
+
 /// A recently opened repository (Welcome).
 #[derive(Debug, Clone)]
 pub struct RecentRepo {
@@ -389,6 +435,19 @@ pub enum UiEvent {
     /// A review arrived: show its findings.
     ShowFindings {
         workflow_id: String,
+    },
+    /// The repo's history; `unlisted` says why Claude Code's sessions are missing.
+    History {
+        repo_id: String,
+        entries: Vec<HistoryEntry>,
+        unlisted: Option<String>,
+    },
+    /// The conversation was rewound: the dropped message, to edit and resend.
+    Rewound {
+        workflow_id: String,
+        text: String,
+        /// The app's copies of its attachments.
+        attachments: Vec<PathBuf>,
     },
     Diff(Arc<DiffResult>),
     DiffFailed {

@@ -150,9 +150,11 @@ impl Shared {
             model,
             effort: slot.effort,
         };
+        let resume_at = self.core().store.workflow_resume_at(&wf.id)?;
         let msg = match wf.claude_session_id.clone() {
             Some(id) => AppToSidecar::SessionResume(SessionResume {
                 claude_session_id: id,
+                resume_at,
                 start,
             }),
             None => AppToSidecar::SessionStart(start),
@@ -235,6 +237,70 @@ impl Shared {
         };
         Self::deliver(&session, delivery)?;
         self.emit_workflow(workflow_id);
+        Ok(())
+    }
+
+    /// Rewind the conversation to Prompt `node_id` (ADR 0009): the live
+    /// session stops, the flow drops that prompt and what followed, and the
+    /// prompt goes back to the composer. A workflow closed by a dropped
+    /// Outcome takes its slot again.
+    pub(super) async fn rewind(self: &Arc<Self>, workflow_id: &str, node_id: &str) -> Result<()> {
+        let slot = {
+            let core = self.core();
+            let wf = core.store.workflow(workflow_id)?;
+            if wf.state.is_busy() {
+                return Err(anyhow!(
+                    "The agent is working; interrupt it before rewinding."
+                ));
+            }
+            let slot = core.store.slot(&wf.slot_id)?;
+            if wf.state == WorkflowState::Closed {
+                let latest = core.store.workflows_for_slot(&slot.id)?.pop();
+                if latest.is_none_or(|l| l.id != wf.id) {
+                    return Err(anyhow!(
+                        "The slot has moved on to another workflow; this one can't be reopened."
+                    ));
+                }
+                if !matches!(
+                    slot.state,
+                    berth_core::SlotState::Ready | berth_core::SlotState::Running
+                ) {
+                    return Err(anyhow!(
+                        "The slot is not ready; this workflow can't be reopened."
+                    ));
+                }
+            }
+            slot
+        };
+        // Its sidecar goes first, so nothing it still sends lands after the rewind.
+        let session = lock(&self.sessions).remove(workflow_id);
+        if let Some(s) = session {
+            s.shutdown().await;
+        }
+        let (rewound, fx) = {
+            let mut core = self.core();
+            let super::Core { store, engine } = &mut *core;
+            engine.rewind(store, workflow_id, node_id)?
+        };
+        if rewound.reopened && slot.state == berth_core::SlotState::Ready {
+            self.core()
+                .store
+                .transition_slot(&slot.id, berth_core::SlotState::Running, None)?;
+        }
+        self.run_effects(workflow_id, fx);
+        self.emit_workflow(workflow_id);
+        self.emit_comments(workflow_id);
+        self.emit_slots(&slot.repo_id);
+        self.emit(UiEvent::Rewound {
+            workflow_id: workflow_id.to_owned(),
+            text: rewound.prompt.text,
+            attachments: rewound
+                .prompt
+                .attachments
+                .iter()
+                .filter_map(|f| f.stored.as_deref().map(std::path::PathBuf::from))
+                .collect(),
+        });
         Ok(())
     }
 

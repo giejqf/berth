@@ -14,6 +14,7 @@ actions!(
         NewWorkflow,
         FollowUpFromOutcome,
         NewWorkflowHere,
+        OpenHistory,
         ChooseModel,
         OpenSettings,
         CommandPalette,
@@ -42,6 +43,7 @@ actions!(
         CollapseNode,
         ExpandAll,
         NodeDetails,
+        RewindConversation,
         // answer card
         AnswerNext,
         AnswerPrev,
@@ -138,6 +140,11 @@ pub struct ShowFile(pub String);
 #[action(namespace = berth, no_json)]
 pub struct ShowReview(pub String);
 
+/// Open Rewind conversation on this Prompt node (its Rewind link; no binding).
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = berth, no_json)]
+pub struct RewindTo(pub String);
+
 /// 1–3 on a finding: fix, dismiss, decide (0-based).
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = berth, no_json)]
@@ -193,6 +200,11 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut {
         keys: "⌥⌘N",
         label: "New workflow in the selected slot, keeping its files",
+        group: "Global",
+    },
+    Shortcut {
+        keys: "⌘Y",
+        label: "Open a session from the repo's history in the selected slot",
         group: "Global",
     },
     Shortcut {
@@ -283,6 +295,11 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut {
         keys: "D",
         label: "Open details (transcript) for the node",
+        group: "Event flow",
+    },
+    Shortcut {
+        keys: "R",
+        label: "Rewind the conversation to your message at (or above) the focused node",
         group: "Event flow",
     },
     Shortcut {
@@ -476,6 +493,7 @@ pub fn palette_actions() -> Vec<(&'static str, &'static str, Box<dyn Action>)> {
             "⌥⌘N",
             Box::new(NewWorkflowHere),
         ),
+        ("Open from history…", "⌘Y", Box::new(OpenHistory)),
         ("Model and effort…", "⌘⇧M", Box::new(ChooseModel)),
         (
             "New workflow from a GitHub issue",
@@ -505,6 +523,7 @@ pub fn palette_actions() -> Vec<(&'static str, &'static str, Box<dyn Action>)> {
         ("Attach files…", "⌘⇧O", Box::new(AttachFiles)),
         ("Focus the answer card", "A", Box::new(FocusAnswer)),
         ("Interrupt the agent", "⌘.", Box::new(Interrupt)),
+        ("Rewind conversation…", "R", Box::new(RewindConversation)),
         ("Next slot", "⌘⇧]", Box::new(NextSlot)),
         ("Previous slot", "⌘⇧[", Box::new(PrevSlot)),
         (
@@ -540,6 +559,7 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-n", NewWorkflow, None),
         KeyBinding::new("cmd-shift-n", FollowUpFromOutcome, None),
         KeyBinding::new("cmd-alt-n", NewWorkflowHere, None),
+        KeyBinding::new("cmd-y", OpenHistory, None),
         KeyBinding::new("cmd-shift-m", ChooseModel, None),
         KeyBinding::new("cmd-,", OpenSettings, None),
         KeyBinding::new("cmd-k", CommandPalette, None),
@@ -583,6 +603,7 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("left", CollapseNode, Some("EventFlow")),
         KeyBinding::new("e", ExpandAll, Some("EventFlow")),
         KeyBinding::new("d", NodeDetails, Some("EventFlow")),
+        KeyBinding::new("r", RewindConversation, Some("EventFlow")),
         KeyBinding::new("a", FocusAnswer, Some("EventFlow")),
         KeyBinding::new("a", FocusAnswer, Some("RepoWindow")),
         // answer card
@@ -715,12 +736,16 @@ mod tests {
     }
 
     #[test]
-    fn r_renames_the_slot_from_the_rail_only() {
+    fn r_renames_in_the_rail_and_rewinds_in_the_flow() {
         assert_eq!(
             resolve("r", &["RepoWindow", "SlotRail"]),
             ["berth::RenameSlot"]
         );
-        assert!(resolve("r", &["RepoWindow", "EventFlow"]).is_empty());
+        assert_eq!(
+            resolve("r", &["RepoWindow", "EventFlow"]),
+            ["berth::RewindConversation"]
+        );
+        assert!(resolve("r", &["RepoWindow"]).is_empty());
         // The rename field itself takes the letter.
         assert!(resolve("r", &["RepoWindow", "Dialog", "Input"]).is_empty());
     }

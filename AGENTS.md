@@ -121,6 +121,7 @@ berth/
 │   ├── src/session.ts           Agent SDK session lifecycle, round tracking, nudges
 │   ├── src/tools.ts             the "berth" MCP server (app-owned tools)
 │   ├── src/branches.ts          subagent branch tracking from the stream
+│   ├── src/history.ts           the repo's Claude Code sessions (`sessions.list`)
 │   ├── src/ndjson.ts, queue.ts, log.ts
 │   ├── src/protocol.ts          GENERATED from berth-protocol via ts-rs; do not edit
 │   └── test/                    vitest; SDK mocked; e2e.test.ts behind BERTH_E2E=1
@@ -167,7 +168,7 @@ The event flow is the primary UI. It is an ordered list of **nodes** per workflo
 
 | Node | Source | Payload |
 |---|---|---|
-| `Origin` | App (user picks) or agent (`record_origin` not needed — app sets it at creation) | `{ kind: gh_issue \| gh_pr \| linear \| posthog \| thought \| follow_up, ref, title, body, custom_prompt, url? }` — `url` (from the picked item) is where it lives; the Origin node and the New workflow list link to it |
+| `Origin` | App (user picks) or agent (`record_origin` not needed — app sets it at creation) | `{ kind: gh_issue \| gh_pr \| linear \| posthog \| thought \| follow_up \| session, ref, title, body, custom_prompt, url? }` (`session`: a Claude Code session opened from the history, `ref` its id) — `url` (from the picked item) is where it lives; the Origin node and the New workflow list link to it |
 | `Prompt` | User | `{ text, review_comments?: [ReviewComment], attachments?: [FileRef] }` |
 | `Question` | Agent (`ask_user`) or user (free-text question in a Prompt is just a Prompt) | `{ question, options?, allow_free_text, answer?, answered_at? }` |
 | `Decision` | Agent (`record_decision`) | `{ title, rationale, affects: [path], reversible }` |
@@ -176,6 +177,8 @@ The event flow is the primary UI. It is an ordered list of **nodes** per workflo
 | `SubagentSpawn` | Sidecar (from an `Agent` tool_use) | `{ branch_id, agent_name, description, prompt, parallel_group? }` — opens a branch |
 | `CollectResults` | Sidecar (from that tool_use's result) | `{ branch_id, result_text, duration_ms, cost_usd, tool_calls, touched_files: [path], status: ok \| error \| cancelled }` — closes the branch |
 | `Artifact` | Agent (`present_artifact`) | `{ artifact_id, title, description?, file: FileRef, error? }` — a file the agent made for the user (screenshot, recording, rendered page) |
+| `Reopened` | App (a session was opened from the history) | `{ slot, checkout, branch, from_checkout?, from_branch? }` — where the conversation goes on, and where it ran before when that was another checkout (ADR 0010) |
+| `Rewind` | App (the user rewound the conversation) | `{ dropped_rounds, from, to }` — marks where a rewind landed: what was dropped, when it ran |
 | `Review` | Agent (`present_review`) | `{ review_id, summary?, findings: [Finding], answered_at? }`, `Finding = { level: low \| mid \| high, title, detail, path?, line?, suggested: fix \| dismiss \| decide, choice?, note? }` — code review findings; `choice` (and `note`, for decide) once the user sent their decisions |
 
 `FollowUp = { id, title, description }`. Each follow-up renders a **"Create slot from
@@ -399,8 +402,9 @@ agent is working, nor while the slot is creating, failed or destroying. Reusing 
 no `slot.sh create`, no reset and no branch switch: the checkout stays exactly as
 earlier work left it, the slot's branch is re-read from `git branch --show-current`,
 and the new workflow takes its own start snapshot. Its agent gets a fresh session,
-told the slot is reused. Earlier workflows stay in the database; the slot shows its
-latest.
+told the slot is reused. Earlier workflows stay in the database; the slot shows the
+one it hosted last, and any of them can be opened again, here or in another slot of
+the repo (§11, ADR 0010).
 
 The agent can request a slot via `request_slot`;
 the app always asks the user first. Slot state dirs live in
@@ -411,7 +415,8 @@ Workflow states (`berth_core::WorkflowState`): `starting` (created, first round 
 sent) → `running` (a round in flight) ⇄ `awaiting_answer` (suspended on `ask_user`) →
 `idle` (between rounds; accepts a Prompt) → … → `closed` (after an Outcome). After an
 app restart every open workflow settles to `idle` (or stays `awaiting_answer`); the
-session resumes lazily on the next Prompt or answer.
+session resumes lazily on the next Prompt or answer. A rewind (§11) sets it back to
+`idle`, a closed one included (its slot hosts it again).
 
 ---
 
@@ -537,7 +542,7 @@ repos            id, path, default_slot_type, created_at
 slots            id, repo_id, type, name, custom_name, state, state_detail, checkout_path, placement, branch,
                  base_ref, created_at, model, effort
 workflows        id, slot_id, origin_json, state, claude_session_id, section_no, total_cost_usd, last_error,
-                 created_at, closed_at
+                 created_at, closed_at, resume_at, opened_at
 rounds           id, workflow_id, section_no, started_at, ended_at, terminal_kind, nudges, cost_usd, duration_ms
 branches         id, workflow_id, spawn_round_id, collect_round_id, parent_branch_id, parent_tool_use_id,
                  agent_name, description, parallel_group, status, spawned_at, collected_at, cost_usd,
@@ -571,12 +576,13 @@ from `berth-protocol`; the list below is the contract, the Rust types are the tr
 **App → sidecar**
 ```
 session.start    { workflow_id, cwd, system_prompt, env, allowed_tools, connector_skills, model?, effort? }
-session.resume   { workflow_id, claude_session_id, cwd, … }
+session.resume   { workflow_id, claude_session_id, resume_at?, cwd, … }   # resume_at: a rewind (ADR 0009)
 session.turn     { text, attachments?: [{ path, mime }] }   # a Prompt or nudge; images become image blocks
 session.interrupt
 session.stop
 question.answer  { question_id, text }
 slot_request.resolved { request_id, approved, slot_id? }
+sessions.list    { dir }   # no session needed: the repo's Claude Code sessions (ADR 0010)
 session.configure { model, effort }   # mid-session switch; null = default (ADR 0007)
 review.answer    { review_id, text }  # the decisions on a review's findings, as the agent reads them
 ```
@@ -596,6 +602,7 @@ round.ended      { terminal_kind, cost_usd, duration_ms, nudges, last_text? }
 session.cost     { total_usd }
 session.error    { message, fatal }
 session.models   { models: [{ value, display_name, description, efforts }] }   # supportedModels()
+sessions.listed  { sessions: [{ session_id, title, first_prompt?, cwd?, git_branch?, last_modified }] }   # reply to sessions.list
 ```
 
 The sidecar is stateless across restarts: all state lives in SQLite on the app side.
@@ -698,6 +705,34 @@ stdin EOF stops the session; stdout carries protocol lines only (logs go to
   "Default agent model", the model's own effort. Models are exact ids named by
   version ("Opus 5.5", "Opus 4.8"), never aliases; the ones on offer are the SDK's
   (`session.models`, aliases resolved, kept in settings), else the current models.
+- **Open from history** (ADR 0010; ⌘Y, the rail's context menu, More, ⌘K, the menu
+  bar; `ui/history.rs`): the repo's past sessions, newest first and searchable. They
+  are Berth's workflows (every slot's, destroyed ones included) and Claude Code's own
+  sessions for the repo and its git worktrees (`listSessions`, via a short-lived
+  sidecar), merged by session id. Opening one in the selected slot closes that slot's
+  open workflow first (as for reuse) and keeps its checkout as it is. A Berth workflow
+  moves into the slot with its flow (`workflows.opened_at` orders a slot's workflows,
+  so it is what the slot shows); a closed one opens again, and a new section starts
+  with a snapshot of this checkout (`Engine::reopen`). A Claude Code session becomes a
+  workflow with a `session` Origin and that session's id (`Engine::adopt_session`).
+  Either way a **Reopened** marker says where the conversation goes on, the next
+  prompt tells the agent (`prompt::reopen_note`), and the session resumes by id:
+  Claude Code finds it from any worktree of the repo. A workflow open in another
+  slot is shown there instead ("Go to slot"). Sessions stay where the agent ran:
+  nothing moves into or out of an `inside` slot but its own workflows.
+- **Rewind conversation** (ADR 0009): go back to one of your messages. The dialog
+  (`ui/rewind.rs`; R in the flow, on the message at or above the cursor; a message's
+  Rewind link, shown on hover; More; ⌘K; the menu bar) lists them newest first with
+  what each would drop. Rewinding stops the session, removes that message and
+  everything after it from the flow (`Engine::rewind`; raw events stay, detached), puts
+  a **Rewound to here** marker in its place, and returns the message to the composer
+  with its attachments; review comments it carried are pending again. The agent's next
+  session resumes its transcript at the last entry before the message
+  (`resumeSessionAt`, the `uuid` kept in `raw_events`; `workflows.resume_at` until the
+  agent answers on the new branch). Files are not rewound: the next prompt tells the
+  agent so (`prompt::REWIND_NOTE`). Not while the agent works; a rewind past an
+  Outcome reopens the workflow. Questions and reviews are not rewind points (their
+  answers resume a round mid-way).
 - Dialogs (New workflow, Settings, ⌘K, confirmations) are drawn by the app
   (`ui/modal.rs`): scrim, 10px radius, one soft shadow, ⌘↩ confirms, esc closes.
 - Theme tokens in `berth-app/src/theme.rs`; light/dark follow the system unless

@@ -10,15 +10,17 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use crate::error::{CoreError, Result};
 use crate::ids::{new_id, now_ms};
 use crate::model::{
-    Branch, BranchState, ConnectorRow, GhEntityRow, Node, RawEventRow, Repo, ReviewCommentRow,
-    Round, Slot, SlotState, Snapshot, SnapshotKind, Workflow, WorkflowFacts, WorkflowState,
-    WorkflowView,
+    Branch, BranchState, ConnectorRow, Dropped, GhEntityRow, Node, RawEventRow, Repo,
+    ReviewCommentRow, Round, Slot, SlotState, Snapshot, SnapshotKind, Workflow, WorkflowFacts,
+    WorkflowState, WorkflowView,
 };
 
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_init.sql"),
     include_str!("../migrations/0002_slot_custom_name.sql"),
     include_str!("../migrations/0003_slot_agent.sql"),
+    include_str!("../migrations/0004_workflow_resume_at.sql"),
+    include_str!("../migrations/0005_workflow_opened_at.sql"),
 ];
 
 pub struct Store {
@@ -636,11 +638,53 @@ impl Store {
     }
 
     /// All workflows of a slot, oldest first.
+    /// The slot's workflows in the order it hosted them: created there, or
+    /// opened there from the history (ADR 0010). The last is the one it shows.
     pub fn workflows_for_slot(&self, slot_id: &str) -> Result<Vec<Workflow>> {
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT {WORKFLOW_COLS} FROM workflows WHERE slot_id = ?1 ORDER BY created_at"
+            "SELECT {WORKFLOW_COLS} FROM workflows WHERE slot_id = ?1 \
+             ORDER BY COALESCE(opened_at, created_at), opened_at IS NOT NULL, rowid"
         ))?;
         collect(stmt.query_map([slot_id], workflow_row)?, finish_workflow)
+    }
+
+    /// Every workflow of the repo's slots, destroyed ones included, with its
+    /// slot: the Berth side of the history (ADR 0010).
+    pub fn repo_workflows(&self, repo_id: &str) -> Result<Vec<(Workflow, Slot)>> {
+        let mut out = Vec::new();
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {SLOT_COLS} FROM slots WHERE repo_id = ?1 ORDER BY created_at"
+        ))?;
+        let slots = collect(stmt.query_map([repo_id], slot_row)?, finish_slot)?;
+        for slot in slots {
+            for wf in self.workflows_for_slot(&slot.id)? {
+                out.push((wf, slot.clone()));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Host `workflow_id` in `slot_id` from now on (opened from the history).
+    pub fn move_workflow(&self, workflow_id: &str, slot_id: &str, at: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE workflows SET slot_id = ?2, opened_at = ?3 WHERE id = ?1",
+            params![workflow_id, slot_id, at],
+        )?;
+        Ok(())
+    }
+
+    /// Forget section `section_no`'s snapshots of `kind`.
+    pub fn delete_snapshots(
+        &self,
+        workflow_id: &str,
+        section_no: u32,
+        kind: SnapshotKind,
+    ) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM snapshots WHERE workflow_id = ?1 AND section_no = ?2 AND kind = ?3",
+            params![workflow_id, section_no, kind.as_str()],
+        )?;
+        Ok(())
     }
 
     /// The slot's open workflow; a slot hosts at most one (§2).
@@ -665,6 +709,32 @@ impl Store {
         self.conn.execute(
             "UPDATE workflows SET state = ?2, closed_at = COALESCE(?3, closed_at) WHERE id = ?1",
             params![id, state.as_str(), closed_at],
+        )?;
+        Ok(())
+    }
+
+    /// Where a rewound conversation resumes (ADR 0009); `None` once it has.
+    pub fn workflow_resume_at(&self, id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT resume_at FROM workflows WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })?)
+    }
+
+    pub fn set_workflow_resume_at(&self, id: &str, at: Option<&str>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE workflows SET resume_at = ?2 WHERE id = ?1",
+            params![id, at],
+        )?;
+        Ok(())
+    }
+
+    /// Back open after a rewind dropped its Outcome.
+    pub fn reopen_workflow(&self, id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE workflows SET state = ?2, closed_at = NULL WHERE id = ?1",
+            params![id, WorkflowState::Idle.as_str()],
         )?;
         Ok(())
     }
@@ -763,6 +833,110 @@ impl Store {
             )
             .optional()?;
         raw.map(finish_round).transpose()
+    }
+
+    pub fn round(&self, id: &str) -> Result<Round> {
+        let raw = self
+            .conn
+            .query_row(
+                &format!("SELECT {ROUND_COLS} FROM rounds WHERE id = ?1"),
+                [id],
+                round_row,
+            )
+            .optional()?
+            .ok_or_else(|| not_found("round", id))?;
+        finish_round(raw)
+    }
+
+    /// Where a conversation rewound to round `round_id` goes on from: the
+    /// `uuid` of the last entry the agent's transcript holds from the rounds
+    /// before it (an assistant message, or a tool result). Subagents' messages
+    /// are not in that transcript, and earlier rewinds detached the rounds
+    /// they dropped. Rounds are ordered as they were opened (`rowid`).
+    pub fn resume_point(&self, workflow_id: &str, round_id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT json_extract(json, '$.uuid') FROM raw_events \
+                 WHERE workflow_id = ?1 AND branch_id IS NULL AND kind IN ('assistant', 'user') \
+                 AND json_extract(json, '$.uuid') IS NOT NULL \
+                 AND round_id IN (SELECT id FROM rounds WHERE workflow_id = ?1 \
+                     AND rowid < (SELECT rowid FROM rounds WHERE id = ?2)) \
+                 ORDER BY id DESC LIMIT 1",
+                params![workflow_id, round_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Drop the flow from node `seq` and round `round_id` on (a rewind, ADR
+    /// 0009): their nodes, rounds, branches and snapshots go, review comments
+    /// sent with a dropped prompt are pending again. The raw events stay
+    /// (append-only), detached from their dropped rounds. `section_no` is the
+    /// section the rewind lands in.
+    pub fn drop_from(
+        &self,
+        workflow_id: &str,
+        seq: i64,
+        round_id: &str,
+        section_no: u32,
+    ) -> Result<Dropped> {
+        let tx = self.conn.unchecked_transaction()?;
+        let from = "SELECT rowid FROM rounds WHERE id = ?2";
+        let dropped = format!("SELECT id FROM rounds WHERE workflow_id = ?1 AND rowid >= ({from})");
+        let (rounds, first, last): (i64, Option<i64>, Option<i64>) = tx.query_row(
+            &format!(
+                "SELECT COUNT(*), MIN(started_at), MAX(COALESCE(ended_at, started_at)) FROM rounds \
+                 WHERE id IN ({dropped})"
+            ),
+            params![workflow_id, round_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        tx.execute(
+            "UPDATE review_comments SET sent_in_node = NULL WHERE workflow_id = ?1 \
+             AND sent_in_node IN (SELECT id FROM nodes WHERE workflow_id = ?1 AND seq >= ?2)",
+            params![workflow_id, seq],
+        )?;
+        tx.execute(
+            &format!(
+                "DELETE FROM nodes WHERE workflow_id = ?1 AND (seq >= ?3 OR round_id IN ({dropped}))"
+            ),
+            params![workflow_id, round_id, seq],
+        )?;
+        // A branch spawned before but collected after keeps its spawn.
+        tx.execute(
+            &format!(
+                "UPDATE branches SET collect_round_id = NULL WHERE workflow_id = ?1 \
+                 AND collect_round_id IN ({dropped})"
+            ),
+            params![workflow_id, round_id],
+        )?;
+        tx.execute(
+            &format!(
+                "DELETE FROM branches WHERE workflow_id = ?1 AND spawn_round_id IN ({dropped})"
+            ),
+            params![workflow_id, round_id],
+        )?;
+        tx.execute(
+            &format!("UPDATE raw_events SET round_id = NULL WHERE workflow_id = ?1 AND round_id IN ({dropped})"),
+            params![workflow_id, round_id],
+        )?;
+        tx.execute(
+            &format!("DELETE FROM rounds WHERE id IN ({dropped})"),
+            params![workflow_id, round_id],
+        )?;
+        // The section's start snapshot stays; its end, and later sections, go.
+        tx.execute(
+            "DELETE FROM snapshots WHERE workflow_id = ?1 \
+             AND (section_no > ?2 OR (section_no = ?2 AND kind = 'summary'))",
+            params![workflow_id, section_no],
+        )?;
+        tx.commit()?;
+        Ok(Dropped {
+            rounds: u32::try_from(rounds).unwrap_or(0),
+            from: first.unwrap_or_default(),
+            to: last.unwrap_or_default(),
+        })
     }
 
     pub fn rounds(&self, workflow_id: &str) -> Result<Vec<Round>> {

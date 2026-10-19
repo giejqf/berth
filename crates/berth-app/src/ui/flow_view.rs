@@ -27,7 +27,7 @@ use super::nodes::{Row, RowCtx, origin_label, render_row};
 use crate::backend::Command;
 use crate::keymap::{
     CollapseNode, DestroySlot, ExpandAll, ExpandNode, Interrupt, NextNode, NodeDetails, PrevNode,
-    ScrollToNewest, ToggleReview,
+    RewindConversation, RewindTo, ScrollToNewest, ToggleReview,
 };
 use crate::theme::{MONO, Tokens, ty};
 
@@ -277,6 +277,32 @@ impl FlowView {
         self.relayout(cx, true);
     }
 
+    /// R: rewind to your message at the cursor, or the nearest one above it;
+    /// without a cursor the window opens it on your newest message.
+    fn rewind_at_cursor(&self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let (Some(v), Some(cursor)) = (&self.view, self.cursor) else {
+            return cx.propagate();
+        };
+        // The node at or above the cursor (groups and markers have none).
+        let upto = self.rows[..=cursor.min(self.rows.len().saturating_sub(1))]
+            .iter()
+            .rev()
+            .find_map(|r| match r {
+                Row::Item(FlowItem::Node { index }) => Some(*index),
+                _ => None,
+            });
+        let prompt = upto.and_then(|ix| {
+            v.nodes[..=ix]
+                .iter()
+                .rev()
+                .find(|n| matches!(n.payload, NodePayload::Prompt(_)) && n.round_id.is_some())
+        });
+        match prompt {
+            Some(n) => window.dispatch_action(Box::new(RewindTo(n.id.clone())), cx),
+            None => cx.propagate(),
+        }
+    }
+
     fn details_at_cursor(&self, cx: &App) {
         let (Some(Row::Item(FlowItem::Node { index })), Some(v)) = (self.at_cursor(), &self.view)
         else {
@@ -457,6 +483,7 @@ fn origin_glyph(kind: berth_protocol::OriginKind) -> &'static str {
         K::Linear => "linear",
         K::Posthog => "alert",
         K::FollowUp => "fork",
+        K::Session => "history",
     }
 }
 
@@ -474,9 +501,14 @@ fn more_menu(t: &Tokens) -> impl IntoElement {
                 .menu("Command palette…", Box::new(crate::keymap::CommandPalette))
                 .separator()
                 .menu(
+                    "Rewind conversation…",
+                    Box::new(crate::keymap::RewindConversation),
+                )
+                .menu(
                     "New workflow in this slot…",
                     Box::new(crate::keymap::NewWorkflowHere),
                 )
+                .menu("Open from history…", Box::new(crate::keymap::OpenHistory))
                 .menu("Rename slot…", Box::new(crate::keymap::RenameSlot))
                 .menu("Destroy slot…", Box::new(DestroySlot))
         })
@@ -582,6 +614,9 @@ impl Render for FlowView {
                 this.expand_all(&ids, cx);
             }))
             .on_action(cx.listener(|this, _: &NodeDetails, _, cx| this.details_at_cursor(cx)))
+            .on_action(cx.listener(|this, _: &RewindConversation, window, cx| {
+                this.rewind_at_cursor(window, cx);
+            }))
             .on_action(cx.listener(|this, _: &ScrollToNewest, _, cx| {
                 let n = this.rows.len();
                 if n > 0 {

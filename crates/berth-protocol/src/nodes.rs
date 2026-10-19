@@ -13,6 +13,8 @@ pub enum OriginKind {
     Posthog,
     Thought,
     FollowUp,
+    /// A Claude Code session from the repo's history, resumed (ADR 0010).
+    Session,
 }
 
 impl OriginKind {
@@ -25,6 +27,7 @@ impl OriginKind {
             Self::Posthog => "posthog",
             Self::Thought => "thought",
             Self::FollowUp => "follow_up",
+            Self::Session => "session",
         }
     }
 
@@ -38,6 +41,7 @@ impl OriginKind {
             Self::Posthog => "PostHog",
             Self::Thought => "Thought",
             Self::FollowUp => "Follow-up",
+            Self::Session => "Claude Code session",
         }
     }
 }
@@ -290,6 +294,37 @@ pub struct Review {
     pub answered_at: Option<i64>,
 }
 
+/// The user rewound the conversation to here: the Prompt that stood here and
+/// everything after it were dropped, and the agent resumes from the moment
+/// before it. Files were not rewound.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct Rewind {
+    /// Rounds dropped, the rewound prompt's included.
+    pub dropped_rounds: u32,
+    /// When the first dropped round started and the last one ended (unix ms).
+    #[ts(type = "number")]
+    pub from: i64,
+    #[ts(type = "number")]
+    pub to: i64,
+}
+
+/// A session from the repo's history was opened in this slot (ADR 0010): the
+/// conversation goes on here, in this checkout.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct Reopened {
+    /// The slot's name and checkout, as the agent sees it, and its branch.
+    pub slot: String,
+    pub checkout: String,
+    pub branch: String,
+    /// Where the conversation ran before, when it was another checkout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub from_checkout: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub from_branch: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct Decision {
     pub title: String,
@@ -402,10 +437,12 @@ pub enum NodeKind {
     CollectResults,
     Artifact,
     Review,
+    Rewind,
+    Reopened,
 }
 
 impl NodeKind {
-    pub const ALL: [NodeKind; 10] = [
+    pub const ALL: [NodeKind; 12] = [
         Self::Origin,
         Self::Prompt,
         Self::Question,
@@ -416,6 +453,8 @@ impl NodeKind {
         Self::CollectResults,
         Self::Artifact,
         Self::Review,
+        Self::Rewind,
+        Self::Reopened,
     ];
 
     #[must_use]
@@ -431,6 +470,8 @@ impl NodeKind {
             Self::CollectResults => "collect_results",
             Self::Artifact => "artifact",
             Self::Review => "review",
+            Self::Rewind => "rewind",
+            Self::Reopened => "reopened",
         }
     }
 
@@ -456,6 +497,8 @@ pub enum NodePayload {
     CollectResults(CollectResults),
     Artifact(Artifact),
     Review(Review),
+    Rewind(Rewind),
+    Reopened(Reopened),
 }
 
 impl NodePayload {
@@ -472,6 +515,8 @@ impl NodePayload {
             Self::CollectResults(_) => NodeKind::CollectResults,
             Self::Artifact(_) => NodeKind::Artifact,
             Self::Review(_) => NodeKind::Review,
+            Self::Rewind(_) => NodeKind::Rewind,
+            Self::Reopened(_) => NodeKind::Reopened,
         }
     }
 
@@ -488,6 +533,8 @@ impl NodePayload {
             Self::CollectResults(p) => serde_json::to_string(p),
             Self::Artifact(p) => serde_json::to_string(p),
             Self::Review(p) => serde_json::to_string(p),
+            Self::Rewind(p) => serde_json::to_string(p),
+            Self::Reopened(p) => serde_json::to_string(p),
         }
     }
 
@@ -504,6 +551,8 @@ impl NodePayload {
             NodeKind::CollectResults => Self::CollectResults(serde_json::from_str(json)?),
             NodeKind::Artifact => Self::Artifact(serde_json::from_str(json)?),
             NodeKind::Review => Self::Review(serde_json::from_str(json)?),
+            NodeKind::Rewind => Self::Rewind(serde_json::from_str(json)?),
+            NodeKind::Reopened => Self::Reopened(serde_json::from_str(json)?),
         })
     }
 }

@@ -11,7 +11,7 @@ use berth_core::flow::{FlowItem, Lane, SubagentGroup};
 use berth_core::{BranchState, Node, WorkflowState, WorkflowView};
 use berth_protocol::{
     Artifact, Decision, FollowUp, NodePayload, Origin, OriginKind, Outcome, OutcomeKind, Prompt,
-    Question, Review, Summary,
+    Question, Reopened, Review, Rewind, Summary,
 };
 use std::f32::consts::FRAC_PI_2;
 
@@ -31,7 +31,7 @@ use super::motion;
 use super::rich::{self, clamped, overflows, rich};
 use super::{RepoState, files};
 use crate::backend::{BackendHandle, Command, SlotEntry};
-use crate::keymap::{ShowReview, ToggleReview};
+use crate::keymap::{RewindTo, ShowReview, ToggleReview};
 use crate::theme::{MONO, Tokens, ty};
 
 /// One row of the flow list.
@@ -224,12 +224,14 @@ fn node_row(t: &Tokens, node: &Node, ctx: &RowCtx, line: bool, cx: &mut App) -> 
         NodePayload::Outcome(o) => outcome(t, node, o, ctx, line),
         NodePayload::Artifact(a) => artifact(t, node, a, ctx, line),
         NodePayload::Review(r) => review(t, node, r, ctx, line),
+        NodePayload::Rewind(r) => rewound(t, node, r, line),
+        NodePayload::Reopened(r) => reopened(t, node, r, line),
         // Spawn/Collect are folded into their group; never laid out alone.
         NodePayload::SubagentSpawn(_) | NodePayload::CollectResults(_) => div(),
     }
 }
 
-fn origin_icon(kind: OriginKind) -> &'static str {
+pub fn origin_icon(kind: OriginKind) -> &'static str {
     match kind {
         OriginKind::Thought => "lightbulb",
         OriginKind::GhIssue => "issue",
@@ -237,6 +239,7 @@ fn origin_icon(kind: OriginKind) -> &'static str {
         OriginKind::Linear => "linear",
         OriginKind::Posthog => "alert",
         OriginKind::FollowUp => "fork",
+        OriginKind::Session => "history",
     }
 }
 
@@ -249,6 +252,7 @@ pub fn origin_label(o: &Origin) -> String {
         OriginKind::Linear => "Linear".to_owned(),
         OriginKind::Posthog => "PostHog error".to_owned(),
         OriginKind::FollowUp => "Follow-up".to_owned(),
+        OriginKind::Session => "Claude Code session".to_owned(),
     }
 }
 
@@ -258,7 +262,7 @@ pub fn open_origin_label(kind: OriginKind) -> &'static str {
         OriginKind::GhIssue | OriginKind::GhPr => "Open on GitHub",
         OriginKind::Linear => "Open in Linear",
         OriginKind::Posthog => "Open in PostHog",
-        OriginKind::Thought | OriginKind::FollowUp => "Open link",
+        OriginKind::Thought | OriginKind::FollowUp | OriginKind::Session => "Open link",
     }
 }
 
@@ -394,6 +398,9 @@ fn decision(t: &Tokens, node: &Node, d: &Decision, ctx: &RowCtx, line: bool) -> 
     )
 }
 
+/// A prompt card, for the Rewind link that shows while it is hovered.
+const PROMPT_GROUP: &str = "prompt-card";
+
 /// The latest Prompt, while its round runs, shows in full; older ones clamp.
 fn prompt(t: &Tokens, node: &Node, p: &Prompt, ctx: &RowCtx, line: bool) -> Div {
     let latest = ctx
@@ -421,6 +428,22 @@ fn prompt(t: &Tokens, node: &Node, p: &Prompt, ctx: &RowCtx, line: bool) -> Div 
                 .text_color(t.text3)
                 .child(clock(node.created_at)),
         );
+    // Hovering your message offers to go back to it (not while the agent works).
+    let rewind = (node.round_id.is_some() && !ctx.view.workflow.state.is_busy()).then(|| {
+        let id = node.id.clone();
+        let mut l = link(
+            SharedString::from(format!("rewind-{}", node.id)),
+            "Rewind",
+            t,
+            move |_, window, cx| window.dispatch_action(Box::new(RewindTo(id.clone())), cx),
+        )
+        .group_hover(PROMPT_GROUP, |mut s| {
+            s.visibility = Some(gpui::Visibility::Visible);
+            s
+        });
+        l.style().visibility = Some(gpui::Visibility::Hidden);
+        l
+    });
     if n_comments > 0 {
         header = header.child(
             div()
@@ -450,7 +473,13 @@ fn prompt(t: &Tokens, node: &Node, p: &Prompt, ctx: &RowCtx, line: bool) -> Div 
     } else {
         rich(t, &p.text, t.text).into_any_element()
     };
+    let header = match rewind {
+        Some(link) if n_comments > 0 || long => header.child(link),
+        Some(link) => header.child(link.ml_auto()),
+        None => header,
+    };
     let mut card = div()
+        .group(PROMPT_GROUP)
         .flex()
         .flex_col()
         .gap(px(if n_comments > 0 { 6. } else { 4. }))
@@ -1584,6 +1613,104 @@ fn follow_ups(t: &Tokens, items: &[FollowUp], ctx: &RowCtx, divided: bool) -> Di
         );
     }
     col
+}
+
+// ---- rewinds ----
+
+/// Where the conversation was rewound to: what was dropped, and that its file
+/// changes stayed.
+fn rewound(t: &Tokens, node: &Node, r: &Rewind, line: bool) -> Div {
+    let span = match (clock(r.from), clock(r.to)) {
+        _ if r.from <= 0 => String::new(),
+        (from, to) if from == to || r.to <= 0 => format!(" ({from})"),
+        (from, to) => format!(" ({from}–{to})"),
+    };
+    row(
+        t,
+        glyph(t.card, icon("rewind", 14., t.text2)),
+        line,
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .pt(px(3.))
+            .pb(px(if line { 20. } else { 12. }))
+            .child(
+                div()
+                    .flex()
+                    .items_baseline()
+                    .gap(px(8.))
+                    .child(div().semibold().child("Rewound to here"))
+                    .child(
+                        div()
+                            .ty(ty::META)
+                            .text_color(t.text3)
+                            .child(clock(node.created_at)),
+                    ),
+            )
+            .child(div().ty(ty::META).text_color(t.text2).child(format!(
+                "{} dropped{span}. The agent goes on from here; files changed since are still in the checkout.",
+                plural(r.dropped_rounds as usize, "round", "rounds")
+            ))),
+    )
+}
+
+/// Where a session from the history was opened: this slot's checkout, and
+/// the one it ran in before.
+fn reopened(t: &Tokens, node: &Node, r: &Reopened, line: bool) -> Div {
+    let before = match (&r.from_checkout, &r.from_branch) {
+        (Some(from), Some(branch)) => format!(
+            " Before, it ran in {} on {branch}; work there is here only if this branch has it.",
+            short_path(from)
+        ),
+        (Some(from), None) => format!(
+            " Before, it ran in {}; work there is here only if this branch has it.",
+            short_path(from)
+        ),
+        _ => String::new(),
+    };
+    row(
+        t,
+        glyph(t.card, icon("history", 14., t.text2)),
+        line,
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .pt(px(3.))
+            .pb(px(if line { 20. } else { 12. }))
+            .child(
+                div()
+                    .flex()
+                    .items_baseline()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .semibold()
+                            .child(format!("Opened from history in {}", r.slot)),
+                    )
+                    .child(
+                        div()
+                            .ty(ty::META)
+                            .text_color(t.text3)
+                            .child(clock(node.created_at)),
+                    ),
+            )
+            .child(div().ty(ty::META).text_color(t.text2).child(format!(
+                "The conversation goes on here, on {}.{before}",
+                r.branch
+            ))),
+    )
+}
+
+/// `~/…` for paths under the home directory.
+fn short_path(path: &str) -> String {
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() && path.starts_with(&home) => {
+            format!("~{}", &path[home.len()..])
+        }
+        _ => path.to_owned(),
+    }
 }
 
 // ---- artifacts & errors ----

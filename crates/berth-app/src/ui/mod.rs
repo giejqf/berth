@@ -8,6 +8,7 @@ mod diff_view;
 mod empty_state;
 mod files;
 mod flow_view;
+mod history;
 pub mod kit;
 mod modal;
 mod motion;
@@ -18,6 +19,7 @@ mod rename_slot;
 mod repo_state;
 mod repo_window;
 mod review_pane;
+mod rewind;
 pub mod rich;
 mod settings;
 mod slot_rail;
@@ -224,6 +226,15 @@ fn route(event: UiEvent, cx: &mut App) {
             }
             for state in targets {
                 state.update(cx, |s, cx| s.toast(level, message.clone(), cx));
+            }
+        }
+        UiEvent::History {
+            repo_id,
+            entries,
+            unlisted,
+        } => {
+            if let Some(state) = repo(&repo_id, cx) {
+                state.update(cx, |s, cx| s.set_history(entries, unlisted, cx));
             }
         }
         UiEvent::Slots { repo_id, slots } => {

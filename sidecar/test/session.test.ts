@@ -66,6 +66,15 @@ describe("session start", () => {
     const session = new Session({ emitter, log: silentLogger, query: q.fn });
     session.start({ ...START, claude_session_id: "old" }, "r");
     expect(q.last().options?.resume).toBe("old");
+    expect(q.last().options?.resumeSessionAt).toBeUndefined();
+  });
+
+  it("resumes a rewound conversation at the kept entry", () => {
+    const q = fakeQueryFn();
+    const session = new Session({ emitter: new RecordingEmitter(), log: silentLogger, query: q.fn });
+    session.start({ ...START, claude_session_id: "old", resume_at: "u-41" }, "r");
+    expect(q.last().options).toMatchObject({ resume: "old", resumeSessionAt: "u-41" });
+    expect(q.last().options?.forkSession).toBeUndefined();
   });
 });
 

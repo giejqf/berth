@@ -8,14 +8,14 @@ use std::collections::{HashMap, HashSet};
 
 use berth_protocol::{
     BranchStatus, CollectResults, Decision, Finding, FindingAction, NodePayload, Origin, Outcome,
-    Prompt, Question, Review, ReviewComment, SidecarToApp, SlotRequest, SubagentSpawn, Summary,
-    TerminalKind,
+    Prompt, Question, Reopened, Review, ReviewComment, Rewind, SidecarToApp, SlotRequest,
+    SubagentSpawn, Summary, TerminalKind,
 };
 
 use crate::activity::RoundActivity;
 use crate::error::{CoreError, Result};
 use crate::ids::{new_id, now_ms};
-use crate::model::{Branch, BranchState, Node, SnapshotKind, Workflow, WorkflowState};
+use crate::model::{Branch, BranchState, Node, Slot, SnapshotKind, Workflow, WorkflowState};
 use crate::prompt::{answer_as_turn, review_as_turn, review_decisions, serialize_prompt};
 use crate::store::{NewRawEvent, Store};
 
@@ -103,9 +103,21 @@ pub struct Submission {
     pub turn_text: String,
 }
 
+/// What a rewind leaves for the user: the message that was rewound, to edit
+/// and send again.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Rewound {
+    pub prompt: Prompt,
+    /// The workflow was closed (its Outcome was dropped): its slot hosts it again.
+    pub reopened: bool,
+}
+
 /// Per-workflow state that lives only as long as one sidecar process.
 #[derive(Debug, Default)]
 struct Live {
+    /// The session has not answered yet: its first assistant message settles
+    /// a rewind (ADR 0009).
+    fresh: bool,
     latest_raw: Option<i64>,
     /// Last raw event id already covered by a node, per lane (`None` = main).
     lane_cursor: HashMap<Option<String>, i64>,
@@ -179,7 +191,194 @@ impl Engine {
 
     /// A new sidecar process started for `workflow_id`; forget per-process state.
     pub fn session_started(&mut self, workflow_id: &str) {
-        self.live.insert(workflow_id.to_owned(), Live::default());
+        self.live.insert(
+            workflow_id.to_owned(),
+            Live {
+                fresh: true,
+                ..Live::default()
+            },
+        );
+    }
+
+    /// Open workflow `workflow_id` from the repo's history in `slot` (ADR
+    /// 0010): it moves there (a closed one opens again), a new section starts
+    /// in the slot's checkout (its start snapshot is an [`Effect::Snapshot`]),
+    /// and a Reopened node says where the conversation is now. Close the
+    /// slot's open workflow first.
+    pub fn reopen(&mut self, store: &Store, workflow_id: &str, slot: &Slot) -> Result<Vec<Effect>> {
+        if let Some(open) = store.active_workflow(&slot.id)?
+            && open.id != workflow_id
+        {
+            return Err(CoreError::InvalidTransition(format!(
+                "slot {} already hosts workflow {}",
+                slot.id, open.id
+            )));
+        }
+        let wf = store.workflow(workflow_id)?;
+        if wf.state.is_busy() {
+            return Err(CoreError::InvalidTransition(
+                "the agent is working on it".to_owned(),
+            ));
+        }
+        let before = store.slot(&wf.slot_id)?;
+        let moved = before.id != slot.id;
+        store.move_workflow(workflow_id, &slot.id, now_ms())?;
+        let mut fx = Vec::new();
+        if wf.state == WorkflowState::Closed {
+            store.reopen_workflow(workflow_id)?;
+            fx.push(Effect::StateChanged {
+                workflow_id: workflow_id.to_owned(),
+                state: WorkflowState::Idle,
+            });
+        }
+        // Diffs from here compare against this checkout, not the old one.
+        let used = store
+            .rounds(workflow_id)?
+            .iter()
+            .any(|r| r.section_no == wf.section_no);
+        let section = if used {
+            wf.section_no + 1
+        } else {
+            wf.section_no
+        };
+        store.set_section_no(workflow_id, section)?;
+        store.delete_snapshots(workflow_id, section, SnapshotKind::Start)?;
+        fx.push(Effect::Snapshot {
+            workflow_id: workflow_id.to_owned(),
+            section_no: section,
+            kind: SnapshotKind::Start,
+        });
+        store.insert_node(
+            workflow_id,
+            None,
+            None,
+            NodePayload::Reopened(reopened_in(
+                slot,
+                moved.then(|| before.checkout_path.clone()).flatten(),
+                moved.then(|| before.branch.clone()),
+            )),
+            None,
+        )?;
+        self.live.remove(workflow_id);
+        fx.push(Effect::FlowChanged {
+            workflow_id: workflow_id.to_owned(),
+        });
+        Ok(fx)
+    }
+
+    /// Take a Claude Code session from the repo's history into `slot` (ADR
+    /// 0010): a workflow with `origin` that resumes it on its first prompt.
+    /// `from` is where it ran, and on which branch.
+    pub fn adopt_session(
+        &mut self,
+        store: &Store,
+        slot: &Slot,
+        origin: Origin,
+        session_id: &str,
+        from: (Option<String>, Option<String>),
+    ) -> Result<(Workflow, Vec<Effect>)> {
+        let wf = Self::create_workflow(store, &slot.id, origin)?;
+        store.set_claude_session(&wf.id, session_id)?;
+        store.set_workflow_state(&wf.id, WorkflowState::Idle)?;
+        let (cwd, branch) = from;
+        let elsewhere = cwd.filter(|c| Some(c) != slot.checkout_path.as_ref());
+        let branch = branch.filter(|_| elsewhere.is_some());
+        store.insert_node(
+            &wf.id,
+            None,
+            None,
+            NodePayload::Reopened(reopened_in(slot, elsewhere, branch)),
+            None,
+        )?;
+        let wf = store.workflow(&wf.id)?;
+        let fx = vec![
+            Effect::Snapshot {
+                workflow_id: wf.id.clone(),
+                section_no: 1,
+                kind: SnapshotKind::Start,
+            },
+            Effect::FlowChanged {
+                workflow_id: wf.id.clone(),
+            },
+        ];
+        Ok((wf, fx))
+    }
+
+    /// Rewind the conversation to Prompt `node_id` (ADR 0009): that prompt
+    /// and everything after it leave the flow, a Rewind node marks the spot,
+    /// and the next session resumes the agent's transcript from just before
+    /// it. Files are not rewound. Not while the agent works; stop its sidecar
+    /// first.
+    pub fn rewind(
+        &mut self,
+        store: &Store,
+        workflow_id: &str,
+        node_id: &str,
+    ) -> Result<(Rewound, Vec<Effect>)> {
+        let wf = store.workflow(workflow_id)?;
+        if wf.state.is_busy() {
+            return Err(CoreError::InvalidTransition(
+                "the agent is working; interrupt it before rewinding".to_owned(),
+            ));
+        }
+        let node = store.node(node_id)?;
+        let (NodePayload::Prompt(prompt), Some(round_id)) = (&node.payload, &node.round_id) else {
+            return Err(CoreError::InvalidTransition(
+                "a conversation rewinds only to one of your messages".to_owned(),
+            ));
+        };
+        if node.workflow_id != workflow_id {
+            return Err(CoreError::NotFound {
+                kind: "prompt",
+                id: node_id.to_owned(),
+            });
+        }
+        let round = store.round(round_id)?;
+        let at = store.resume_point(workflow_id, &round.id)?.ok_or_else(|| {
+            CoreError::InvalidTransition(
+                "the agent's transcript before this message is missing".to_owned(),
+            )
+        })?;
+        let dropped = store.drop_from(workflow_id, node.seq, &round.id, round.section_no)?;
+        store.insert_node(
+            workflow_id,
+            None,
+            None,
+            NodePayload::Rewind(Rewind {
+                dropped_rounds: dropped.rounds,
+                from: dropped.from,
+                to: dropped.to,
+            }),
+            None,
+        )?;
+        store.set_section_no(workflow_id, round.section_no)?;
+        store.set_workflow_error(workflow_id, None)?;
+        store.set_workflow_resume_at(workflow_id, Some(&at))?;
+        let reopened = wf.state == WorkflowState::Closed;
+        let mut fx = vec![Effect::Activity {
+            workflow_id: workflow_id.to_owned(),
+            activity: None,
+        }];
+        if reopened {
+            store.reopen_workflow(workflow_id)?;
+            fx.push(Effect::StateChanged {
+                workflow_id: workflow_id.to_owned(),
+                state: WorkflowState::Idle,
+            });
+        } else {
+            self.set_state(store, workflow_id, WorkflowState::Idle, &mut fx)?;
+        }
+        self.live.remove(workflow_id);
+        fx.push(Effect::FlowChanged {
+            workflow_id: workflow_id.to_owned(),
+        });
+        Ok((
+            Rewound {
+                prompt: prompt.clone(),
+                reopened,
+            },
+            fx,
+        ))
     }
 
     fn live(&mut self, workflow_id: &str) -> &mut Live {
@@ -211,7 +410,24 @@ impl Engine {
             review_comments,
             attachments,
         };
-        let turn_text = serialize_prompt(&prompt);
+        let mut turn_text = serialize_prompt(&prompt);
+        // The first prompt after a rewind or a reopen tells the agent where
+        // its files stand.
+        let nodes = store.nodes(workflow_id)?;
+        let since = nodes.iter().rev().find(|n| {
+            matches!(
+                n.payload,
+                NodePayload::Prompt(_) | NodePayload::Rewind(_) | NodePayload::Reopened(_)
+            )
+        });
+        let note = since.and_then(|n| match &n.payload {
+            NodePayload::Rewind(_) => Some(crate::prompt::REWIND_NOTE.to_owned()),
+            NodePayload::Reopened(r) => Some(crate::prompt::reopen_note(r)),
+            _ => None,
+        });
+        if let Some(note) = note {
+            turn_text = format!("{note}\n\n{turn_text}");
+        }
         let round = store.insert_round(workflow_id, wf.section_no, now_ms())?;
         let node = store.insert_node(
             workflow_id,
@@ -434,6 +650,12 @@ impl Engine {
                 let live = self.live(workflow_id);
                 live.latest_raw = Some(id);
                 live.lane_cursor.entry(None).or_insert(id - 1);
+                // The agent answered on the rewound branch: later sessions
+                // resume its latest message again.
+                if live.fresh && e.kind == "assistant" && e.branch_id.is_none() {
+                    live.fresh = false;
+                    store.set_workflow_resume_at(workflow_id, None)?;
+                }
                 if let Some(round) = &round {
                     let activity = live
                         .activity
@@ -689,8 +911,8 @@ impl Engine {
                 });
             }
             // The models on offer are the app's, not the workflow's: the
-            // backend keeps them.
-            SidecarToApp::SessionModels(_) => {}
+            // backend keeps them. The history comes from a listing sidecar.
+            SidecarToApp::SessionModels(_) | SidecarToApp::SessionsListed(_) => {}
         }
         Ok(fx)
     }
@@ -873,6 +1095,19 @@ impl Engine {
             }
         }
         Ok(())
+    }
+}
+
+fn reopened_in(slot: &Slot, from: Option<String>, from_branch: Option<String>) -> Reopened {
+    Reopened {
+        slot: slot
+            .custom_name
+            .clone()
+            .unwrap_or_else(|| slot.name.clone()),
+        checkout: slot.checkout_path.clone().unwrap_or_default(),
+        branch: slot.branch.clone(),
+        from_checkout: from,
+        from_branch,
     }
 }
 

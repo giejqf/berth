@@ -114,6 +114,11 @@ pub struct SessionModels {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct SessionResume {
     pub claude_session_id: String,
+    /// Resume at this transcript entry (its `uuid`), dropping what came after
+    /// it: the conversation was rewound (ADR 0009).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub resume_at: Option<String>,
     #[serde(flatten)]
     pub start: SessionStart,
 }
@@ -139,6 +144,39 @@ pub struct TurnAttachment {
 pub struct QuestionAnswer {
     pub question_id: String,
     pub text: String,
+}
+
+/// List the Claude Code sessions of the repo at `dir`, its git worktrees
+/// included (no session needed; ADR 0010).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SessionsList {
+    pub dir: String,
+}
+
+/// A Claude Code session on this machine (the SDK's `listSessions`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct PastSession {
+    pub session_id: String,
+    /// Its title: the custom one, Claude Code's summary, or the first prompt.
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub first_prompt: Option<String>,
+    /// Where it ran, and on which branch it ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub git_branch: Option<String>,
+    /// Unix epoch milliseconds.
+    #[ts(type = "number")]
+    pub last_modified: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SessionsListed {
+    pub sessions: Vec<PastSession>,
 }
 
 /// The user's decisions on a review's findings, as text for the agent.
@@ -179,6 +217,8 @@ pub enum AppToSidecar {
     SlotRequestResolved(SlotRequestResolved),
     #[serde(rename = "session.configure")]
     SessionConfigure(SessionConfigure),
+    #[serde(rename = "sessions.list")]
+    SessionsList(SessionsList),
 }
 
 impl AppToSidecar {
@@ -194,6 +234,7 @@ impl AppToSidecar {
             Self::ReviewAnswer(_) => "review.answer",
             Self::SlotRequestResolved(_) => "slot_request.resolved",
             Self::SessionConfigure(_) => "session.configure",
+            Self::SessionsList(_) => "sessions.list",
         }
     }
 }
@@ -412,6 +453,8 @@ pub enum SidecarToApp {
     SessionError(SessionError),
     #[serde(rename = "session.models")]
     SessionModels(SessionModels),
+    #[serde(rename = "sessions.listed")]
+    SessionsListed(SessionsListed),
 }
 
 impl SidecarToApp {
@@ -433,6 +476,7 @@ impl SidecarToApp {
             Self::SessionCost(_) => "session.cost",
             Self::SessionError(_) => "session.error",
             Self::SessionModels(_) => "session.models",
+            Self::SessionsListed(_) => "sessions.listed",
         }
     }
 }

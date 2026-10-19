@@ -51,6 +51,8 @@ pub fn typescript() -> String {
         FindingAction,
         Finding,
         Review,
+        Rewind,
+        Reopened,
         Decision,
         Summary,
         OutcomeKind,
@@ -80,6 +82,9 @@ pub fn typescript() -> String {
         SessionConfigure,
         ModelChoice,
         SessionModels,
+        SessionsList,
+        PastSession,
+        SessionsListed,
         SessionResume,
         SessionTurn,
         TurnAttachment,
@@ -179,6 +184,7 @@ mod tests {
             id: "3".into(),
             body: AppToSidecar::SessionResume(SessionResume {
                 claude_session_id: "s".into(),
+                resume_at: Some("u-41".into()),
                 start,
             }),
         });
@@ -371,6 +377,29 @@ mod tests {
         assert_eq!(NodePayload::from_parts(node.kind(), &json).unwrap(), node);
         assert!(ToolName::PresentReview.is_terminal());
         assert!(!ToolName::PresentReview.allowed_in_subagent());
+    }
+
+    #[test]
+    fn session_history_on_the_wire() {
+        roundtrip_app(&AppMessage {
+            id: "h".into(),
+            body: AppToSidecar::SessionsList(SessionsList {
+                dir: "/repo".into(),
+            }),
+        });
+        let listed: SidecarMessage = serde_json::from_value(serde_json::json!({
+            "id": "l",
+            "reply_to": "h",
+            "type": "sessions.listed",
+            "sessions": [{"session_id": "s", "title": "Fix login", "last_modified": 1_700_000_000_000_i64}]
+        }))
+        .unwrap();
+        let SidecarToApp::SessionsListed(l) = &listed.body else {
+            panic!("not sessions.listed");
+        };
+        assert_eq!(l.sessions[0].cwd, None);
+        roundtrip_sidecar(&listed);
+        assert_eq!(OriginKind::Session.as_str(), "session");
     }
 
     #[test]

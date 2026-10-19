@@ -3,7 +3,7 @@
 
 export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in string]: JsonValue } | null;
 
-export type OriginKind = "gh_issue" | "gh_pr" | "linear" | "posthog" | "thought" | "follow_up";
+export type OriginKind = "gh_issue" | "gh_pr" | "linear" | "posthog" | "thought" | "follow_up" | "session";
 
 export type Origin = { kind: OriginKind, 
 /**
@@ -97,6 +97,26 @@ summary?: string, findings: Array<Finding>,
  */
 answered_at?: number, };
 
+export type Rewind = { 
+/**
+ * Rounds dropped, the rewound prompt's included.
+ */
+dropped_rounds: number, 
+/**
+ * When the first dropped round started and the last one ended (unix ms).
+ */
+from: number, to: number, };
+
+export type Reopened = { 
+/**
+ * The slot's name and checkout, as the agent sees it, and its branch.
+ */
+slot: string, checkout: string, branch: string, 
+/**
+ * Where the conversation ran before, when it was another checkout.
+ */
+from_checkout?: string, from_branch?: string, };
+
 export type Decision = { title: string, rationale: string, affects: Array<string>, reversible: boolean, };
 
 export type Summary = { done: Array<string>, remaining: Array<string>, follow_ups: Array<FollowUp>, notes?: string, };
@@ -125,9 +145,9 @@ export type Artifact = { artifact_id: string, title: string, description?: strin
  */
 error?: string, };
 
-export type NodeKind = "origin" | "prompt" | "question" | "decision" | "summary" | "outcome" | "subagent_spawn" | "collect_results" | "artifact" | "review";
+export type NodeKind = "origin" | "prompt" | "question" | "decision" | "summary" | "outcome" | "subagent_spawn" | "collect_results" | "artifact" | "review" | "rewind" | "reopened";
 
-export type NodePayload = { "kind": "origin", "payload": Origin } | { "kind": "prompt", "payload": Prompt } | { "kind": "question", "payload": Question } | { "kind": "decision", "payload": Decision } | { "kind": "summary", "payload": Summary } | { "kind": "outcome", "payload": Outcome } | { "kind": "subagent_spawn", "payload": SubagentSpawn } | { "kind": "collect_results", "payload": CollectResults } | { "kind": "artifact", "payload": Artifact } | { "kind": "review", "payload": Review };
+export type NodePayload = { "kind": "origin", "payload": Origin } | { "kind": "prompt", "payload": Prompt } | { "kind": "question", "payload": Question } | { "kind": "decision", "payload": Decision } | { "kind": "summary", "payload": Summary } | { "kind": "outcome", "payload": Outcome } | { "kind": "subagent_spawn", "payload": SubagentSpawn } | { "kind": "collect_results", "payload": CollectResults } | { "kind": "artifact", "payload": Artifact } | { "kind": "review", "payload": Review } | { "kind": "rewind", "payload": Rewind } | { "kind": "reopened", "payload": Reopened };
 
 export type ToolName = "record_decision" | "ask_user" | "write_summary" | "record_outcome" | "request_slot" | "present_artifact" | "present_review";
 
@@ -188,7 +208,30 @@ efforts: Array<Effort>, };
 
 export type SessionModels = { models: Array<ModelChoice>, };
 
-export type SessionResume = { claude_session_id: string, workflow_id: string, 
+export type SessionsList = { dir: string, };
+
+export type PastSession = { session_id: string, 
+/**
+ * Its title: the custom one, Claude Code's summary, or the first prompt.
+ */
+title: string, first_prompt?: string, 
+/**
+ * Where it ran, and on which branch it ended.
+ */
+cwd?: string, git_branch?: string, 
+/**
+ * Unix epoch milliseconds.
+ */
+last_modified: number, };
+
+export type SessionsListed = { sessions: Array<PastSession>, };
+
+export type SessionResume = { claude_session_id: string, 
+/**
+ * Resume at this transcript entry (its `uuid`), dropping what came after
+ * it: the conversation was rewound (ADR 0009).
+ */
+resume_at?: string, workflow_id: string, 
 /**
  * Checkout path as seen by the agent.
  */
@@ -222,7 +265,7 @@ export type ReviewAnswer = { review_id: string, text: string, };
 
 export type SlotRequestResolved = { request_id: string, approved: boolean, slot_id?: string, };
 
-export type AppToSidecar = { "type": "session.start" } & SessionStart | { "type": "session.resume" } & SessionResume | { "type": "session.turn" } & SessionTurn | { "type": "session.interrupt" } | { "type": "session.stop" } | { "type": "question.answer" } & QuestionAnswer | { "type": "review.answer" } & ReviewAnswer | { "type": "slot_request.resolved" } & SlotRequestResolved | { "type": "session.configure" } & SessionConfigure;
+export type AppToSidecar = { "type": "session.start" } & SessionStart | { "type": "session.resume" } & SessionResume | { "type": "session.turn" } & SessionTurn | { "type": "session.interrupt" } | { "type": "session.stop" } | { "type": "question.answer" } & QuestionAnswer | { "type": "review.answer" } & ReviewAnswer | { "type": "slot_request.resolved" } & SlotRequestResolved | { "type": "session.configure" } & SessionConfigure | { "type": "sessions.list" } & SessionsList;
 
 export type SessionStarted = { claude_session_id: string, };
 
@@ -283,11 +326,11 @@ export type SessionCost = { total_usd: number, };
 
 export type SessionError = { message: string, fatal: boolean, };
 
-export type SidecarToApp = { "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.artifact" } & NodeArtifact | { "type": "node.review" } & NodeReview | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels;
+export type SidecarToApp = { "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.artifact" } & NodeArtifact | { "type": "node.review" } & NodeReview | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels | { "type": "sessions.listed" } & SessionsListed;
 
-export type AppMessage = { id: string, } & ({ "type": "session.start" } & SessionStart | { "type": "session.resume" } & SessionResume | { "type": "session.turn" } & SessionTurn | { "type": "session.interrupt" } | { "type": "session.stop" } | { "type": "question.answer" } & QuestionAnswer | { "type": "review.answer" } & ReviewAnswer | { "type": "slot_request.resolved" } & SlotRequestResolved | { "type": "session.configure" } & SessionConfigure);
+export type AppMessage = { id: string, } & ({ "type": "session.start" } & SessionStart | { "type": "session.resume" } & SessionResume | { "type": "session.turn" } & SessionTurn | { "type": "session.interrupt" } | { "type": "session.stop" } | { "type": "question.answer" } & QuestionAnswer | { "type": "review.answer" } & ReviewAnswer | { "type": "slot_request.resolved" } & SlotRequestResolved | { "type": "session.configure" } & SessionConfigure | { "type": "sessions.list" } & SessionsList);
 
-export type SidecarMessage = { id: string, reply_to?: string, } & ({ "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.artifact" } & NodeArtifact | { "type": "node.review" } & NodeReview | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels);
+export type SidecarMessage = { id: string, reply_to?: string, } & ({ "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.artifact" } & NodeArtifact | { "type": "node.review" } & NodeReview | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels | { "type": "sessions.listed" } & SessionsListed);
 
 export const MCP_SERVER_NAME = "berth" as const;
 

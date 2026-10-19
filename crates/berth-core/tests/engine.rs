@@ -814,3 +814,368 @@ fn an_open_workflow_is_closed_so_its_slot_can_be_reused() {
         next.id
     );
 }
+
+/// A main-lane transcript entry with the `uuid` Claude Code gives it.
+fn entry(seq: u64, kind: &str, uuid: &str) -> SidecarToApp {
+    SidecarToApp::RawEvent(RawEvent {
+        seq,
+        kind: kind.into(),
+        json: serde_json::json!({"type": kind, "uuid": uuid, "message": {"content": []}}),
+        branch_id: None,
+    })
+}
+
+fn summary(done: &str) -> SidecarToApp {
+    SidecarToApp::NodeSummary(NodeSummary {
+        summary: Summary {
+            done: vec![done.into()],
+            remaining: vec![],
+            follow_ups: vec![],
+            notes: None,
+        },
+    })
+}
+
+#[test]
+fn rewinding_drops_the_flow_from_a_prompt_and_resumes_before_it() {
+    let (store, mut engine, wf) = setup();
+    engine.session_started(&wf);
+    // Round 1, section 1.
+    engine.submit_prompt(&store, &wf, "one", vec![]).unwrap();
+    engine
+        .apply(&store, &wf, &entry(1, "assistant", "u1a"))
+        .unwrap();
+    engine.apply(&store, &wf, &entry(2, "user", "u1b")).unwrap();
+    engine.apply(&store, &wf, &summary("first")).unwrap();
+    Engine::record_snapshot(&store, &wf, 1, SnapshotKind::Summary, "t1").unwrap();
+    engine
+        .apply(&store, &wf, &ended(TerminalKind::WriteSummary, None))
+        .unwrap();
+    // Round 2, section 2: a subagent, a summary.
+    let two = engine.submit_prompt(&store, &wf, "two", vec![]).unwrap();
+    engine
+        .apply(&store, &wf, &entry(3, "assistant", "u2a"))
+        .unwrap();
+    engine
+        .apply(
+            &store,
+            &wf,
+            &SidecarToApp::BranchSpawned(BranchSpawned {
+                branch_id: "b1".into(),
+                parent_tool_use_id: "t".into(),
+                parent_branch_id: None,
+                agent_name: "a".into(),
+                description: "d".into(),
+                prompt: "p".into(),
+                parallel_group: None,
+            }),
+        )
+        .unwrap();
+    engine
+        .apply(&store, &wf, &decision("in lane", Some("b1")))
+        .unwrap();
+    engine.apply(&store, &wf, &summary("second")).unwrap();
+    Engine::record_snapshot(&store, &wf, 2, SnapshotKind::Summary, "t2").unwrap();
+    engine
+        .apply(&store, &wf, &ended(TerminalKind::WriteSummary, None))
+        .unwrap();
+    // Round 3 carries a review comment and ends on a question.
+    let snap = store.snapshots(&wf).unwrap();
+    store
+        .insert_review_comment(&NewReviewComment {
+            workflow_id: wf.clone(),
+            from_snapshot: "t1".into(),
+            to_snapshot: "t2".into(),
+            preset: DiffPreset::Section,
+            path: "a.rs".into(),
+            side: DiffSide::New,
+            line: 1,
+            body: "rename".into(),
+        })
+        .unwrap();
+    engine.submit_prompt(&store, &wf, "three", vec![]).unwrap();
+    assert!(store.pending_review_comments(&wf).unwrap().is_empty());
+    engine
+        .apply(&store, &wf, &entry(4, "assistant", "u3a"))
+        .unwrap();
+    engine
+        .apply(
+            &store,
+            &wf,
+            &SidecarToApp::NodeQuestion(NodeQuestion {
+                question_id: "q".into(),
+                question: "?".into(),
+                options: vec![],
+                allow_free_text: true,
+            }),
+        )
+        .unwrap();
+    assert_eq!(snap.len(), 4);
+
+    // Not while the agent works.
+    let three = store.workflow_view(&wf).unwrap().nodes[5].id.clone();
+    store
+        .set_workflow_state(&wf, WorkflowState::Running)
+        .unwrap();
+    assert!(engine.rewind(&store, &wf, &three).is_err());
+    store
+        .set_workflow_state(&wf, WorkflowState::AwaitingAnswer)
+        .unwrap();
+    // Only to a prompt.
+    let origin = store.workflow_view(&wf).unwrap().nodes[0].id.clone();
+    assert!(engine.rewind(&store, &wf, &origin).is_err());
+
+    // Back to before "two".
+    let (rewound, fx) = engine.rewind(&store, &wf, &two.node.id).unwrap();
+    assert_eq!(rewound.prompt.text, "two");
+    assert!(!rewound.reopened);
+    assert!(fx.contains(&Effect::StateChanged {
+        workflow_id: wf.clone(),
+        state: WorkflowState::Idle
+    }));
+    let view = store.workflow_view(&wf).unwrap();
+    let kinds: Vec<&str> = view
+        .nodes
+        .iter()
+        .map(|n| n.payload.kind().as_str())
+        .collect();
+    assert_eq!(kinds, ["origin", "prompt", "summary", "rewind"]);
+    let berth_protocol::NodePayload::Rewind(r) = &view.nodes[3].payload else {
+        panic!()
+    };
+    assert_eq!(r.dropped_rounds, 2);
+    assert_eq!(view.rounds.len(), 1);
+    assert!(view.branches.is_empty());
+    assert_eq!(view.workflow.state, WorkflowState::Idle);
+    assert_eq!(view.workflow.section_no, 2);
+    let snaps: Vec<(u32, SnapshotKind)> = view
+        .snapshots
+        .iter()
+        .map(|s| (s.section_no, s.kind))
+        .collect();
+    assert_eq!(
+        snaps,
+        [(1, SnapshotKind::Summary), (2, SnapshotKind::Start)]
+    );
+    // The comment that went with "three" waits for the next prompt again.
+    assert_eq!(store.pending_review_comments(&wf).unwrap().len(), 1);
+    // The agent goes on from the last entry before "two".
+    assert_eq!(
+        store.workflow_resume_at(&wf).unwrap().as_deref(),
+        Some("u1b")
+    );
+
+    // The next prompt says the files were not rewound.
+    let sub = engine
+        .submit_prompt(&store, &wf, "two, better", vec![])
+        .unwrap();
+    assert!(sub.turn_text.starts_with(berth_core::prompt::REWIND_NOTE));
+    assert!(sub.turn_text.contains("two, better"));
+    // A fresh session that answers settles the rewind.
+    engine.session_started(&wf);
+    engine
+        .apply(&store, &wf, &entry(1, "assistant", "u4a"))
+        .unwrap();
+    assert_eq!(store.workflow_resume_at(&wf).unwrap(), None);
+    engine.apply(&store, &wf, &summary("again")).unwrap();
+    engine
+        .apply(&store, &wf, &ended(TerminalKind::WriteSummary, None))
+        .unwrap();
+    let sub = engine.submit_prompt(&store, &wf, "four", vec![]).unwrap();
+    assert!(!sub.turn_text.contains("rewound"));
+
+    // A second rewind resumes on the new branch, past the dropped rounds' entries.
+    let after = store.workflow_view(&wf).unwrap();
+    let four = after.nodes.last().unwrap().id.clone();
+    engine
+        .apply(&store, &wf, &ended(TerminalKind::Interrupted, None))
+        .unwrap();
+    engine.rewind(&store, &wf, &four).unwrap();
+    assert_eq!(
+        store.workflow_resume_at(&wf).unwrap().as_deref(),
+        Some("u4a")
+    );
+}
+
+#[test]
+fn rewinding_past_an_outcome_reopens_the_workflow() {
+    let (store, mut engine, wf) = setup();
+    engine.session_started(&wf);
+    engine.submit_prompt(&store, &wf, "one", vec![]).unwrap();
+    engine
+        .apply(&store, &wf, &entry(1, "assistant", "u1"))
+        .unwrap();
+    engine
+        .apply(&store, &wf, &ended(TerminalKind::WriteSummary, None))
+        .unwrap();
+    let two = engine
+        .submit_prompt(&store, &wf, "ship it", vec![])
+        .unwrap();
+    engine
+        .apply(&store, &wf, &entry(2, "assistant", "u2"))
+        .unwrap();
+    engine
+        .apply(
+            &store,
+            &wf,
+            &SidecarToApp::NodeOutcome(NodeOutcome {
+                outcome: Outcome {
+                    kind: OutcomeKind::Pr,
+                    r#ref: "https://github.com/o/r/pull/1".into(),
+                    summary: "s".into(),
+                    follow_ups: vec![],
+                },
+            }),
+        )
+        .unwrap();
+    assert_eq!(store.workflow(&wf).unwrap().state, WorkflowState::Closed);
+    let (rewound, _) = engine.rewind(&store, &wf, &two.node.id).unwrap();
+    assert!(rewound.reopened);
+    let w = store.workflow(&wf).unwrap();
+    assert_eq!(w.state, WorkflowState::Idle);
+    assert_eq!(w.closed_at, None);
+}
+
+fn second_slot(store: &Store, of: &str) -> Slot {
+    let first = store.slot(of).unwrap();
+    let slot = Slot {
+        id: new_id(),
+        name: "other".into(),
+        checkout_path: Some("/tmp/other".into()),
+        branch: "berth/other".into(),
+        created_at: now_ms(),
+        ..first
+    };
+    store.insert_slot(&slot).unwrap();
+    slot
+}
+
+#[test]
+fn a_closed_workflow_opens_in_another_slot_and_says_where() {
+    let (store, mut engine, wf) = setup();
+    let home = store.workflow(&wf).unwrap().slot_id;
+    engine.session_started(&wf);
+    engine.submit_prompt(&store, &wf, "one", vec![]).unwrap();
+    engine
+        .apply(&store, &wf, &entry(1, "assistant", "u1"))
+        .unwrap();
+    engine.apply(&store, &wf, &summary("first")).unwrap();
+    Engine::record_snapshot(&store, &wf, 1, SnapshotKind::Summary, "t1").unwrap();
+    engine
+        .apply(&store, &wf, &ended(TerminalKind::WriteSummary, None))
+        .unwrap();
+    engine.submit_prompt(&store, &wf, "two", vec![]).unwrap();
+    engine
+        .apply(
+            &store,
+            &wf,
+            &SidecarToApp::NodeOutcome(NodeOutcome {
+                outcome: Outcome {
+                    kind: OutcomeKind::Commit,
+                    r#ref: "abc".into(),
+                    summary: "s".into(),
+                    follow_ups: vec![],
+                },
+            }),
+        )
+        .unwrap();
+    // The home slot moves on to another workflow; the closed one is history.
+    let next = Engine::create_workflow(&store, &home, origin("Next")).unwrap();
+    let other = second_slot(&store, &home);
+
+    // A slot hosting an open workflow takes no other.
+    let busy = Engine::create_workflow(&store, &other.id, origin("Busy")).unwrap();
+    assert!(engine.reopen(&store, &wf, &other).is_err());
+    store
+        .set_workflow_state(&busy.id, WorkflowState::Closed)
+        .unwrap();
+
+    let fx = engine.reopen(&store, &wf, &other).unwrap();
+    let w = store.workflow(&wf).unwrap();
+    assert_eq!(w.slot_id, other.id);
+    assert_eq!(w.state, WorkflowState::Idle);
+    // Its section 2 had a round: section 3 starts here, in this checkout.
+    assert_eq!(w.section_no, 3);
+    assert!(fx.contains(&Effect::Snapshot {
+        workflow_id: wf.clone(),
+        section_no: 3,
+        kind: SnapshotKind::Start
+    }));
+    // Each slot shows what it hosted last.
+    assert_eq!(
+        store
+            .workflows_for_slot(&other.id)
+            .unwrap()
+            .last()
+            .unwrap()
+            .id,
+        wf
+    );
+    assert_eq!(
+        store.workflows_for_slot(&home).unwrap().last().unwrap().id,
+        next.id
+    );
+    let view = store.workflow_view(&wf).unwrap();
+    let berth_protocol::NodePayload::Reopened(r) = &view.nodes.last().unwrap().payload else {
+        panic!()
+    };
+    assert_eq!(r.checkout, "/tmp/other");
+    assert_eq!(r.from_checkout.as_deref(), Some("/tmp/co"));
+    assert_eq!(r.from_branch.as_deref(), Some("berth/fix"));
+    // The next prompt says so.
+    let sub = engine.submit_prompt(&store, &wf, "go on", vec![]).unwrap();
+    assert!(
+        sub.turn_text
+            .starts_with("(This conversation was reopened in another checkout")
+    );
+    assert!(sub.turn_text.contains("`/tmp/co`"));
+    assert!(sub.turn_text.ends_with("go on"));
+}
+
+#[test]
+fn a_claude_code_session_becomes_a_workflow_that_resumes_it() {
+    let (store, mut engine, wf) = setup();
+    let home = store.workflow(&wf).unwrap().slot_id;
+    store
+        .set_workflow_state(&wf, WorkflowState::Closed)
+        .unwrap();
+    let slot = store.slot(&home).unwrap();
+    let origin = Origin {
+        kind: OriginKind::Session,
+        r#ref: "sess-9".into(),
+        title: "Fix the login bug".into(),
+        body: "the login fails".into(),
+        custom_prompt: None,
+        url: None,
+    };
+    let (adopted, fx) = engine
+        .adopt_session(
+            &store,
+            &slot,
+            origin,
+            "sess-9",
+            (Some("/repo".into()), Some("main".into())),
+        )
+        .unwrap();
+    assert_eq!(adopted.claude_session_id.as_deref(), Some("sess-9"));
+    assert_eq!(adopted.state, WorkflowState::Idle);
+    assert!(
+        fx.iter()
+            .any(|e| matches!(e, Effect::Snapshot { section_no: 1, .. }))
+    );
+    let view = store.workflow_view(&adopted.id).unwrap();
+    let kinds: Vec<&str> = view
+        .nodes
+        .iter()
+        .map(|n| n.payload.kind().as_str())
+        .collect();
+    assert_eq!(kinds, ["origin", "reopened"]);
+    // Its first prompt is a plain turn on the resumed session, with the note.
+    let sub = engine
+        .submit_prompt(&store, &adopted.id, "where were we?", vec![])
+        .unwrap();
+    assert!(
+        sub.turn_text
+            .contains("Earlier messages ran in `/repo` (branch `main`)")
+    );
+}

@@ -551,14 +551,21 @@ impl Seeder<'_> {
         payload: NodePayload,
         at: i64,
     ) -> Result<String> {
-        // A transcript line behind every node, so "Details" has something to show.
+        // A transcript line behind every node, so "Details" has something to
+        // show (with a uuid, as Claude Code's have, so a rewind finds its place).
+        let json = serde_json::json!({
+            "type": "assistant",
+            "uuid": new_id(),
+            "message": {"content": [{"type": "text", "text": "(seeded for the design scenario)"}]},
+        })
+        .to_string();
         let raw = self.store.insert_raw_event(&berth_core::NewRawEvent {
             workflow_id: wf,
             round_id: round,
             branch_id: branch,
             seq: 0,
             kind: "assistant",
-            json: r#"{"type":"assistant","message":{"content":[{"type":"text","text":"(seeded for the design scenario)"}]}}"#,
+            json: &json,
         })?;
         let n = self
             .store

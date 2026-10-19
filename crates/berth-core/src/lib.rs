@@ -15,7 +15,7 @@ pub mod prompt;
 pub mod store;
 pub mod transcript;
 
-pub use engine::{AnswerDelivery, Effect, Engine, Submission};
+pub use engine::{AnswerDelivery, Effect, Engine, Rewound, Submission};
 pub use error::{CoreError, Result};
 pub use model::*;
 pub use store::{NewRawEvent, NewReviewComment, Store};

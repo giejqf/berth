@@ -331,20 +331,7 @@ impl Shared {
             self.run_effects(&old.id, fx);
         }
         // Record the branch the checkout is on now; earlier work may have moved it.
-        if let Ok(out) = self
-            .run_beside_agent(
-                &slot,
-                "git",
-                &["branch".into(), "--show-current".into()],
-                None,
-            )
-            .await
-        {
-            let branch = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-            if out.success() && !branch.is_empty() && branch != slot.branch {
-                self.core().store.set_slot_branch(&slot.id, &branch)?;
-            }
-        }
+        self.refresh_branch(&slot).await?;
         let origin = self.enrich_origin(&repo_path, req.origin.clone()).await;
         let (wf, slot) = {
             let core = self.core();

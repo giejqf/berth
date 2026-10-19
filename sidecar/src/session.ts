@@ -169,8 +169,9 @@ export class Session implements ToolHost {
     this.startReplyTo = replyTo;
     this.cwd = msg.cwd;
     const resume = "claude_session_id" in msg ? msg.claude_session_id : undefined;
+    const resumeAt = "resume_at" in msg ? msg.resume_at : undefined;
     if (resume) this.claudeSessionId = resume;
-    this.q = this.queryFn({ prompt: this.input, options: this.options(msg, resume) });
+    this.q = this.queryFn({ prompt: this.input, options: this.options(msg, resume, resumeAt) });
     this.consuming = this.consume(this.q);
     void this.reportModels(this.q);
   }
@@ -281,7 +282,7 @@ export class Session implements ToolHost {
 
   // ---- SDK stream ----
 
-  private options(msg: SessionStart, resume: string | undefined): Options {
+  private options(msg: SessionStart, resume: string | undefined, resumeAt: string | undefined): Options {
     const skills =
       msg.connector_skills.length > 0
         ? `\n\nConnector skills installed in this checkout:\n${msg.connector_skills
@@ -301,6 +302,8 @@ export class Session implements ToolHost {
       skills: "all",
       env: { ...process.env, ...msg.env, CLAUDE_AGENT_SDK_CLIENT_APP: "berth/0.1.0" },
       ...(resume ? { resume } : {}),
+      // A rewound conversation goes on from this entry; later ones are dropped (ADR 0009).
+      ...(resume && resumeAt ? { resumeSessionAt: resumeAt } : {}),
       ...(msg.model ? { model: msg.model } : {}),
       ...(msg.effort ? { effort: msg.effort } : {}),
       ...(claudePath() ? { pathToClaudeCodeExecutable: claudePath() } : {}),

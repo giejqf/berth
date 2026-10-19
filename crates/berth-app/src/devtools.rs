@@ -546,6 +546,8 @@ fn dispatch(name: &str, cx: &mut App) {
         "RenameSlot" => Box::new(keymap::RenameSlot),
         "ShowFiles" => Box::new(keymap::ShowFiles),
         "ShowFindings" => Box::new(keymap::ShowFindings),
+        "OpenHistory" => Box::new(keymap::OpenHistory),
+        "RewindConversation" => Box::new(keymap::RewindConversation),
         "NextFinding" => Box::new(keymap::NextFinding),
         "NextChoice" => Box::new(keymap::NextChoice),
         "WriteDecision" => Box::new(keymap::WriteDecision),

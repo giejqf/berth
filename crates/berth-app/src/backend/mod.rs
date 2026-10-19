@@ -4,6 +4,7 @@
 
 mod env;
 mod files;
+mod history;
 mod launch;
 mod review;
 mod session;
@@ -131,12 +132,15 @@ impl Shared {
             Command::NewWorkflow(n) => return Some(n.repo_id.clone()),
             Command::RefreshRepo { repo_id }
             | Command::ListOrigins { repo_id, .. }
+            | Command::LoadHistory { repo_id }
+            | Command::OpenFromHistory { repo_id, .. }
             | Command::TerminalSpec { repo_id, .. } => {
                 return Some(repo_id.clone());
             }
             Command::SendPrompt { workflow_id, .. }
             | Command::Answer { workflow_id, .. }
             | Command::AnswerReview { workflow_id, .. }
+            | Command::Rewind { workflow_id, .. }
             | Command::Interrupt { workflow_id }
             | Command::ResolveSlotRequest { workflow_id, .. }
             | Command::LoadWorkflow { workflow_id }
@@ -216,6 +220,16 @@ impl Shared {
                 review_id,
                 choices,
             } => self.answer_review(&workflow_id, &review_id, &choices).await,
+            Command::Rewind {
+                workflow_id,
+                node_id,
+            } => self.rewind(&workflow_id, &node_id).await,
+            Command::LoadHistory { repo_id } => self.load_history(&repo_id).await,
+            Command::OpenFromHistory {
+                repo_id,
+                slot_id,
+                open,
+            } => self.open_from_history(&repo_id, &slot_id, open).await,
             Command::Interrupt { workflow_id } => {
                 let session = lock(&self.sessions).get(&workflow_id).cloned();
                 if let Some(s) = session {

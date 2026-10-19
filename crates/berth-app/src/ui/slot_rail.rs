@@ -25,7 +25,8 @@ use super::repo_state::{RailGroup, rail_group};
 use super::{EnvGlobal, RepoState};
 use crate::backend::{SlotEntry, ToolState, ToolStatus};
 use crate::keymap::{
-    DestroySlot, NewWorkflow, NewWorkflowHere, RailNext, RailOpen, RailPrev, RenameSlot, ToggleRail,
+    DestroySlot, NewWorkflow, NewWorkflowHere, OpenHistory, RailNext, RailOpen, RailPrev,
+    RenameSlot, ToggleRail,
 };
 use crate::theme::{Tokens, ty};
 
@@ -420,6 +421,7 @@ impl Render for SlotRail {
             };
             list = list.child(row.context_menu(|menu, _, _| {
                 menu.menu("New workflow here…", Box::new(NewWorkflowHere))
+                    .menu("Open from history here…", Box::new(OpenHistory))
                     .separator()
                     .menu("Rename…", Box::new(RenameSlot))
                     .menu("Destroy slot…", Box::new(DestroySlot))

@@ -186,6 +186,12 @@ impl WorkflowState {
     pub fn is_open(self) -> bool {
         self != WorkflowState::Closed
     }
+
+    /// The agent is working: a round is in flight or about to start.
+    #[must_use]
+    pub fn is_busy(self) -> bool {
+        matches!(self, WorkflowState::Running | WorkflowState::Starting)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -356,6 +362,15 @@ pub struct ConnectorRow {
     pub name: String,
     pub path: String,
     pub enabled: bool,
+}
+
+/// What a rewind dropped (see `Store::drop_from`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Dropped {
+    pub rounds: u32,
+    /// When the first dropped round started and the last one ended (unix ms).
+    pub from: i64,
+    pub to: i64,
 }
 
 /// Rail facts about a workflow (see `Store::workflow_facts`).
