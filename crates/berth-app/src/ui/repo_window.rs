@@ -2,6 +2,8 @@
 //! composer over the terminal panel | review pane. Dialogs (New workflow,
 //! Settings, ⌘K, confirms) are drawn over it by [`super::modal`].
 
+use std::time::{Duration, Instant};
+
 use berth_protocol::DiffPreset;
 use gpui::{
     AnyView, AppContext as _, Context, DismissEvent, Entity, EntityId, EventEmitter, FocusHandle,
@@ -17,6 +19,7 @@ use super::empty_state::empty_repo;
 use super::flow_view::FlowView;
 use super::kit::{Btn, TypeExt as _, icon};
 use super::modal::{self, ConfirmDialog};
+use super::motion;
 use super::new_workflow::NewWorkflowForm;
 use super::palette::Palette;
 use super::repo_state::RepoEvent;
@@ -59,6 +62,8 @@ pub struct RepoWindow {
     /// `Some` when the user collapsed/expanded the rail by hand (⌘⇧R).
     rail_override: Option<bool>,
     modal: Option<(AnyView, FocusHandle, Subscription)>,
+    /// A dismissed dialog fading out, and when it was dismissed.
+    closing: Option<(AnyView, Instant)>,
     focus: FocusHandle,
     /// The terminal panel: shown, collapsed to its header, its height, maximized.
     terminal_open: bool,
@@ -72,6 +77,26 @@ pub struct RepoWindow {
     /// A terminal had focus at the last frame: switching slots keeps typing
     /// in the new slot's terminal.
     terminal_focused: bool,
+    /// What the panel showed at the last frame, what it showed before that
+    /// changed, and when: showing, hiding, collapsing and expanding slide.
+    terminal_shown: PanelMode,
+    terminal_was: PanelMode,
+    terminal_moved: Option<Instant>,
+}
+
+/// What the terminal panel shows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PanelMode {
+    Hidden,
+    Collapsed,
+    Open,
+    Max,
+}
+
+impl PanelMode {
+    fn open(self) -> bool {
+        matches!(self, Self::Open | Self::Max)
+    }
 }
 
 impl RepoWindow {
@@ -99,6 +124,8 @@ impl RepoWindow {
         // Sync on window focus (§8.1): slots/workflows may have changed elsewhere.
         cx.observe_window_activation(window, |this, window, cx| {
             if window.is_window_active() {
+                // macOS says nothing when Reduce motion changes; look again.
+                gpui_base::apply_system_reduce_motion(cx);
                 let s = this.state.read(cx);
                 s.backend.send(Command::RefreshRepo {
                     repo_id: s.repo_id().to_owned(),
@@ -117,6 +144,7 @@ impl RepoWindow {
             review_open: false,
             rail_override: None,
             modal: None,
+            closing: None,
             focus,
             terminal_open: false,
             terminal_collapsed: false,
@@ -125,6 +153,9 @@ impl RepoWindow {
             terminal_drag: None,
             terminal_slot: None,
             terminal_focused: false,
+            terminal_shown: PanelMode::Hidden,
+            terminal_was: PanelMode::Hidden,
+            terminal_moved: None,
         }
     }
 
@@ -408,19 +439,29 @@ impl RepoWindow {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let sub = cx.subscribe_in(&view, window, |this, _, _: &DismissEvent, window, cx| {
-            this.modal = None;
-            this.focus.focus(window, cx);
-            cx.notify();
+        let sub = cx.subscribe_in(&view, window, |this, view, _: &DismissEvent, window, cx| {
+            // Only the dialog on screen closes; one it replaced may still say so.
+            if this
+                .modal
+                .as_ref()
+                .is_some_and(|(v, ..)| v.entity_id() == view.entity_id())
+            {
+                this.close_modal(window, cx);
+            }
         });
         let focus = view.read(cx).focus_handle(cx);
         focus.focus(window, cx);
         self.modal = Some((view.into(), focus, sub));
+        self.closing = None;
         cx.notify();
     }
 
     fn close_modal(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
-        self.modal = None;
+        if let Some((view, ..)) = self.modal.take()
+            && !cx.reduce_motion()
+        {
+            self.closing = Some((view, Instant::now()));
+        }
         self.focus.focus(window, cx);
         cx.notify();
     }
@@ -614,8 +655,12 @@ impl Render for RepoWindow {
         let has_slots = !state.slots.is_empty();
         let has_workflow = state.selected_view().is_some();
         let show_terminal = self.terminal_open && state.selected().is_some();
-        let collapsed = self.terminal_collapsed;
-        let max = self.terminal_max && !collapsed;
+        let mode = match (show_terminal, self.terminal_collapsed, self.terminal_max) {
+            (false, ..) => PanelMode::Hidden,
+            (true, true, _) => PanelMode::Collapsed,
+            (true, false, true) => PanelMode::Max,
+            (true, false, false) => PanelMode::Open,
+        };
         self.terminal_focused = show_terminal
             && state
                 .slot_terminals()
@@ -624,7 +669,64 @@ impl Render for RepoWindow {
         let review_open = self.review_open && has_workflow;
         let collapsed = self.rail_collapsed(window);
         let modal = self.modal.as_ref().map(|(v, ..)| v.clone());
+        let closing = self.closing.as_ref().and_then(|(v, at)| {
+            motion::since(*at, motion::FAST, window, cx).map(|p| (v.clone(), p))
+        });
+        if closing.is_none() {
+            self.closing = None;
+        }
         let weak = cx.entity().downgrade();
+
+        // Panels slide (§11). Mid-slide each keeps its settled layout,
+        // clipped by the moving edge, so nothing inside reflows (and a shell
+        // isn't resized on every frame).
+        let rail = motion::value(
+            "rail-width",
+            if collapsed {
+                slot_rail::STRIP_W
+            } else {
+                RAIL_W
+            },
+            motion::PANEL,
+            window,
+            cx,
+        );
+        let review = motion::value(
+            "review-width",
+            if review_open { REVIEW_W } else { 0. },
+            motion::PANEL,
+            window,
+            cx,
+        );
+        if mode != self.terminal_shown {
+            self.terminal_was = self.terminal_shown;
+            self.terminal_shown = mode;
+            self.terminal_moved = Some(Instant::now());
+        }
+        let open_h = clamp_terminal(self.terminal_height, window);
+        let target = match mode {
+            PanelMode::Hidden => 0.,
+            PanelMode::Collapsed => terminal::HEADER_H,
+            PanelMode::Open | PanelMode::Max => open_h.as_f32(),
+        };
+        // A drag, a window resize and maximizing follow at once.
+        let slide = self.terminal_drag.is_none()
+            && mode != PanelMode::Max
+            && self.terminal_was != PanelMode::Max
+            && self
+                .terminal_moved
+                .is_some_and(|at| at.elapsed() < motion::scaled(motion::PANEL) * 2);
+        let panel = motion::value(
+            "terminal-height",
+            target,
+            if slide { motion::PANEL } else { Duration::ZERO },
+            window,
+            cx,
+        );
+        let sliding = motion::moving(&panel);
+        let show_panel = mode != PanelMode::Hidden || sliding;
+        let open_layout = mode.open() || sliding && self.terminal_was.open();
+        let max = mode == PanelMode::Max;
 
         div()
             .size_full()
@@ -761,7 +863,35 @@ impl Render for RepoWindow {
                     .flex_row()
                     .flex_1()
                     .min_h_0()
-                    .child(if collapsed {
+                    .child(if motion::moving(&rail) {
+                        // Both rails, crossfading as the edge moves.
+                        let p = ((rail.value - slot_rail::STRIP_W) / (RAIL_W - slot_rail::STRIP_W))
+                            .clamp(0., 1.);
+                        div()
+                            .relative()
+                            .w(px(rail.value))
+                            .h_full()
+                            .flex_none()
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .left_0()
+                                    .bottom_0()
+                                    .w(px(RAIL_W))
+                                    .opacity(p)
+                                    .child(self.rail.clone()),
+                            )
+                            .child(
+                                slot_rail::collapsed(&self.state, &t, cx)
+                                    .absolute()
+                                    .top_0()
+                                    .right_0()
+                                    .opacity(1. - p),
+                            )
+                            .into_any_element()
+                    } else if collapsed {
                         slot_rail::collapsed(&self.state, &t, cx).into_any_element()
                     } else {
                         div()
@@ -778,31 +908,44 @@ impl Render for RepoWindow {
                             .flex_1()
                             .min_w_0()
                             .h_full()
-                            .when(!(show_terminal && max), |d| {
+                            .when(!max, |d| {
                                 d.child(div().flex_1().min_h_0().child(self.flow.clone()))
                                     .when(has_workflow, |d| d.child(self.composer.clone()))
                             })
-                            .when(show_terminal, |d| {
+                            .when(show_panel, |d| {
+                                let panel_el = terminal::panel(
+                                    &t,
+                                    &self.state,
+                                    self.terminal_max,
+                                    !open_layout,
+                                    cx,
+                                );
                                 d.child(
                                     div()
                                         .relative()
                                         .flex_none()
-                                        .when(max, |d| d.flex_1().min_h_0())
-                                        .when(collapsed, |d| d.h(px(terminal::HEADER_H)))
-                                        .when(!max && !collapsed, |d| {
-                                            d.h(clamp_terminal(self.terminal_height, window))
-                                        })
                                         .border_t_1()
                                         .border_color(t.border)
-                                        .child(terminal::panel(
-                                            &t,
-                                            &self.state,
-                                            self.terminal_max,
-                                            collapsed,
-                                            cx,
-                                        ))
+                                        .when(max, |d| d.flex_1().min_h_0())
+                                        .when(!max && !sliding, |d| d.h(px(target)))
+                                        .when(sliding, |d| d.h(px(panel.value)).overflow_hidden())
+                                        .child(if sliding {
+                                            // Its settled height, less the top border.
+                                            let h = if open_layout {
+                                                open_h
+                                            } else {
+                                                px(terminal::HEADER_H)
+                                            };
+                                            div()
+                                                .flex_none()
+                                                .h(h - px(1.))
+                                                .child(panel_el)
+                                                .into_any_element()
+                                        } else {
+                                            panel_el.into_any_element()
+                                        })
                                         // The panel's top edge resizes it.
-                                        .when(!max && !collapsed, |d| {
+                                        .when(mode == PanelMode::Open && !sliding, |d| {
                                             d.child(
                                                 div()
                                                     .id("terminal-resize")
@@ -824,19 +967,39 @@ impl Render for RepoWindow {
                     } else {
                         empty_repo(&t, cx).into_any_element()
                     })
-                    .when(review_open, |d| {
+                    .when(review_open || motion::moving(&review), |d| {
+                        // Slides in from the window's right edge.
                         d.child(
                             div()
-                                .w(px(REVIEW_W))
+                                .relative()
+                                .w(px(if motion::moving(&review) {
+                                    review.value
+                                } else {
+                                    REVIEW_W
+                                }))
                                 .flex_none()
                                 .h_full()
-                                .child(self.review.clone()),
+                                .overflow_hidden()
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .right_0()
+                                        .bottom_0()
+                                        .w(px(REVIEW_W))
+                                        .child(self.review.clone()),
+                                ),
                         )
                     }),
             )
+            .when_some(closing, |d, (view, p)| {
+                d.child(modal::fading(&t, view.into_any_element(), p))
+            })
             .when_some(modal, |d, view| {
+                let key = view.entity_id();
                 d.child(modal::overlay(
                     &t,
+                    key,
                     view.into_any_element(),
                     move |window, cx| {
                         let _ = weak.update(cx, |this, cx| this.close_modal(window, cx));

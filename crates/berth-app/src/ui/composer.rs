@@ -7,15 +7,17 @@ use std::path::{Path, PathBuf};
 use berth_core::WorkflowState;
 use berth_core::files::{MAX_ATTACHMENT_BYTES, human_size, is_inline_image, mime_for};
 use gpui::{
-    AppContext as _, ClipboardEntry, ClipboardItem, Context, DragMoveEvent, Entity, ExternalPaths,
-    Focusable as _, ImageFormat, InteractiveElement as _, IntoElement, ObjectFit,
-    ParentElement as _, PathPromptOptions, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, StyledImage as _, Window, div, img, prelude::FluentBuilder as _, px,
+    AnimationExt as _, AppContext as _, ClipboardEntry, ClipboardItem, Context, DragMoveEvent,
+    Entity, ExternalPaths, Focusable as _, ImageFormat, InteractiveElement as _, IntoElement,
+    ObjectFit, ParentElement as _, PathPromptOptions, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, div, img,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_component::input::{InputEvent, TextareaState};
 
 use super::RepoState;
 use super::kit::{Btn, Size, TypeExt as _, dot, field_frame, icon, kbd, plural, ring, spinner};
+use super::motion;
 use crate::backend::Command;
 use crate::keymap::{FollowUpFromOutcome, NewWorkflow};
 use crate::theme::{MONO, Tokens, ty};
@@ -406,6 +408,12 @@ impl Render for Composer {
                             .icon("x", 14.)
                             .tooltip("Remove")
                             .on_click(cx.listener(move |this, _, _, cx| this.remove(&path, cx))),
+                    )
+                    // A new chip fades in.
+                    .with_animation(
+                        SharedString::from(format!("attachment-{}", a.path.display())),
+                        motion::animation(motion::FAST),
+                        gpui::Styled::opacity,
                     ),
             );
         }

@@ -135,7 +135,7 @@ berth/
 
 | Area | Choice | Notes |
 |---|---|---|
-| UI | **GPUI** (Zed's framework) + `gpui-component` where it fits | Pinned exactly: `gpui-pre =0.3.9` (the crates.io snapshot of zed@93d7456), `gpui-pre-platform =0.3.9` with `runtime_shaders` (builds without Xcode), `gpui-component =0.7.3` (built against that snapshot). Bump all three together, deliberately. See ADR 0001. |
+| UI | **GPUI** (Zed's framework) + `gpui-component` where it fits | Pinned exactly: `gpui-pre =0.3.9` (the crates.io snapshot of zed@93d7456), `gpui-pre-platform =0.3.9` with `runtime_shaders` (builds without Xcode), `gpui-component =0.7.3` (built against that snapshot), with its base `gpui-base =0.7.3` for motion. Bump them together, deliberately. See ADR 0001. |
 | Language | Rust 2024 edition, MSRV = stable at repo creation | `clippy::all` + selected `pedantic` lints; see `Cargo.toml` `[workspace.lints]`. |
 | Agent | **Claude Agent SDK (TypeScript)** in the sidecar | Never call `claude` directly from Rust. |
 | Persistence | **SQLite** via `rusqlite` (bundled), embedded migrations | One DB at `~/Library/Application Support/Berth/berth.db`. |
@@ -622,6 +622,18 @@ stdin EOF stops the session; stdout carries protocol lines only (logs go to
 - Theme tokens in `berth-app/src/theme.rs`; light/dark follow the system unless
   Settings › Appearance picks one (setting `theme`). Views use `ui/kit.rs` primitives
   and never invent sizes or colors.
+- **Motion** (`ui/motion.rs`, durations there): short and quiet, ease-out, no
+  overshoot; only spinners loop. Panels slide (220ms): the rail crossfades with its
+  strip, the review pane comes in from the right edge, the terminal panel shows,
+  hides, collapses and expands. Mid-slide a panel keeps its settled layout, clipped
+  by the moving edge, so nothing reflows and a shell is not resized on every frame;
+  a drag, a window resize and maximizing follow at once. Dialogs fade and rise in
+  (180ms) and fade out (120ms). Flow rows that just arrived rise in, timed from their
+  own timestamps so a row the list mounts again doesn't replay it; live steps and
+  attachment chips fade in; subagent lanes unfold and their chevrons turn. A slot
+  that moves to Needs you, Ready to review or Done flashes its group's soft color
+  once. All of it is skipped while macOS's Reduce motion is on (gpui-base reads it at
+  launch and on window activation).
 - The event flow is one column: main-lane nodes in order, subagent groups as blocks
   (§5.4), section-end markers. Layout is computed in `berth-core` (`flow::layout`),
   views only draw it.
@@ -634,6 +646,8 @@ stdin EOF stops the session; stdout carries protocol lines only (logs go to
   `BERTH_DEV_SEED=question|working|review|comments|done|empty|welcome` seeds the
   design's scenario into a fresh `BERTH_HOME` (`src/seed.rs`), so screenshots line up
   with the design artboards. Use it to check UI changes without a human.
+  `BERTH_DEV_SLOW_MOTION=<factor>` stretches every animation so a shot can catch
+  one midway; `fake_node <title>` appends a just-recorded decision (view only).
   Without a display link (display asleep) the window draws only when `shot` or
   `keys` forces it. Screenshots can then trail an `action` by a step, and an action
   sent right after its target appeared is routed against a frame without it and

@@ -2,6 +2,9 @@
 //! Ready to review, Done), the tool status footer, and a 56px collapsed strip
 //! used when the review pane needs the room.
 
+use std::collections::HashMap;
+use std::time::Instant;
+
 use berth_core::{SlotState, WorkflowState};
 use berth_protocol::OutcomeKind;
 use gpui::{
@@ -16,24 +19,58 @@ use gpui_component::tooltip::Tooltip;
 use super::kit::{
     Btn, Size, TypeExt as _, ago, caption, count_badge, dot, dur, now_ms, plural, ring_dot,
 };
+use super::motion;
 use super::repo_state::{RailGroup, rail_group};
 use super::{EnvGlobal, RepoState};
 use crate::backend::{SlotEntry, ToolState, ToolStatus};
 use crate::keymap::{NewWorkflow, RailNext, RailOpen, RailPrev, ToggleRail};
 use crate::theme::{Tokens, ty};
 
+/// Width of the collapsed strip, as rendered.
+pub const STRIP_W: f32 = 57.;
+
 pub struct SlotRail {
     state: Entity<RepoState>,
     focus: FocusHandle,
+    /// Each slot's group at the last update, and when a slot last moved into
+    /// a group that wants the user (its row flashes once).
+    groups: HashMap<String, RailGroup>,
+    moved: HashMap<String, (RailGroup, Instant)>,
 }
 
 impl SlotRail {
     pub fn new(state: Entity<RepoState>, cx: &mut Context<'_, Self>) -> Self {
-        cx.observe(&state, |_, _, cx| cx.notify()).detach();
-        Self {
+        cx.observe(&state, |this, _, cx| {
+            this.track(cx);
+            cx.notify();
+        })
+        .detach();
+        let mut this = Self {
             state,
             focus: cx.focus_handle(),
+            groups: HashMap::new(),
+            moved: HashMap::new(),
+        };
+        this.track(cx);
+        this
+    }
+
+    fn track(&mut self, cx: &App) {
+        let s = self.state.read(cx);
+        let mut groups = HashMap::new();
+        for entry in s.rail_order() {
+            let group = rail_group(entry);
+            let was = self.groups.get(&entry.slot.id).copied();
+            if was.is_some_and(|w| w != group) && group != RailGroup::Working {
+                self.moved
+                    .insert(entry.slot.id.clone(), (group, Instant::now()));
+            }
+            groups.insert(entry.slot.id.clone(), group);
         }
+        self.moved.retain(|id, (_, at)| {
+            groups.contains_key(id) && at.elapsed() < motion::scaled(motion::FLASH)
+        });
+        self.groups = groups;
     }
 }
 
@@ -256,79 +293,98 @@ impl Render for SlotRail {
             let rail_state = self.state.clone();
             let focus = self.focus.clone();
             let hover = t.card;
-            list = list.child(
-                div()
-                    .id(SharedString::from(format!("slot-{id}")))
-                    .flex()
-                    .flex_none()
-                    .flex_row()
-                    .items_start()
-                    .gap(px(10.))
-                    .px(px(8.))
-                    .py(px(6.))
-                    .rounded(px(6.))
-                    .cursor_pointer()
-                    .when(is_selected, |d| d.bg(t.raised))
-                    .when(!is_selected, |d| d.hover(move |s| s.bg(hover)))
-                    .when(is_selected && focused, |d| {
-                        d.shadow(vec![BoxShadow {
-                            color: t.accent,
-                            offset: point(px(0.), px(0.)),
-                            blur_radius: px(0.),
-                            spread_radius: px(2.),
-                            inset: true,
-                        }])
-                    })
-                    .on_click(move |_, window, cx| {
-                        window.focus(&focus, cx);
-                        let id = id.clone();
-                        rail_state.update(cx, |s, cx| s.select_slot(id, cx));
-                    })
-                    .child(
-                        div()
-                            .w(px(16.))
-                            .h(px(18.))
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(status_dot(&t, entry, 8.)),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(1.))
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .ty(ty::BODY)
-                                    .font_weight(weight)
-                                    .text_color(if done && !is_selected {
-                                        t.text2
-                                    } else {
-                                        t.text
-                                    })
-                                    .whitespace_nowrap()
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .child(title),
-                            )
-                            .child(
-                                div()
-                                    .ty(ty::META)
-                                    .text_color(if done && !is_selected {
-                                        t.text3
-                                    } else {
-                                        t.text2
-                                    })
-                                    .whitespace_nowrap()
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .child(sub),
-                            ),
-                    ),
-            );
+            // A slot that just moved here flashes its group's color; a new
+            // slot rises in.
+            let flash = self.moved.get(&id).and_then(|(g, at)| {
+                let p = motion::since(*at, motion::FLASH, window, cx)?;
+                let color = match g {
+                    RailGroup::NeedsYou => t.attention_soft,
+                    RailGroup::Review => t.accent_soft,
+                    RailGroup::Done => t.done_soft,
+                    RailGroup::Working => return None,
+                };
+                Some(color.opacity(1. - p * p))
+            });
+            let arrived = motion::arrival(entry.slot.created_at, motion::BASE, window, cx);
+            let row = div()
+                .id(SharedString::from(format!("slot-{id}")))
+                .relative()
+                .flex()
+                .flex_none()
+                .flex_row()
+                .items_start()
+                .gap(px(10.))
+                .px(px(8.))
+                .py(px(6.))
+                .rounded(px(6.))
+                .cursor_pointer()
+                .when(is_selected, |d| d.bg(t.raised))
+                .when(!is_selected, |d| d.hover(move |s| s.bg(hover)))
+                .when(is_selected && focused, |d| {
+                    d.shadow(vec![BoxShadow {
+                        color: t.accent,
+                        offset: point(px(0.), px(0.)),
+                        blur_radius: px(0.),
+                        spread_radius: px(2.),
+                        inset: true,
+                    }])
+                })
+                .on_click(move |_, window, cx| {
+                    window.focus(&focus, cx);
+                    let id = id.clone();
+                    rail_state.update(cx, |s, cx| s.select_slot(id, cx));
+                })
+                .when_some(flash, |d, color| {
+                    d.child(div().absolute().inset_0().rounded(px(6.)).bg(color))
+                })
+                .child(
+                    div()
+                        .w(px(16.))
+                        .h(px(18.))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(status_dot(&t, entry, 8.)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(1.))
+                        .min_w_0()
+                        .child(
+                            div()
+                                .ty(ty::BODY)
+                                .font_weight(weight)
+                                .text_color(if done && !is_selected {
+                                    t.text2
+                                } else {
+                                    t.text
+                                })
+                                .whitespace_nowrap()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .ty(ty::META)
+                                .text_color(if done && !is_selected {
+                                    t.text3
+                                } else {
+                                    t.text2
+                                })
+                                .whitespace_nowrap()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(sub),
+                        ),
+                );
+            list = list.child(match arrived {
+                Some(p) => motion::rise(row, p),
+                None => row,
+            });
         }
 
         div()
@@ -397,7 +453,7 @@ pub fn collapsed(state: &Entity<RepoState>, t: &Tokens, cx: &App) -> Div {
     let s = state.read(cx);
     let selected = s.selected_slot.clone();
     let mut col = div()
-        .w(px(57.))
+        .w(px(STRIP_W))
         .h_full()
         .flex_none()
         .flex()

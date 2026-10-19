@@ -34,6 +34,7 @@ tracing-subscriber.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
 gpui-component = { workspace = true, features = ["tree-sitter-languages"] }
+gpui-base.workspace = true
 gpui-kit-assets = "=0.7.3"
 image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
 

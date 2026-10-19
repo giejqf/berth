@@ -13,17 +13,21 @@ use berth_protocol::{
     Artifact, Decision, FollowUp, NodePayload, Origin, OriginKind, Outcome, OutcomeKind, Prompt,
     Question, Summary,
 };
+use std::f32::consts::FRAC_PI_2;
+
 use gpui::{
     AnyElement, App, Div, Entity, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
-    SharedString, StatefulInteractiveElement as _, Styled as _, WeakEntity, div,
-    prelude::FluentBuilder as _, px,
+    SharedString, StatefulInteractiveElement as _, Styled, Transformation, WeakEntity, Window, div,
+    prelude::FluentBuilder as _, px, radians,
 };
+use gpui_base::motion::MotionReveal;
 
 use super::answer_card::AnswerCard;
 use super::flow_view::FlowView;
 use super::kit::{
     Btn, Tone, TypeExt as _, caption, clock, dot, dur, file_chip, icon, link, plural, spinner, tag,
 };
+use super::motion;
 use super::rich::{self, clamped, overflows, rich};
 use super::{RepoState, files};
 use crate::backend::{BackendHandle, Command, SlotEntry};
@@ -151,7 +155,7 @@ fn inline_title(t: &Tokens, text: &str) -> AnyElement {
 
 // ---- rows ----
 
-pub fn render_row(ix: usize, ctx: &RowCtx, cx: &mut App) -> AnyElement {
+pub fn render_row(ix: usize, ctx: &RowCtx, window: &mut Window, cx: &mut App) -> AnyElement {
     let t = Tokens::get(cx);
     let last = ix + 1 == ctx.rows.len();
     let focused = ctx.flow_focused && ctx.cursor == Some(ix);
@@ -160,10 +164,16 @@ pub fn render_row(ix: usize, ctx: &RowCtx, cx: &mut App) -> AnyElement {
             let node = &ctx.view.nodes[*index];
             node_row(&t, node, ctx, !last, cx)
         }
-        Row::Item(FlowItem::Subagents(g)) => group_row(&t, g, ctx, !last, cx),
+        Row::Item(FlowItem::Subagents(g)) => group_row(&t, g, ctx, !last, window, cx),
         Row::Item(FlowItem::SectionEnd { section_no }) => section_end(&t, *section_no, ctx, !last),
-        Row::Live => live_row(&t, ctx),
+        Row::Live => live_row(&t, ctx, window, cx),
         Row::Error(e) => error_row(&t, e),
+    };
+    // What just arrived rises into place.
+    let el = match arrived_at(ix, ctx).and_then(|at| motion::arrival(at, motion::BASE, window, cx))
+    {
+        Some(p) => motion::rise(el, p),
+        None => el,
     };
     div()
         .id(ix)
@@ -184,6 +194,24 @@ pub fn render_row(ix: usize, ctx: &RowCtx, cx: &mut App) -> AnyElement {
         .relative()
         .child(el)
         .into_any_element()
+}
+
+/// When row `ix` appeared (ms): its node's creation, a group's first spawn,
+/// the round's start. A section's end comes with its summary.
+fn arrived_at(ix: usize, ctx: &RowCtx) -> Option<i64> {
+    match &ctx.rows[ix] {
+        Row::Item(FlowItem::Node { index }) => Some(ctx.view.nodes[*index].created_at),
+        Row::Item(FlowItem::Subagents(g)) => Some(g.started_at),
+        Row::Item(FlowItem::SectionEnd { .. }) => {
+            ix.checked_sub(1).and_then(|i| arrived_at(i, ctx))
+        }
+        Row::Live => ctx
+            .activity
+            .as_ref()
+            .map(|a| a.started_at)
+            .filter(|&at| at > 0),
+        Row::Error(_) => None,
+    }
 }
 
 fn node_row(t: &Tokens, node: &Node, ctx: &RowCtx, line: bool, cx: &mut App) -> Div {
@@ -477,7 +505,7 @@ fn prompt(t: &Tokens, node: &Node, p: &Prompt, ctx: &RowCtx, line: bool) -> Div 
 }
 
 /// The open round's live card: the agent's latest line, its tool steps.
-fn live_row(t: &Tokens, ctx: &RowCtx) -> Div {
+fn live_row(t: &Tokens, ctx: &RowCtx, window: &Window, cx: &App) -> Div {
     let a = ctx.activity.clone().unwrap_or_default();
     let now = super::kit::now_ms();
     let title = a.title.clone().unwrap_or_else(|| "Working".to_owned());
@@ -507,11 +535,13 @@ fn live_row(t: &Tokens, ctx: &RowCtx) -> Div {
             Some(end) => dur(end - s.started_at),
             None => "now".to_owned(),
         };
+        let fade = motion::arrival(s.started_at, motion::FAST, window, cx);
         steps = steps.child(
             div()
                 .flex()
                 .items_center()
                 .gap(px(8.))
+                .when_some(fade, Styled::opacity)
                 .when(running, |d| d.text_color(t.text))
                 .child(mark)
                 .child(div().flex_1().min_w_0().child(step_label(label)))
@@ -596,7 +626,14 @@ fn step_label(s: &str) -> Div {
 
 // ---- subagents ----
 
-fn group_row(t: &Tokens, g: &SubagentGroup, ctx: &RowCtx, line: bool, _cx: &mut App) -> Div {
+fn group_row(
+    t: &Tokens,
+    g: &SubagentGroup,
+    ctx: &RowCtx,
+    line: bool,
+    window: &mut Window,
+    cx: &mut App,
+) -> Div {
     let n = g.lanes.len();
     let running = g.running();
     let title = if n == 1 {
@@ -653,7 +690,7 @@ fn group_row(t: &Tokens, g: &SubagentGroup, ctx: &RowCtx, line: bool, _cx: &mut 
                 }),
         );
     for lane in &g.lanes {
-        col = col.child(lane_view(t, lane, ctx));
+        col = col.child(lane_view(t, lane, ctx, window, cx));
     }
     let glyph_el: AnyElement = if running > 0 {
         spinner(
@@ -667,10 +704,27 @@ fn group_row(t: &Tokens, g: &SubagentGroup, ctx: &RowCtx, line: bool, _cx: &mut 
     row(t, glyph(t.card, glyph_el), line, col)
 }
 
-fn lane_view(t: &Tokens, lane: &Lane, ctx: &RowCtx) -> Div {
+fn lane_view(t: &Tokens, lane: &Lane, ctx: &RowCtx, window: &mut Window, cx: &mut App) -> Div {
     let failed = matches!(lane.status, BranchState::Error | BranchState::Cancelled);
     let open = ctx.expanded.contains(&lane.branch_id)
         || failed && !ctx.expanded.contains(&format!("closed-{}", lane.branch_id));
+    // The lane unfolds and its chevron turns.
+    let lane_id = SharedString::from(format!("lane-{}", lane.branch_id));
+    let unfold = motion::value(
+        (lane_id.clone(), "unfold"),
+        if open { 1. } else { 0. },
+        motion::BASE,
+        window,
+        cx,
+    );
+    let turn = motion::value(
+        (lane_id.clone(), "chevron"),
+        if open { FRAC_PI_2 } else { 0. },
+        motion::FAST,
+        window,
+        cx,
+    )
+    .value;
     let live = ctx
         .activity
         .as_ref()
@@ -737,15 +791,10 @@ fn lane_view(t: &Tokens, lane: &Lane, ctx: &RowCtx) -> Div {
             let k = toggle_key.clone();
             let _ = flow.update(cx, |f, cx| f.toggle(k, false, cx));
         })
-        .child(icon(
-            if open {
-                "chevron-down"
-            } else {
-                "chevron-right"
-            },
-            14.,
-            t.text3,
-        ))
+        .child(
+            icon("chevron-right", 14., t.text3)
+                .with_transformation(Transformation::rotate(radians(turn))),
+        )
         .child(
             div()
                 .medium()
@@ -772,7 +821,7 @@ fn lane_view(t: &Tokens, lane: &Lane, ctx: &RowCtx) -> Div {
         );
 
     let mut body = div().flex().flex_col().gap(px(6.)).child(head);
-    if open {
+    if open || motion::moving(&unfold) {
         let mut inner = div().flex().flex_col().gap(px(8.)).pl(px(22.)).pb(px(4.));
         for &ix in &lane.decisions {
             let node = &ctx.view.nodes[ix];
@@ -865,7 +914,16 @@ fn lane_view(t: &Tokens, lane: &Lane, ctx: &RowCtx) -> Div {
                 }
             }
         }
-        body = body.child(inner);
+        body = body.child(if motion::moving(&unfold) {
+            MotionReveal::new(
+                SharedString::from(format!("{lane_id}-reveal")),
+                unfold.value,
+                inner.opacity(unfold.value).into_any_element(),
+            )
+            .into_any_element()
+        } else {
+            inner.into_any_element()
+        });
     }
     div()
         .flex()

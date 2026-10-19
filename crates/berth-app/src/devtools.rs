@@ -17,6 +17,7 @@
 //! select 0                    # select the n-th slot (newest first)
 //! secret linear LINEAR_API_KEY x  # store a connector key (use BERTH_SECRETS=memory)
 //! term_type ls -la            # type into the selected slot's terminal (`keys enter` runs it)
+//! fake_node Title             # append a just-recorded decision to the flow (view only)
 //! quit
 //! ```
 
@@ -210,6 +211,7 @@ pub fn start(cx: &mut App) {
                 // Pretend a workflow's round is live (`fake_live <preset>`):
                 // the design's Working state without spending tokens.
                 "fake_live" => cx.update(|cx| fake_live(arg, cx)),
+                "fake_node" => cx.update(|cx| fake_node(arg, cx)),
                 "expand_lane" => cx.update(|cx| {
                     let n: usize = arg.parse().unwrap_or(0);
                     with_window(cx, |window, cx| {
@@ -446,6 +448,40 @@ fn fake_live(preset: &str, cx: &mut App) {
             }
             s.activity.insert(id, activity);
         }
+        cx.notify();
+    });
+}
+
+/// Append a decision titled `title` to the selected workflow's flow, as if
+/// the agent had just recorded it (the view only; nothing is stored).
+fn fake_node(title: &str, cx: &mut App) {
+    let Some(state) = ui::first_repo_state(cx) else {
+        return;
+    };
+    state.update(cx, |s, cx| {
+        let Some(view) = s.selected_view() else {
+            return;
+        };
+        let mut v = (*view).clone();
+        let seq = v.nodes.last().map_or(0, |n| n.seq + 1);
+        v.nodes.push(berth_core::Node {
+            id: format!("devtools-{seq}"),
+            workflow_id: v.workflow.id.clone(),
+            round_id: None,
+            branch_id: None,
+            seq,
+            payload: berth_protocol::NodePayload::Decision(berth_protocol::Decision {
+                title: title.to_owned(),
+                rationale: "Added by the devtools script.".to_owned(),
+                affects: Vec::new(),
+                reversible: true,
+            }),
+            raw_first: None,
+            raw_last: None,
+            created_at: ui::kit::now_ms(),
+        });
+        s.views
+            .insert(v.workflow.id.clone(), std::sync::Arc::new(v));
         cx.notify();
     });
 }

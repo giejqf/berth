@@ -5,25 +5,28 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, Context, DismissEvent, Div, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, div, px,
+    AnimationExt as _, AnyElement, App, Context, DismissEvent, Div, EntityId, EventEmitter,
+    FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _,
+    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, px,
 };
 
 use super::kit::{Btn, Size, TypeExt as _, Variant, dialog_shadow};
+use super::motion;
 use crate::keymap::Confirm;
 use crate::theme::{Tokens, ty};
 
-/// The scrim and centering around a dialog.
+/// The scrim and centering around a dialog. The scrim fades in and the
+/// dialog rises into place, once per dialog (`key`, its view).
 pub fn overlay(
     t: &Tokens,
+    key: EntityId,
     dialog: AnyElement,
     on_scrim: impl Fn(&mut Window, &mut App) + 'static,
 ) -> Div {
+    let key = key.as_u64();
     div()
         .absolute()
         .inset_0()
-        .bg(t.scrim)
         .flex()
         .items_center()
         .justify_center()
@@ -32,9 +35,33 @@ pub fn overlay(
                 .id("scrim")
                 .absolute()
                 .inset_0()
-                .on_click(move |_, window, cx| on_scrim(window, cx)),
+                .bg(t.scrim)
+                .on_click(move |_, window, cx| on_scrim(window, cx))
+                .with_animation(
+                    ("scrim-in", key),
+                    motion::animation(motion::FAST),
+                    gpui::Styled::opacity,
+                ),
         )
-        .child(div().occlude().child(dialog))
+        .child(div().occlude().child(dialog).with_animation(
+            ("dialog-in", key),
+            motion::animation(motion::BASE),
+            motion::rise,
+        ))
+}
+
+/// A dismissed dialog fading out as `p` runs 0 → 1. It takes no clicks.
+pub fn fading(t: &Tokens, dialog: AnyElement, p: f32) -> Div {
+    let p = motion::ease_out_cubic(p);
+    div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(div().absolute().inset_0().bg(t.scrim).opacity(1. - p))
+        .child(div().opacity(1. - p).child(dialog))
+        .child(div().id("dialog-fading").absolute().inset_0().occlude())
 }
 
 /// The dialog box itself.

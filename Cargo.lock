@@ -504,6 +504,7 @@ dependencies = [
  "berth-slot",
  "chrono",
  "futures",
+ "gpui-base",
  "gpui-component",
  "gpui-kit-assets",
  "gpui-pre",

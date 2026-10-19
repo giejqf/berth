@@ -38,6 +38,7 @@ pub struct Tokens {
     pub on_attention: Hsla,
     /// state.done: outcome recorded, checks passed.
     pub done: Hsla,
+    pub done_soft: Hsla,
     pub on_done: Hsla,
     /// state.danger: failures, destroy slot, deletions.
     pub danger: Hsla,
@@ -92,6 +93,7 @@ impl Tokens {
             attention_soft: soft(0xfa_bd_2f, 0.14),
             on_attention: c(0x28_28_28),
             done: c(0xb8_bb_26),
+            done_soft: soft(0xb8_bb_26, 0.14),
             on_done: c(0x28_28_28),
             danger: c(0xfb_49_34),
             danger_soft: soft(0xfb_49_34, 0.14),
@@ -129,6 +131,7 @@ impl Tokens {
             attention_soft: soft(0xd7_99_21, 0.18),
             on_attention: c(0x28_28_28),
             done: c(0x79_74_0e),
+            done_soft: soft(0x79_74_0e, 0.14),
             on_done: c(0xfb_f1_c7),
             danger: c(0x9d_00_06),
             danger_soft: soft(0x9d_00_06, 0.12),

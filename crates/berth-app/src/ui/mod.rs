@@ -9,6 +9,7 @@ mod files;
 mod flow_view;
 pub mod kit;
 mod modal;
+mod motion;
 mod new_workflow;
 mod nodes;
 mod palette;

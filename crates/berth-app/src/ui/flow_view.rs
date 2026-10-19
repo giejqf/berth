@@ -533,8 +533,8 @@ impl Render for FlowView {
             width,
         });
         let header = self.header(&t, &view, cx);
-        let rows = list(self.list.clone(), move |ix, _window, cx| -> AnyElement {
-            render_row(ix, &ctx, cx)
+        let rows = list(self.list.clone(), move |ix, window, cx| -> AnyElement {
+            render_row(ix, &ctx, window, cx)
         })
         .size_full();
         div()
