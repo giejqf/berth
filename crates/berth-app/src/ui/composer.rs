@@ -19,7 +19,7 @@ use super::RepoState;
 use super::kit::{Btn, Size, TypeExt as _, dot, field_frame, icon, kbd, plural, ring, spinner};
 use super::motion;
 use crate::backend::Command;
-use crate::keymap::{FollowUpFromOutcome, NewWorkflow};
+use crate::keymap::{FollowUpFromOutcome, NewWorkflow, NewWorkflowHere};
 use crate::theme::{MONO, Tokens, ty};
 
 /// A file waiting to go out with the next prompt.
@@ -512,7 +512,9 @@ fn closed_row(t: &Tokens) -> impl IntoElement {
                 .ty(ty::META)
                 .text_color(t.text2)
                 .child(icon("check", 14., t.done))
-                .child("This workflow is closed. Continue through a follow-up, or start something new."),
+                .child(
+                    "This workflow is closed. Start the next one in this slot, or somewhere new.",
+                ),
         )
         .child(
             Btn::new("follow-up")
@@ -520,6 +522,13 @@ fn closed_row(t: &Tokens) -> impl IntoElement {
                 .hint("⌘⇧N")
                 .medium()
                 .on_click(|_, w, cx| w.dispatch_action(Box::new(FollowUpFromOutcome), cx)),
+        )
+        .child(
+            Btn::new("new-workflow-here")
+                .label("New workflow here")
+                .hint("⌥⌘N")
+                .medium()
+                .on_click(|_, w, cx| w.dispatch_action(Box::new(NewWorkflowHere), cx)),
         )
         .child(
             Btn::new("new-workflow")

@@ -560,6 +560,15 @@ impl Store {
         self.slot(id)
     }
 
+    /// The branch the checkout is on (a reused slot may have moved).
+    pub fn set_slot_branch(&self, id: &str, branch: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE slots SET branch = ?2 WHERE id = ?1",
+            params![id, branch],
+        )?;
+        Ok(())
+    }
+
     pub fn set_slot_checkout(&self, id: &str, path: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE slots SET checkout_path = ?2 WHERE id = ?1",

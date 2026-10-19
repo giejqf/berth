@@ -634,3 +634,53 @@ fn prompt_attachments_are_listed_in_the_turn() {
     };
     assert_eq!(p.attachments, vec![file]);
 }
+
+fn origin(title: &str) -> Origin {
+    Origin {
+        kind: OriginKind::Thought,
+        r#ref: String::new(),
+        title: title.into(),
+        body: String::new(),
+        custom_prompt: None,
+        url: None,
+    }
+}
+
+#[test]
+fn an_open_workflow_is_closed_so_its_slot_can_be_reused() {
+    let (store, mut engine, wf) = setup();
+    let slot_id = store.workflow(&wf).unwrap().slot_id;
+    // The origin round is suspended on a question: the workflow is open.
+    engine.begin_origin_round(&store, &wf).unwrap();
+    store
+        .set_workflow_state(&wf, WorkflowState::AwaitingAnswer)
+        .unwrap();
+    let latest = store.workflows_for_slot(&slot_id).unwrap().pop();
+    assert_eq!(
+        store.slot(&slot_id).unwrap().reuse(latest.as_ref()),
+        Ok(true)
+    );
+    assert!(Engine::create_workflow(&store, &slot_id, origin("Next")).is_err());
+
+    let fx = engine.close_for_reuse(&store, &wf).unwrap();
+    assert!(fx.iter().any(|e| matches!(
+        e,
+        Effect::StateChanged {
+            state: WorkflowState::Closed,
+            ..
+        }
+    )));
+    let closed = store.workflow(&wf).unwrap();
+    assert_eq!(closed.state, WorkflowState::Closed);
+    assert!(closed.closed_at.is_some());
+    // Its suspended round ended as interrupted.
+    assert!(store.open_round(&wf).unwrap().is_none());
+
+    let next = Engine::create_workflow(&store, &slot_id, origin("Next")).unwrap();
+    assert_eq!(next.slot_id, slot_id);
+    assert_eq!(store.workflows_for_slot(&slot_id).unwrap().len(), 2);
+    assert_eq!(
+        store.active_workflow(&slot_id).unwrap().unwrap().id,
+        next.id
+    );
+}

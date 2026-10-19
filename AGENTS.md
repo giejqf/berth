@@ -41,7 +41,7 @@ If a design decision is not here, it has not been made. Record new decisions her
 |---|---|
 | **Repo** | A local git repository. One repo per app window. |
 | **Slot** | An environment where one agent session edits and runs tests. Defined entirely by a user script (§6). Always contains a git checkout. May be a worktree, a container, a VM, or anything the script produces. |
-| **Workflow** | One unit of work from Origin to Outcome, bound to exactly one slot. A slot hosts at most one active workflow at a time. |
+| **Workflow** | One unit of work from Origin to Outcome, bound to exactly one slot. A slot hosts at most one open workflow at a time; once it closes (or is closed to make room), the next one can start in the same slot, its checkout kept as is (§6.3). |
 | **Round** | One agent turn: from a user prompt (or nudge) until the SDK emits `result`. Every round ends with exactly one terminal tool call (§5.3). |
 | **Section** | A span of rounds ending in a `Summary`. Diffs are computed per section by default. |
 | **Origin** | What sparked the workflow: a GitHub issue/PR, a Linear issue, a PostHog error, a user thought, or a follow-up from another workflow. |
@@ -378,7 +378,20 @@ Reference implementations in `slots/examples/`: `worktree` (git worktree, host),
 `Creating → Ready → Running(workflow_id) → Ready → Destroying → Destroyed`, plus
 `Failed` (create or destroy failed; detail shown; the only way out is Destroying).
 A closed workflow releases its slot (`Running → Ready`). Destroying a slot with an
-open workflow closes that workflow. The agent can request a slot via `request_slot`;
+open workflow closes that workflow.
+
+**Reuse** (ADR 0006): a new workflow can start in an existing slot instead of a new
+one. `Slot::reuse` decides: Ready or Running with its latest workflow closed, idle or
+waiting on an answer (that one is closed first: sidecar stopped, open round ended as
+`interrupted`, running subagents cancelled; `Engine::close_for_reuse`). Not while the
+agent is working, nor while the slot is creating, failed or destroying. Reusing runs
+no `slot.sh create`, no reset and no branch switch: the checkout stays exactly as
+earlier work left it, the slot's branch is re-read from `git branch --show-current`,
+and the new workflow takes its own start snapshot. Its agent gets a fresh session,
+told the slot is reused. Earlier workflows stay in the database; the slot shows its
+latest.
+
+The agent can request a slot via `request_slot`;
 the app always asks the user first. Slot state dirs live in
 `~/Library/Application Support/Berth/slots/<slot_id>/`. On first run, if no slot types
 exist, the app installs the reference `worktree` type into `~/.config/berth/slots/`.
@@ -644,6 +657,12 @@ stdin EOF stops the session; stdout carries protocol lines only (logs go to
   leave focus inside the window (the repo window refocuses itself when focus is lost),
   or bindings stop dispatching.
 - **Terminals** (§11.1): a bottom panel under the flow and composer, as in VS Code.
+- New workflow's Slot section switches between **New slot** (a type) and **Reuse a
+  slot** (the repo's slots with branch and state; the ones that can't be reused are
+  dimmed with the reason, and it says when the slot's open workflow will be closed).
+  **New workflow here** (⌥⌘N, the rail's context menu, More, ⌘K, the menu bar)
+  opens it on the selected slot; a closed workflow's composer offers it too, and
+  its follow-ups offer **Continue here** beside **Create slot**.
 - Dialogs (New workflow, Settings, ⌘K, confirmations) are drawn by the app
   (`ui/modal.rs`): scrim, 10px radius, one soft shadow, ⌘↩ confirms, esc closes.
 - Theme tokens in `berth-app/src/theme.rs`; light/dark follow the system unless

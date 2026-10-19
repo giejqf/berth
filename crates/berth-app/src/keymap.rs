@@ -13,6 +13,7 @@ actions!(
         OpenRepository,
         NewWorkflow,
         FollowUpFromOutcome,
+        NewWorkflowHere,
         OpenSettings,
         CommandPalette,
         ToggleReview,
@@ -166,6 +167,11 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut {
         keys: "⌘⇧N",
         label: "New workflow from the selected outcome's follow-up",
+        group: "Global",
+    },
+    Shortcut {
+        keys: "⌥⌘N",
+        label: "New workflow in the selected slot, keeping its files",
         group: "Global",
     },
     Shortcut {
@@ -420,6 +426,11 @@ pub fn palette_actions() -> Vec<(&'static str, &'static str, Box<dyn Action>)> {
     vec![
         ("New workflow", "⌘N", Box::new(NewWorkflow)),
         (
+            "New workflow in this slot…",
+            "⌥⌘N",
+            Box::new(NewWorkflowHere),
+        ),
+        (
             "New workflow from a GitHub issue",
             "⌘⇧I",
             Box::new(NewWorkflowTab(1)),
@@ -480,6 +491,7 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-o", OpenRepository, None),
         KeyBinding::new("cmd-n", NewWorkflow, None),
         KeyBinding::new("cmd-shift-n", FollowUpFromOutcome, None),
+        KeyBinding::new("cmd-alt-n", NewWorkflowHere, None),
         KeyBinding::new("cmd-,", OpenSettings, None),
         KeyBinding::new("cmd-k", CommandPalette, None),
         KeyBinding::new("cmd-\\", ToggleReview, None),

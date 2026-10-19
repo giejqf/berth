@@ -91,7 +91,7 @@ impl Shared {
     }
 
     /// Run a command where the agent runs, with cwd = the checkout.
-    async fn run_beside_agent(
+    pub(super) async fn run_beside_agent(
         &self,
         slot: &Slot,
         program: &str,

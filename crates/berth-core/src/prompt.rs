@@ -112,11 +112,21 @@ pub fn session_context(ctx: &SessionContext<'_>) -> String {
         "- Slot: {} (type `{}`, agent placement `{}`)",
         ctx.slot_name, ctx.slot_type, ctx.placement
     );
-    let _ = writeln!(
-        out,
-        "- Work on branch `{}` (based on `{}`).",
-        ctx.branch, ctx.base_ref
-    );
+    if ctx.reused {
+        let _ = writeln!(
+            out,
+            "- This slot is reused: the checkout is as earlier work left it, on branch `{}` (based on `{}`), \
+             with any uncommitted changes and build output. Check `git status` before assuming a clean tree, \
+             and don't reset it or switch branches unless the task asks for it.",
+            ctx.branch, ctx.base_ref
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "- Work on branch `{}` (based on `{}`).",
+            ctx.branch, ctx.base_ref
+        );
+    }
     let _ = writeln!(
         out,
         "- Workflow origin: {} — {}",
@@ -141,6 +151,8 @@ pub struct SessionContext<'a> {
     pub branch: &'a str,
     pub base_ref: &'a str,
     pub origin: &'a Origin,
+    /// The slot hosted an earlier workflow; its checkout is kept as is.
+    pub reused: bool,
     /// `slot.sh` path when gates must go through `exec` (host placement).
     pub slot_exec: Option<&'a str>,
 }
@@ -276,6 +288,36 @@ mod tests {
             origin_turn(&o),
             "Work on GitHub issue #42: Crash on start\n\nSteps…\n\nKeep it small."
         );
+    }
+
+    #[test]
+    fn a_reused_slot_tells_the_agent_its_tree_is_kept() {
+        let origin = Origin {
+            kind: OriginKind::Thought,
+            r#ref: String::new(),
+            title: "Next task".into(),
+            body: String::new(),
+            custom_prompt: None,
+            url: None,
+        };
+        let ctx = |reused| SessionContext {
+            repo_name: "demo",
+            slot_name: "fix",
+            slot_type: "worktree",
+            placement: "host",
+            branch: "berth/fix",
+            base_ref: "main",
+            origin: &origin,
+            reused,
+            slot_exec: None,
+        };
+        let fresh = session_context(&ctx(false));
+        assert!(fresh.contains("Work on branch `berth/fix` (based on `main`)."));
+        let reused = session_context(&ctx(true));
+        assert!(reused.contains("This slot is reused"));
+        assert!(reused.contains("`git status`"));
+        assert!(reused.contains("branch `berth/fix`"));
+        assert!(!reused.contains("Work on branch"));
     }
 
     #[test]

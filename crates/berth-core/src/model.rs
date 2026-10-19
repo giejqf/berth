@@ -109,6 +109,47 @@ pub struct Slot {
     pub created_at: i64,
 }
 
+/// Why a slot can't take a new workflow right now (reuse, §6.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReuseBlocked {
+    Creating,
+    Working,
+    Failed,
+    Destroying,
+}
+
+impl ReuseBlocked {
+    #[must_use]
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::Creating => "The slot is still being created.",
+            Self::Working => "The agent is working in it; interrupt it first.",
+            Self::Failed => "The slot failed; destroy it and create a new one.",
+            Self::Destroying => "The slot is being destroyed.",
+        }
+    }
+}
+
+impl Slot {
+    /// Whether the slot can start a new workflow, given its latest one. `Ok(true)`
+    /// when that workflow is still open (idle, or waiting on an answer) and has
+    /// to be closed first. The checkout stays as it is either way.
+    pub fn reuse(&self, latest: Option<&Workflow>) -> std::result::Result<bool, ReuseBlocked> {
+        match self.state {
+            SlotState::Creating => Err(ReuseBlocked::Creating),
+            SlotState::Failed => Err(ReuseBlocked::Failed),
+            SlotState::Destroying | SlotState::Destroyed => Err(ReuseBlocked::Destroying),
+            SlotState::Ready | SlotState::Running => match latest.map(|w| w.state) {
+                None | Some(WorkflowState::Closed) => Ok(false),
+                Some(WorkflowState::Idle | WorkflowState::AwaitingAnswer) => Ok(true),
+                Some(WorkflowState::Running | WorkflowState::Starting) => {
+                    Err(ReuseBlocked::Working)
+                }
+            },
+        }
+    }
+}
+
 /// Workflow state machine. A workflow is `Running` while a round is in
 /// flight, `AwaitingAnswer` while that round is suspended on `ask_user`, and
 /// `Idle` between rounds. `Closed` after an Outcome.

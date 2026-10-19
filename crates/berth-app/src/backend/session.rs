@@ -102,6 +102,7 @@ impl Shared {
             );
         }
         let slot_exec = host.then(|| script.ty.script().to_string_lossy().into_owned());
+        let reused = self.core().store.workflows_for_slot(&slot.id)?.len() > 1;
         let system_prompt = prompt::session_context(&prompt::SessionContext {
             repo_name: &repo.name(),
             slot_name: &slot.name,
@@ -110,6 +111,7 @@ impl Shared {
             branch: &slot.branch,
             base_ref: &slot.base_ref,
             origin: &wf.origin,
+            reused,
             slot_exec: slot_exec
                 .as_deref()
                 .filter(|_| slot.slot_type != "worktree"),

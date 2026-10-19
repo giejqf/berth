@@ -291,11 +291,18 @@ impl Shared {
             Command::FollowUpToSlot {
                 workflow_id,
                 follow_up,
+                reuse,
             } => {
                 let repo_id = self.repo_of_workflow(&workflow_id)?;
+                let slot_id = if reuse {
+                    Some(self.core().store.workflow(&workflow_id)?.slot_id)
+                } else {
+                    None
+                };
                 let req = NewWorkflow {
                     repo_id,
                     slot_type: None,
+                    slot_id,
                     origin: berth_core::prompt::follow_up_origin(&follow_up),
                 };
                 let (wf, _) = self.prepare_workflow(&req).await?;

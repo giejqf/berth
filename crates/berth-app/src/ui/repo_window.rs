@@ -32,10 +32,10 @@ use super::{RepoState, details};
 use crate::backend::{Command, ToastLevel};
 use crate::keymap::{
     AttachFiles, AttachPaths, CloseWindow, CommandPalette, DestroySlot, FocusAnswer, FocusComposer,
-    FollowUpFromOutcome, Interrupt, JumpToNeeding, NewWorkflow, NewWorkflowTab, NextChange,
-    NextSlot, OpenSettings, PrevChange, PrevSlot, RefreshReview, RenameSlot, ReviewBranch,
-    ReviewSection, ReviewWorkflow, SelectSlot, ShowFile, ShowFiles, ToggleDiffMode, ToggleRail,
-    ToggleReview,
+    FollowUpFromOutcome, Interrupt, JumpToNeeding, NewWorkflow, NewWorkflowHere, NewWorkflowTab,
+    NextChange, NextSlot, OpenSettings, PrevChange, PrevSlot, RefreshReview, RenameSlot,
+    ReviewBranch, ReviewSection, ReviewWorkflow, SelectSlot, ShowFile, ShowFiles, ToggleDiffMode,
+    ToggleRail, ToggleReview,
 };
 use crate::keymap::{
     CloseTerminal, HideTerminal, KillTerminal, NewTerminal, NextTerminal, PrevTerminal,
@@ -504,6 +504,22 @@ impl RepoWindow {
         form.update(cx, |f, cx| f.focus_title(window, cx));
     }
 
+    /// New workflow, reusing the selected slot as it is (§6.3).
+    fn new_workflow_here(
+        &mut self,
+        _: &NewWorkflowHere,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let slot = self.state.read(cx).selected_slot.clone();
+        self.new_workflow(&NewWorkflow, window, cx);
+        if let Some((view, ..)) = &self.modal
+            && let Ok(form) = view.clone().downcast::<NewWorkflowForm>()
+        {
+            form.update(cx, |f, cx| f.reuse_slot(slot, cx));
+        }
+    }
+
     pub fn new_workflow_tab(
         &mut self,
         tab: usize,
@@ -590,6 +606,7 @@ impl RepoWindow {
             state.backend.send(Command::FollowUpToSlot {
                 workflow_id: view.workflow.id.clone(),
                 follow_up,
+                reuse: false,
             });
         }
     }
@@ -763,6 +780,7 @@ impl Render for RepoWindow {
             .track_focus(&self.focus)
             .key_context("RepoWindow")
             .on_action(cx.listener(Self::new_workflow))
+            .on_action(cx.listener(Self::new_workflow_here))
             .on_action(cx.listener(Self::settings))
             .on_action(cx.listener(Self::palette))
             .on_action(cx.listener(|this, a: &crate::keymap::ExpandLane, _, cx| {

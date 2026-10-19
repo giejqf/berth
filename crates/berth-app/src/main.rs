@@ -68,6 +68,7 @@ fn main() {
                 Menu::new("File").items([
                     MenuItem::action("Open Repository…", keymap::OpenRepository),
                     MenuItem::action("New Workflow…", keymap::NewWorkflow),
+                    MenuItem::action("New Workflow in This Slot…", keymap::NewWorkflowHere),
                     MenuItem::separator(),
                     MenuItem::action("Close Window", keymap::CloseWindow),
                 ]),

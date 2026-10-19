@@ -468,6 +468,10 @@ fn more_menu(t: &Tokens) -> impl IntoElement {
                 .menu("Branch diff", Box::new(crate::keymap::ReviewBranch))
                 .menu("Command palette…", Box::new(crate::keymap::CommandPalette))
                 .separator()
+                .menu(
+                    "New workflow in this slot…",
+                    Box::new(crate::keymap::NewWorkflowHere),
+                )
                 .menu("Rename slot…", Box::new(crate::keymap::RenameSlot))
                 .menu("Destroy slot…", Box::new(DestroySlot))
         })

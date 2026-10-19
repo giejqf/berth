@@ -1,5 +1,6 @@
 //! "New workflow": pick an Origin (thought, GitHub issue or PR, a connector's
-//! items), optional instructions for every round, and a slot type.
+//! items), optional instructions for every round, and where it runs: a new slot
+//! of some type, or an existing slot reused as it is (§6.3).
 
 use berth_protocol::{Origin, OriginKind};
 use gpui::{
@@ -33,6 +34,12 @@ pub struct NewWorkflowForm {
     search: Entity<InputState>,
     selected: Option<OriginChoice>,
     slot_type: Option<String>,
+    /// `Some` to reuse a slot (`Some(None)`: none picked yet) instead of
+    /// creating one.
+    reuse: Option<Option<String>>,
+    /// Sent already: ⌘↩ in a one-line field reaches both its own handler and
+    /// the dialog's Confirm (the input passes the key on).
+    submitted: bool,
     focus: FocusHandle,
 }
 
@@ -97,8 +104,40 @@ impl NewWorkflowForm {
             search,
             selected: None,
             slot_type,
+            reuse: None,
+            submitted: false,
             focus: cx.focus_handle(),
         }
+    }
+
+    /// Start in an existing slot (`None`: let the user pick one).
+    pub fn reuse_slot(&mut self, slot_id: Option<String>, cx: &mut Context<'_, Self>) {
+        let slot_id = slot_id.or_else(|| self.first_reusable(cx));
+        self.reuse = Some(slot_id);
+        cx.notify();
+    }
+
+    /// The selected slot if it can be reused, else the first one that can.
+    fn first_reusable(&self, cx: &App) -> Option<String> {
+        let s = self.state.read(cx);
+        let ok = |e: &crate::backend::SlotEntry| e.slot.reuse(e.workflow.as_ref()).is_ok();
+        let order = s.rail_order();
+        order
+            .iter()
+            .find(|e| s.selected_slot.as_deref() == Some(e.slot.id.as_str()) && ok(e))
+            .or_else(|| order.iter().find(|e| ok(e)))
+            .map(|e| e.slot.id.clone())
+    }
+
+    /// The slot to reuse, if one is picked and still can be.
+    fn reuse_target(&self, cx: &App) -> Option<String> {
+        let id = self.reuse.clone().flatten()?;
+        let s = self.state.read(cx);
+        s.slots
+            .iter()
+            .find(|e| e.slot.id == id)
+            .filter(|e| e.slot.reuse(e.workflow.as_ref()).is_ok())
+            .map(|e| e.slot.id.clone())
     }
 
     /// Focus the first field of the current tab.
@@ -189,10 +228,16 @@ impl NewWorkflowForm {
         let Some(origin) = self.origin(cx) else {
             return;
         };
+        let slot_id = self.reuse_target(cx);
+        if self.submitted || self.reuse.is_some() && slot_id.is_none() {
+            return;
+        }
+        self.submitted = true;
         let s = self.state.read(cx);
         s.backend.send(Command::NewWorkflow(NewWorkflow {
             repo_id: s.repo_id().to_owned(),
-            slot_type: self.slot_type.clone(),
+            slot_type: self.slot_type.clone().filter(|_| slot_id.is_none()),
+            slot_id,
             origin,
         }));
         cx.emit(DismissEvent);
@@ -590,7 +635,104 @@ impl Render for NewWorkflowForm {
             );
         }
         let no_slot_types = state.snapshot.slot_types.is_empty();
-        let ready = self.origin(cx).is_some() && !no_slot_types;
+
+        // Reuse: the repo's slots, each kept exactly as it is.
+        let reusing = self.reuse.is_some();
+        let picked = self.reuse.clone().flatten();
+        let mut closes: Option<String> = None;
+        let mut reuse_list = div()
+            .id("reuse-list")
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .max_h(px(196.))
+            .overflow_y_scroll();
+        for entry in state.rail_order() {
+            let reuse = entry.slot.reuse(entry.workflow.as_ref());
+            let on = picked.as_deref() == Some(entry.slot.id.as_str()) && reuse.is_ok();
+            if on && reuse == Ok(true) {
+                closes = entry.workflow.as_ref().map(|w| w.origin.title.clone());
+            }
+            let (title, sub) = super::slot_rail::rail_lines(entry, state);
+            let meta = match reuse {
+                Err(blocked) => blocked.reason().to_owned(),
+                Ok(_) => format!("{} · {} · {sub}", entry.slot.slot_type, entry.slot.branch),
+            };
+            let id = entry.slot.id.clone();
+            let hover = t.border_strong;
+            reuse_list = reuse_list.child(
+                div()
+                    .id(SharedString::from(format!("reuse-{id}")))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(px(10.))
+                    .px(px(12.))
+                    .py(px(8.))
+                    .rounded(px(6.))
+                    .border_1()
+                    .when(on, |d| d.border_color(t.accent).bg(t.accent_soft))
+                    .when(!on, |d| d.border_color(t.border))
+                    .map(|d| match reuse {
+                        Ok(_) => d
+                            .cursor_pointer()
+                            .when(!on, |d| d.hover(move |s| s.border_color(hover)))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.reuse = Some(Some(id.clone()));
+                                cx.notify();
+                            })),
+                        Err(_) => d.opacity(0.55),
+                    })
+                    .child(radio(&t, on, 14.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .semibold()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .whitespace_nowrap()
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .ty(ty::META)
+                                    .text_color(t.text2)
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .whitespace_nowrap()
+                                    .child(meta),
+                            ),
+                    ),
+            );
+        }
+        let mode_tab = |id: &'static str, label: &'static str, on: bool| {
+            let hover = t.text;
+            div()
+                .id(id)
+                .h(px(22.))
+                .px(px(8.))
+                .flex()
+                .items_center()
+                .rounded(px(4.))
+                .ty(ty::META)
+                .cursor_pointer()
+                .when(on, |d| d.bg(t.win).text_color(t.text).medium())
+                .when(!on, |d| {
+                    d.text_color(t.text2).hover(move |s| s.text_color(hover))
+                })
+                .child(label)
+        };
+        let has_slots = !state.slots.is_empty();
+        let ready = self.origin(cx).is_some()
+            && if reusing {
+                self.reuse_target(cx).is_some()
+            } else {
+                !no_slot_types
+            };
         let this = cx.entity().downgrade();
         let close = this.clone();
 
@@ -635,12 +777,59 @@ impl Render for NewWorkflowForm {
                             .child(
                                 div()
                                     .flex()
-                                    .items_baseline()
+                                    .items_center()
                                     .gap(px(8.))
                                     .child(div().ty(ty::META).medium().text_color(t.text2).child("Slot"))
-                                    .child(div().ty(ty::META).text_color(t.text3).child("where this agent works · changeable later")),
+                                    .child(div().ty(ty::META).text_color(t.text3).child(if reusing {
+                                        "its files stay as they are; the agent starts fresh"
+                                    } else {
+                                        "where this agent works"
+                                    }))
+                                    .when(has_slots, |d| {
+                                        d.child(
+                                            div()
+                                                .ml_auto()
+                                                .flex()
+                                                .gap(px(2.))
+                                                .p(px(2.))
+                                                .bg(t.raised)
+                                                .rounded(px(6.))
+                                                .child(mode_tab("slot-new", "New slot", !reusing).on_click(
+                                                    cx.listener(|this, _, _, cx| {
+                                                        this.reuse = None;
+                                                        cx.notify();
+                                                    }),
+                                                ))
+                                                .child(mode_tab("slot-reuse", "Reuse a slot", reusing).on_click(
+                                                    cx.listener(|this, _, _, cx| {
+                                                        if this.reuse.is_none() {
+                                                            this.reuse_slot(None, cx);
+                                                        }
+                                                    }),
+                                                )),
+                                        )
+                                    }),
                             )
-                            .child(if no_slot_types {
+                            .child(if reusing {
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(8.))
+                                    .child(reuse_list)
+                                    .when_some(closes, |d, title| {
+                                        d.child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(6.))
+                                                .ty(ty::META)
+                                                .text_color(t.text2)
+                                                .child(super::kit::dot(6., t.attention))
+                                                .child(format!("Its open workflow, “{title}”, will be closed.")),
+                                        )
+                                    })
+                                    .into_any_element()
+                            } else if no_slot_types {
                                 div()
                                     .ty(ty::META)
                                     .text_color(t.danger)
@@ -652,7 +841,14 @@ impl Render for NewWorkflowForm {
                     ),
             )
             .child(
-                modal::footer(&t, "The agent takes the first round as soon as the slot exists.")
+                modal::footer(
+                    &t,
+                    if reusing {
+                        "The agent takes the first round in the slot's files as they are."
+                    } else {
+                        "The agent takes the first round as soon as the slot exists."
+                    },
+                )
                     .child(
                         Btn::new("nw-cancel")
                             .size(Size::S32)

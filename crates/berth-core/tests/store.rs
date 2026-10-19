@@ -79,3 +79,50 @@ fn a_database_from_0_1_0_gains_custom_names() {
     let renamed = store.set_slot_custom_name("s", Some("kept")).unwrap();
     assert_eq!(renamed.custom_name.as_deref(), Some("kept"));
 }
+
+#[test]
+fn which_slots_can_take_a_new_workflow() {
+    use berth_core::{ReuseBlocked, Workflow, WorkflowState};
+    let store = Store::open_in_memory().unwrap();
+    let repo = store.upsert_repo(Path::new("/tmp/repo")).unwrap();
+    let wf = |state| Workflow {
+        id: new_id(),
+        slot_id: String::new(),
+        origin: berth_protocol::Origin {
+            kind: berth_protocol::OriginKind::Thought,
+            r#ref: String::new(),
+            title: "x".into(),
+            body: String::new(),
+            custom_prompt: None,
+            url: None,
+        },
+        state,
+        claude_session_id: None,
+        section_no: 1,
+        total_cost_usd: 0.0,
+        last_error: None,
+        created_at: now_ms(),
+        closed_at: None,
+    };
+    let at = |state| Slot {
+        state,
+        ..slot(&repo.id)
+    };
+    use SlotState as S;
+    use WorkflowState as W;
+    assert_eq!(at(S::Ready).reuse(None), Ok(false));
+    assert_eq!(at(S::Ready).reuse(Some(&wf(W::Closed))), Ok(false));
+    assert_eq!(at(S::Running).reuse(Some(&wf(W::Idle))), Ok(true));
+    assert_eq!(at(S::Running).reuse(Some(&wf(W::AwaitingAnswer))), Ok(true));
+    assert_eq!(
+        at(S::Running).reuse(Some(&wf(W::Running))),
+        Err(ReuseBlocked::Working)
+    );
+    assert_eq!(
+        at(S::Running).reuse(Some(&wf(W::Starting))),
+        Err(ReuseBlocked::Working)
+    );
+    assert_eq!(at(S::Creating).reuse(None), Err(ReuseBlocked::Creating));
+    assert_eq!(at(S::Failed).reuse(None), Err(ReuseBlocked::Failed));
+    assert_eq!(at(S::Destroying).reuse(None), Err(ReuseBlocked::Destroying));
+}

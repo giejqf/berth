@@ -225,6 +225,9 @@ impl Shared {
         self: &Arc<Self>,
         req: &NewWorkflow,
     ) -> Result<(Workflow, Slot)> {
+        if let Some(slot_id) = &req.slot_id {
+            return self.prepare_reuse(req, slot_id).await;
+        }
         let repo_path = self.repo_path(&req.repo_id)?;
         let ty = {
             let repos = lock(&self.repos);
@@ -287,10 +290,78 @@ impl Shared {
         Ok((wf, slot))
     }
 
-    /// Create the slot via `slot.sh create`, snapshot, start the session, and
-    /// send the origin turn.
+    /// A new workflow in an existing slot (§6.3): its open workflow, if any, is
+    /// closed first; its checkout stays exactly as it is (no reset, no branch
+    /// switch). The agent starts with a fresh context.
+    async fn prepare_reuse(
+        self: &Arc<Self>,
+        req: &NewWorkflow,
+        slot_id: &str,
+    ) -> Result<(Workflow, Slot)> {
+        let repo_path = self.repo_path(&req.repo_id)?;
+        let (slot, latest) = {
+            let core = self.core();
+            (
+                core.store.slot(slot_id)?,
+                core.store.workflows_for_slot(slot_id)?.pop(),
+            )
+        };
+        if slot.repo_id != req.repo_id {
+            return Err(anyhow!("that slot belongs to another repository"));
+        }
+        let closes = slot
+            .reuse(latest.as_ref())
+            .map_err(|blocked| anyhow!(blocked.reason()))?;
+        if let Some(old) = latest.filter(|_| closes) {
+            // Its sidecar goes first, so nothing it still sends lands after the close.
+            let session = lock(&self.sessions).remove(&old.id);
+            if let Some(s) = session {
+                s.shutdown().await;
+            }
+            let fx = {
+                let mut core = self.core();
+                let super::Core { store, engine } = &mut *core;
+                engine.close_for_reuse(store, &old.id)?
+            };
+            self.run_effects(&old.id, fx);
+        }
+        // Record the branch the checkout is on now; earlier work may have moved it.
+        if let Ok(out) = self
+            .run_beside_agent(
+                &slot,
+                "git",
+                &["branch".into(), "--show-current".into()],
+                None,
+            )
+            .await
+        {
+            let branch = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+            if out.success() && !branch.is_empty() && branch != slot.branch {
+                self.core().store.set_slot_branch(&slot.id, &branch)?;
+            }
+        }
+        let origin = self.enrich_origin(&repo_path, req.origin.clone()).await;
+        let (wf, slot) = {
+            let core = self.core();
+            let wf = Engine::create_workflow(&core.store, slot_id, origin.clone())?;
+            (wf, core.store.slot(slot_id)?)
+        };
+        self.link_origin(&req.repo_id, &wf.id, &origin).await;
+        self.emit_slots(&req.repo_id);
+        self.emit_workflow(&wf.id);
+        Ok((wf, slot))
+    }
+
+    /// Create the slot via `slot.sh create` (a reused slot already exists),
+    /// snapshot, start the session, and send the origin turn.
     pub(super) async fn provision(self: &Arc<Self>, wf: &Workflow) -> Result<()> {
         let slot = self.core().store.slot(&wf.slot_id)?;
+        if slot.state != SlotState::Creating {
+            self.core()
+                .store
+                .transition_slot(&slot.id, SlotState::Running, None)?;
+            return self.start_workflow(wf).await;
+        }
         let script = self.slot_script(&slot)?;
         std::fs::create_dir_all(paths::slot_state_dir(&slot.id))?;
         match script.create().await {
@@ -315,8 +386,13 @@ impl Shared {
                 return Err(anyhow!(message));
             }
         }
+        self.start_workflow(wf).await
+    }
+
+    /// Snapshot the checkout, start the session, and send the origin turn.
+    async fn start_workflow(self: &Arc<Self>, wf: &Workflow) -> Result<()> {
+        let slot = self.core().store.slot(&wf.slot_id)?;
         self.emit_slots(&slot.repo_id);
-        let slot = self.core().store.slot(&slot.id)?;
         let tree = self
             .snapshot_slot(&slot)
             .await
@@ -422,6 +498,7 @@ impl Shared {
             .prepare_workflow(&NewWorkflow {
                 repo_id,
                 slot_type: None,
+                slot_id: None,
                 origin,
             })
             .await

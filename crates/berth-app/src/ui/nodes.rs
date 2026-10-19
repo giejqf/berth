@@ -1382,17 +1382,37 @@ fn follow_ups(t: &Tokens, items: &[FollowUp], ctx: &RowCtx, divided: bool) -> Di
                     .into_any_element()
             }
             None => {
-                let backend = ctx.backend.clone();
-                let (wf, fu) = (ctx.view.workflow.id.clone(), f.clone());
-                Btn::new(SharedString::from(format!("create-slot-{}", f.id)))
-                    .label("Create slot")
-                    .medium()
-                    .on_click(move |_, _, _| {
+                let start = |reuse: bool| {
+                    let backend = ctx.backend.clone();
+                    let (wf, fu) = (ctx.view.workflow.id.clone(), f.clone());
+                    move |_: &gpui::ClickEvent, _: &mut gpui::Window, _: &mut App| {
                         backend.send(Command::FollowUpToSlot {
                             workflow_id: wf.clone(),
                             follow_up: fu.clone(),
+                            reuse,
                         });
+                    }
+                };
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    // Only a closed workflow's slot is free to continue in.
+                    .when(ctx.view.workflow.state == WorkflowState::Closed, |d| {
+                        d.child(
+                            Btn::new(SharedString::from(format!("continue-here-{}", f.id)))
+                                .ghost()
+                                .label("Continue here")
+                                .tooltip("Start it in this slot, keeping its files")
+                                .on_click(start(true)),
+                        )
                     })
+                    .child(
+                        Btn::new(SharedString::from(format!("create-slot-{}", f.id)))
+                            .label("Create slot")
+                            .medium()
+                            .on_click(start(false)),
+                    )
                     .into_any_element()
             }
         };

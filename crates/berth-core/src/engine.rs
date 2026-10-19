@@ -144,6 +144,31 @@ impl Engine {
         Ok(wf)
     }
 
+    /// Close an open workflow without an outcome, so its slot can host a new one
+    /// (reuse, §6.3): its open round ends as interrupted, running subagents are
+    /// cancelled. Stop its sidecar first.
+    pub fn close_for_reuse(&mut self, store: &Store, workflow_id: &str) -> Result<Vec<Effect>> {
+        let mut fx = Vec::new();
+        if let Some(round) = store.open_round(workflow_id)? {
+            let now = now_ms();
+            store.end_round(
+                &round.id,
+                TerminalKind::Interrupted,
+                round.nudges,
+                round.cost_usd,
+                now - round.started_at,
+                now,
+            )?;
+        }
+        self.cancel_open_branches(store, workflow_id, &mut fx)?;
+        self.set_state(store, workflow_id, WorkflowState::Closed, &mut fx)?;
+        self.live.remove(workflow_id);
+        fx.push(Effect::FlowChanged {
+            workflow_id: workflow_id.to_owned(),
+        });
+        Ok(fx)
+    }
+
     /// A new sidecar process started for `workflow_id`; forget per-process state.
     pub fn session_started(&mut self, workflow_id: &str) {
         self.live.insert(workflow_id.to_owned(), Live::default());

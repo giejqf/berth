@@ -73,6 +73,7 @@ pub fn start(cx: &mut App) {
                         s.backend.send(Command::NewWorkflow(NewWorkflow {
                             repo_id: s.repo_id().to_owned(),
                             slot_type: None,
+                            slot_id: None,
                             origin: Origin {
                                 kind: OriginKind::Thought,
                                 r#ref: String::new(),
@@ -289,6 +290,7 @@ pub fn start(cx: &mut App) {
                         s.backend.send(Command::FollowUpToSlot {
                             workflow_id: view.workflow.id.clone(),
                             follow_up,
+                            reuse: false,
                         });
                     }
                 }),
@@ -532,6 +534,7 @@ fn with_window(cx: &mut App, f: impl FnOnce(&mut gpui::Window, &mut App)) {
 fn dispatch(name: &str, cx: &mut App) {
     let action: Box<dyn gpui::Action> = match name {
         "NewWorkflow" => Box::new(keymap::NewWorkflow),
+        "NewWorkflowHere" => Box::new(keymap::NewWorkflowHere),
         "ToggleReview" => Box::new(keymap::ToggleReview),
         "ReviewSection" => Box::new(keymap::ReviewSection),
         "ReviewWorkflow" => Box::new(keymap::ReviewWorkflow),

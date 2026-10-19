@@ -72,9 +72,11 @@ pub enum Command {
         repo_id: String,
         source: OriginSource,
     },
+    /// Start a follow-up: in a new slot, or (`reuse`) in this workflow's slot.
     FollowUpToSlot {
         workflow_id: String,
         follow_up: FollowUp,
+        reuse: bool,
     },
     LoadConnectors,
     SetSecret {
@@ -113,6 +115,8 @@ pub struct NewWorkflow {
     pub repo_id: String,
     /// `None` = the repo's default slot type.
     pub slot_type: Option<String>,
+    /// Reuse this slot, its checkout as it is, instead of creating one (§6.3).
+    pub slot_id: Option<String>,
     pub origin: Origin,
 }
 
