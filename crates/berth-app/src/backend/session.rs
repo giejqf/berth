@@ -51,10 +51,14 @@ impl Shared {
             let wf = core.store.workflow(workflow_id)?;
             let slot = core.store.slot(&wf.slot_id)?;
             let repo = core.store.repo(&slot.repo_id)?;
-            let model = core
-                .store
-                .setting("model")?
-                .filter(|m| !m.trim().is_empty());
+            // The slot's own model, else the app's setting.
+            let model = match slot.model.clone() {
+                Some(m) => Some(m),
+                None => core
+                    .store
+                    .setting("model")?
+                    .filter(|m| !m.trim().is_empty()),
+            };
             (wf, slot, repo, model)
         };
         if !wf.state.is_open() {
@@ -144,6 +148,7 @@ impl Shared {
                 })
                 .collect(),
             model,
+            effort: slot.effort,
         };
         let msg = match wf.claude_session_id.clone() {
             Some(id) => AppToSidecar::SessionResume(SessionResume {
@@ -237,6 +242,9 @@ impl Shared {
         while let Some(event) = events.recv().await {
             match event {
                 SidecarEvent::Message(msg) => {
+                    if let berth_protocol::SidecarToApp::SessionModels(m) = &msg.body {
+                        self.remember_models(&m.models);
+                    }
                     let result = {
                         let mut core = self.core();
                         let super::Core { store, engine } = &mut *core;
@@ -386,6 +394,58 @@ impl Shared {
         }
         if refresh_slots && let Ok(repo) = self.repo_of_workflow(workflow_id) {
             self.emit_slots(&repo);
+        }
+    }
+
+    /// Save a slot's model and effort; its live session, if any, switches from
+    /// the agent's next request on (mid-round too).
+    pub(super) fn set_slot_agent(
+        &self,
+        slot_id: &str,
+        model: Option<String>,
+        effort: Option<berth_protocol::Effort>,
+    ) -> Result<()> {
+        let model = model.filter(|m| !m.trim().is_empty());
+        let (slot, live, fallback) = {
+            let core = self.core();
+            let slot = core
+                .store
+                .set_slot_agent(slot_id, model.as_deref(), effort)?;
+            let live = core.store.active_workflow(slot_id)?.map(|w| w.id);
+            let fallback = core
+                .store
+                .setting("model")?
+                .filter(|m| !m.trim().is_empty());
+            (slot, live, fallback)
+        };
+        let session = live.and_then(|wf| lock(&self.sessions).get(&wf).cloned());
+        if let Some(session) = session {
+            session.send(AppToSidecar::SessionConfigure(
+                berth_protocol::SessionConfigure {
+                    model: model.or(fallback),
+                    effort,
+                },
+            ))?;
+        }
+        self.emit_slots(&slot.repo_id);
+        Ok(())
+    }
+
+    /// Keep the models the SDK offers (they outlive the session) and show them.
+    fn remember_models(&self, models: &[berth_protocol::ModelChoice]) {
+        if let Ok(json) = serde_json::to_string(models) {
+            let _ = self.core().store.set_setting("models", &json);
+        }
+        self.emit(UiEvent::Models(models.to_vec()));
+    }
+
+    /// The models from the last session, before any session of this run reports them.
+    pub(super) fn emit_models(&self) {
+        let saved = self.core().store.setting("models").ok().flatten();
+        if let Some(models) = saved
+            .and_then(|json| serde_json::from_str::<Vec<berth_protocol::ModelChoice>>(&json).ok())
+        {
+            self.emit(UiEvent::Models(models));
         }
     }
 

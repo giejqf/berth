@@ -535,6 +535,7 @@ fn dispatch(name: &str, cx: &mut App) {
     let action: Box<dyn gpui::Action> = match name {
         "NewWorkflow" => Box::new(keymap::NewWorkflow),
         "NewWorkflowHere" => Box::new(keymap::NewWorkflowHere),
+        "ChooseModel" => Box::new(keymap::ChooseModel),
         "ToggleReview" => Box::new(keymap::ToggleReview),
         "ReviewSection" => Box::new(keymap::ReviewSection),
         "ReviewWorkflow" => Box::new(keymap::ReviewWorkflow),

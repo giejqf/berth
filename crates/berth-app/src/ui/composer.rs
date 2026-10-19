@@ -19,7 +19,7 @@ use super::RepoState;
 use super::kit::{Btn, Size, TypeExt as _, dot, field_frame, icon, kbd, plural, ring, spinner};
 use super::motion;
 use crate::backend::Command;
-use crate::keymap::{FollowUpFromOutcome, NewWorkflow, NewWorkflowHere};
+use crate::keymap::{ChooseModel, FollowUpFromOutcome, NewWorkflow, NewWorkflowHere};
 use crate::theme::{MONO, Tokens, ty};
 
 /// A file waiting to go out with the next prompt.
@@ -216,6 +216,10 @@ impl Render for Composer {
         if wf.state == WorkflowState::Closed {
             return closed_row(&t).into_any_element();
         }
+        // The slot's model and effort; it can change any time, mid-round too.
+        let agent = state.selected().map(|entry| {
+            super::agent_dialog::agent_label(entry, state.model_setting.as_deref(), cx)
+        });
         let pending: Vec<_> = state
             .comments
             .get(&wf.id)
@@ -444,6 +448,16 @@ impl Render for Composer {
                     .pb(px(8.))
                     .child(div().ty(ty::META).text_color(t.text3).child(footer_hint))
                     .child(div().flex_1())
+                    .when_some(agent, |d, label| {
+                        d.child(
+                            Btn::new("agent-settings")
+                                .ghost()
+                                .size(Size::S26)
+                                .label(label)
+                                .tooltip("Model and effort for this slot  ⌘⇧M")
+                                .on_click(|_, w, cx| w.dispatch_action(Box::new(ChooseModel), cx)),
+                        )
+                    })
                     .child(if disabled {
                         // The whole box is already faded; the button is just inert.
                         Btn::new("send").primary().label("Send").hint("⌘↩")

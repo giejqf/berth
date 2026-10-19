@@ -397,6 +397,8 @@ impl Seeder<'_> {
             slot_type: "worktree".into(),
             name: name.to_owned(),
             custom_name: None,
+            model: None,
+            effort: None,
             state: SlotState::Running,
             state_detail: None,
             checkout_path: Some(checkout.to_string_lossy().into_owned()),

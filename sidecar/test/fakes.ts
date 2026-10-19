@@ -1,6 +1,6 @@
 // Test doubles: a scriptable SDK query and a recording emitter.
 
-import type { Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { ModelInfo, Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 
 import type { Emitter } from "../src/ndjson.js";
 import type { SidecarToApp } from "../src/protocol.js";
@@ -29,6 +29,18 @@ export class FakeQuery implements AgentQuery {
   interrupts = 0;
   closed = false;
   options?: Options;
+  /** `setModel` and `applyFlagSettings` calls, in order. */
+  readonly configured: Array<{ model?: string } | { effortLevel?: string | null }> = [];
+  models: ModelInfo[] = [
+    {
+      value: "opus",
+      displayName: "Opus",
+      description: "Most capable",
+      supportsEffort: true,
+      supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+    },
+    { value: "haiku", displayName: "Haiku", description: "Fastest" },
+  ];
 
   constructor(prompt: AsyncIterable<SDKUserMessage>) {
     void (async () => {
@@ -51,6 +63,20 @@ export class FakeQuery implements AgentQuery {
   close(): void {
     this.closed = true;
     this.stream.end();
+  }
+
+  setModel(model?: string): Promise<void> {
+    this.configured.push({ model });
+    return Promise.resolve();
+  }
+
+  applyFlagSettings(settings: { effortLevel?: string | null }): Promise<void> {
+    this.configured.push({ effortLevel: settings.effortLevel });
+    return Promise.resolve();
+  }
+
+  supportedModels(): Promise<ModelInfo[]> {
+    return Promise.resolve(this.models);
   }
 
   [Symbol.asyncIterator](): AsyncIterator<SDKMessage> {

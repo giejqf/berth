@@ -70,6 +70,10 @@ pub fn typescript() -> String {
         // messages
         ConnectorSkill,
         SessionStart,
+        Effort,
+        SessionConfigure,
+        ModelChoice,
+        SessionModels,
         SessionResume,
         SessionTurn,
         TurnAttachment,
@@ -161,6 +165,7 @@ mod tests {
                 description: "Linear CLI".into(),
             }],
             model: None,
+            effort: Some(Effort::Xhigh),
         };
         roundtrip_app(&AppMessage {
             id: "3".into(),
@@ -172,6 +177,40 @@ mod tests {
         let parsed: AppMessage =
             serde_json::from_str(r#"{"id":"4","type":"session.stop"}"#).unwrap();
         assert_eq!(parsed.body, AppToSidecar::SessionStop);
+    }
+
+    #[test]
+    fn model_and_effort_on_the_wire() {
+        // A reset goes out as explicit nulls, so the sidecar knows to clear it.
+        let msg = AppMessage {
+            id: "5".into(),
+            body: AppToSidecar::SessionConfigure(SessionConfigure {
+                model: Some("opus".into()),
+                effort: None,
+            }),
+        };
+        assert_eq!(
+            serde_json::to_value(&msg).unwrap(),
+            serde_json::json!({"id": "5", "type": "session.configure", "model": "opus", "effort": null})
+        );
+        roundtrip_app(&msg);
+        let models: SidecarMessage = serde_json::from_value(serde_json::json!({
+            "id": "c",
+            "type": "session.models",
+            "models": [{"value": "opus", "display_name": "Opus", "efforts": ["low", "xhigh", "max"]}]
+        }))
+        .unwrap();
+        let SidecarToApp::SessionModels(m) = &models.body else {
+            panic!("not session.models");
+        };
+        assert_eq!(
+            m.models[0].efforts,
+            [Effort::Low, Effort::Xhigh, Effort::Max]
+        );
+        assert_eq!(m.models[0].description, "");
+        roundtrip_sidecar(&models);
+        assert_eq!(Effort::parse("xhigh"), Some(Effort::Xhigh));
+        assert_eq!(Effort::parse("turbo"), None);
     }
 
     #[test]

@@ -25,6 +25,7 @@ fn start() -> AppToSidecar {
         allowed_tools: vec![],
         connector_skills: vec![],
         model: None,
+        effort: None,
     })
 }
 

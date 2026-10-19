@@ -26,6 +26,9 @@ export function dispatch(session: Session, msg: AppMessage, emitter: Emitter): v
     case "slot_request.resolved":
       session.resolveSlotRequest(msg.request_id, msg.approved, msg.slot_id);
       break;
+    case "session.configure":
+      void session.configure(msg.model, msg.effort);
+      break;
     default: {
       const unknown = msg as { type: string; id: string };
       emitter.emit({ type: "session.error", message: `unknown message type ${unknown.type}`, fatal: false }, unknown.id);

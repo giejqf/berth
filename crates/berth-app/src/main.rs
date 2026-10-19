@@ -85,6 +85,7 @@ fn main() {
                     MenuItem::action("Slot That Needs You", keymap::JumpToNeeding),
                     MenuItem::action("Collapse Rail", keymap::ToggleRail),
                     MenuItem::separator(),
+                    MenuItem::action("Model and Effort…", keymap::ChooseModel),
                     MenuItem::action("Rename Slot…", keymap::RenameSlot),
                     MenuItem::action("Destroy Slot…", keymap::DestroySlot),
                 ]),

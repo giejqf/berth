@@ -95,6 +95,7 @@ impl Shared {
             gh,
             connectors: self.connector_infos(),
         })));
+        self.emit_models();
         Ok(())
     }
 
@@ -271,6 +272,8 @@ impl Shared {
             slot_type: ty.name.clone(),
             name: slot_name(&origin),
             custom_name: None,
+            model: None,
+            effort: None,
             state: SlotState::Creating,
             state_detail: None,
             checkout_path: None,

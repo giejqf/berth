@@ -99,6 +99,11 @@ pub struct Slot {
     /// workflow's title.
     #[serde(default)]
     pub custom_name: Option<String>,
+    /// The agent's model and effort for this slot; `None` is the default.
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<berth_protocol::Effort>,
     pub state: SlotState,
     pub state_detail: Option<String>,
     pub checkout_path: Option<String>,

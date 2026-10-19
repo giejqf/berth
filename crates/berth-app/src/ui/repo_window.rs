@@ -14,6 +14,7 @@ use gpui::{
 use gpui_component::notification::Notification;
 use gpui_component::{TitleBar, WindowExt as _};
 
+use super::agent_dialog::AgentDialog;
 use super::composer::Composer;
 use super::empty_state::empty_repo;
 use super::flow_view::FlowView;
@@ -31,11 +32,11 @@ use super::terminal::{self, TerminalEvent, TerminalView};
 use super::{RepoState, details};
 use crate::backend::{Command, ToastLevel};
 use crate::keymap::{
-    AttachFiles, AttachPaths, CloseWindow, CommandPalette, DestroySlot, FocusAnswer, FocusComposer,
-    FollowUpFromOutcome, Interrupt, JumpToNeeding, NewWorkflow, NewWorkflowHere, NewWorkflowTab,
-    NextChange, NextSlot, OpenSettings, PrevChange, PrevSlot, RefreshReview, RenameSlot,
-    ReviewBranch, ReviewSection, ReviewWorkflow, SelectSlot, ShowFile, ShowFiles, ToggleDiffMode,
-    ToggleRail, ToggleReview,
+    AttachFiles, AttachPaths, ChooseModel, CloseWindow, CommandPalette, DestroySlot, FocusAnswer,
+    FocusComposer, FollowUpFromOutcome, Interrupt, JumpToNeeding, NewWorkflow, NewWorkflowHere,
+    NewWorkflowTab, NextChange, NextSlot, OpenSettings, PrevChange, PrevSlot, RefreshReview,
+    RenameSlot, ReviewBranch, ReviewSection, ReviewWorkflow, SelectSlot, ShowFile, ShowFiles,
+    ToggleDiffMode, ToggleRail, ToggleReview,
 };
 use crate::keymap::{
     CloseTerminal, HideTerminal, KillTerminal, NewTerminal, NextTerminal, PrevTerminal,
@@ -504,6 +505,20 @@ impl RepoWindow {
         form.update(cx, |f, cx| f.focus_title(window, cx));
     }
 
+    /// The selected slot's model and effort.
+    fn choose_model(&mut self, _: &ChooseModel, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let state = self.state.read(cx);
+        let Some(entry) = state.selected().cloned() else {
+            return;
+        };
+        let (default_model, backend) = (
+            state.model_setting.clone().filter(|m| !m.trim().is_empty()),
+            state.backend.clone(),
+        );
+        let dialog = cx.new(|cx| AgentDialog::new(&entry, default_model, backend, cx));
+        self.open_modal(dialog, window, cx);
+    }
+
     /// New workflow, reusing the selected slot as it is (§6.3).
     fn new_workflow_here(
         &mut self,
@@ -781,6 +796,7 @@ impl Render for RepoWindow {
             .key_context("RepoWindow")
             .on_action(cx.listener(Self::new_workflow))
             .on_action(cx.listener(Self::new_workflow_here))
+            .on_action(cx.listener(Self::choose_model))
             .on_action(cx.listener(Self::settings))
             .on_action(cx.listener(Self::palette))
             .on_action(cx.listener(|this, a: &crate::keymap::ExpandLane, _, cx| {

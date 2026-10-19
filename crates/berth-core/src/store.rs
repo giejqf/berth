@@ -18,6 +18,7 @@ use crate::model::{
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_init.sql"),
     include_str!("../migrations/0002_slot_custom_name.sql"),
+    include_str!("../migrations/0003_slot_agent.sql"),
 ];
 
 pub struct Store {
@@ -42,7 +43,7 @@ fn u32_col(v: i64) -> u32 {
     u32::try_from(v).unwrap_or(0)
 }
 
-const SLOT_COLS: &str = "id, repo_id, type, name, state, state_detail, checkout_path, placement, branch, base_ref, created_at, custom_name";
+const SLOT_COLS: &str = "id, repo_id, type, name, state, state_detail, checkout_path, placement, branch, base_ref, created_at, custom_name, model, effort";
 const WORKFLOW_COLS: &str = "id, slot_id, origin_json, state, claude_session_id, section_no, total_cost_usd, \
                              last_error, created_at, closed_at";
 const ROUND_COLS: &str = "id, workflow_id, section_no, started_at, ended_at, terminal_kind, nudges, cost_usd, duration_ms";
@@ -55,6 +56,7 @@ const COMMENT_COLS: &str = "id, workflow_id, from_snapshot, to_snapshot, preset,
 
 fn slot_row(r: &Row<'_>) -> rusqlite::Result<(Slot, String)> {
     let state: String = r.get(4)?;
+    let effort: Option<String> = r.get(13)?;
     Ok((
         Slot {
             id: r.get(0)?,
@@ -69,6 +71,9 @@ fn slot_row(r: &Row<'_>) -> rusqlite::Result<(Slot, String)> {
             base_ref: r.get(9)?,
             created_at: r.get(10)?,
             custom_name: r.get(11)?,
+            model: r.get(12)?,
+            // An effort this version doesn't know falls back to the default.
+            effort: effort.as_deref().and_then(berth_protocol::Effort::parse),
         },
         state,
     ))
@@ -492,7 +497,7 @@ impl Store {
 
     pub fn insert_slot(&self, s: &Slot) -> Result<()> {
         self.conn.execute(
-            &format!("INSERT INTO slots ({SLOT_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"),
+            &format!("INSERT INTO slots ({SLOT_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"),
             params![
                 s.id,
                 s.repo_id,
@@ -505,7 +510,9 @@ impl Store {
                 s.branch,
                 s.base_ref,
                 s.created_at,
-                s.custom_name
+                s.custom_name,
+                s.model,
+                s.effort.map(berth_protocol::Effort::as_str)
             ],
         )?;
         Ok(())
@@ -553,6 +560,23 @@ impl Store {
         let n = self.conn.execute(
             "UPDATE slots SET custom_name = ?2 WHERE id = ?1",
             params![id, name],
+        )?;
+        if n == 0 {
+            return Err(not_found("slot", id));
+        }
+        self.slot(id)
+    }
+
+    /// The slot's agent model and effort (`None`: the default).
+    pub fn set_slot_agent(
+        &self,
+        id: &str,
+        model: Option<&str>,
+        effort: Option<berth_protocol::Effort>,
+    ) -> Result<Slot> {
+        let n = self.conn.execute(
+            "UPDATE slots SET model = ?2, effort = ?3 WHERE id = ?1",
+            params![id, model, effort.map(berth_protocol::Effort::as_str)],
         )?;
         if n == 0 {
             return Err(not_found("slot", id));

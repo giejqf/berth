@@ -367,3 +367,35 @@ describe("attachments and artifacts", () => {
     expect(r).toEqual({ ok: false, error: SUBAGENT_TOOL_ERROR });
   });
 });
+
+describe("model and effort", () => {
+  it("starts on the slot's model and effort and reports the models on offer", async () => {
+    const emitter = new RecordingEmitter();
+    const q = fakeQueryFn();
+    const session = new Session({ emitter, log: silentLogger, query: q.fn, now: () => 0 });
+    session.start({ ...START, model: "opus", effort: "xhigh" }, "start-1");
+    await flush();
+    expect(q.last().options).toMatchObject({ model: "opus", effort: "xhigh" });
+    expect(emitter.ofType("session.models")[0]?.models).toEqual([
+      {
+        value: "opus",
+        display_name: "Opus",
+        description: "Most capable",
+        efforts: ["low", "medium", "high", "xhigh", "max"],
+      },
+      { value: "haiku", display_name: "Haiku", description: "Fastest", efforts: [] },
+    ]);
+  });
+
+  it("switches mid-session, and back to the defaults on null", async () => {
+    const { session, q } = setup();
+    await session.configure("haiku", "low");
+    await session.configure(null, null);
+    expect(q.configured).toEqual([
+      { model: "haiku" },
+      { effortLevel: "low" },
+      { model: undefined },
+      { effortLevel: null },
+    ]);
+  });
+});

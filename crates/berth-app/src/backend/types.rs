@@ -7,7 +7,9 @@ use berth_core::activity::RoundActivity;
 use berth_core::transcript::TranscriptEntry;
 use berth_core::{Repo, ReviewCommentRow, Slot, Workflow, WorkflowFacts, WorkflowView};
 use berth_git::DiffStats;
-use berth_protocol::{DiffPreset, DiffSide, FollowUp, Origin, OriginKind, SlotRequest};
+use berth_protocol::{
+    DiffPreset, DiffSide, Effort, FollowUp, ModelChoice, Origin, OriginKind, SlotRequest,
+};
 
 /// UI -> backend.
 #[derive(Debug, Clone)]
@@ -46,6 +48,13 @@ pub enum Command {
     },
     DestroySlot {
         slot_id: String,
+    },
+    /// The slot's agent model and effort (`None`: the default). A live
+    /// session switches from its next request on.
+    SetSlotAgent {
+        slot_id: String,
+        model: Option<String>,
+        effort: Option<Effort>,
     },
     /// `None` (or blank) goes back to the workflow's title.
     RenameSlot {
@@ -404,6 +413,8 @@ pub enum UiEvent {
         model: String,
         theme: String,
     },
+    /// The models the agent can run on, as the SDK last reported them.
+    Models(Vec<ModelChoice>),
     Toast {
         repo_id: Option<String>,
         level: ToastLevel,

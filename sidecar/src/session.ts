@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   query as sdkQuery,
+  type ModelInfo,
   type Options,
   type SDKMessage,
   type SDKUserMessage,
@@ -21,6 +22,7 @@ import type { Logger } from "./log.js";
 import type { Emitter } from "./ndjson.js";
 import type {
   AskUserInput,
+  Effort,
   FollowUp,
   FollowUpInput,
   JsonValue,
@@ -66,7 +68,12 @@ const ATTRIBUTION_WAIT_MS = 3000;
 export interface AgentQuery extends AsyncIterable<SDKMessage> {
   interrupt(): Promise<unknown>;
   close(): void;
+  setModel(model?: string): Promise<void>;
+  applyFlagSettings(settings: { effortLevel?: Effort | null }): Promise<void>;
+  supportedModels(): Promise<ModelInfo[]>;
 }
+
+const EFFORTS: readonly Effort[] = ["low", "medium", "high", "xhigh", "max"];
 
 export type QueryFn = (params: { prompt: AsyncIterable<SDKUserMessage>; options: Options }) => AgentQuery;
 
@@ -162,6 +169,37 @@ export class Session implements ToolHost {
     if (resume) this.claudeSessionId = resume;
     this.q = this.queryFn({ prompt: this.input, options: this.options(msg, resume) });
     this.consuming = this.consume(this.q);
+    void this.reportModels(this.q);
+  }
+
+  /** Change the model and effort from the agent's next request on, mid-round
+   * included; `null` goes back to the default. */
+  async configure(model: string | null, effort: Effort | null): Promise<void> {
+    if (!this.q) {
+      this.error("session.configure before session.start", false);
+      return;
+    }
+    try {
+      await this.q.setModel(model ?? undefined);
+      await this.q.applyFlagSettings({ effortLevel: effort });
+    } catch (e) {
+      this.error(`Could not switch the model: ${e instanceof Error ? e.message : String(e)}`, false);
+    }
+  }
+
+  /** Tell the app which models (and efforts) it can offer. */
+  private async reportModels(q: AgentQuery): Promise<void> {
+    try {
+      const models = (await q.supportedModels()).map((m) => ({
+        value: m.value,
+        display_name: m.displayName,
+        description: m.description,
+        efforts: (m.supportedEffortLevels ?? []).filter((e): e is Effort => EFFORTS.includes(e as Effort)),
+      }));
+      if (models.length > 0) this.emitter.emit({ type: "session.models", models });
+    } catch (e) {
+      this.log.warn({ err: e }, "supportedModels failed");
+    }
   }
 
   turn(text: string, attachments: TurnAttachment[] = []): void {
@@ -240,6 +278,7 @@ export class Session implements ToolHost {
       env: { ...process.env, ...msg.env, CLAUDE_AGENT_SDK_CLIENT_APP: "berth/0.1.0" },
       ...(resume ? { resume } : {}),
       ...(msg.model ? { model: msg.model } : {}),
+      ...(msg.effort ? { effort: msg.effort } : {}),
       ...(claudePath() ? { pathToClaudeCodeExecutable: claudePath() } : {}),
       stderr: (data: string) => this.log.debug({ claude: data.trimEnd() }, "claude stderr"),
     };

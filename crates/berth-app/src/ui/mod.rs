@@ -1,5 +1,6 @@
 //! GPUI side: one window per repo, fed by backend events.
 
+mod agent_dialog;
 mod answer_card;
 mod composer;
 mod details;
@@ -58,6 +59,8 @@ pub struct Berth {
     pub backend: BackendHandle,
     repos: HashMap<String, (WeakEntity<RepoState>, WindowHandle<Root>)>,
     welcome: Option<WindowHandle<Root>>,
+    /// The models the agent can run on, as the SDK last reported them.
+    pub models: Vec<berth_protocol::ModelChoice>,
 }
 
 impl Global for Berth {}
@@ -74,6 +77,7 @@ pub fn init(backend: BackendHandle, events: UnboundedReceiver<UiEvent>, cx: &mut
         backend,
         repos: HashMap::new(),
         welcome: None,
+        models: Vec::new(),
     });
     cx.spawn(async move |cx| {
         let mut events = events;
@@ -159,6 +163,10 @@ fn route(event: UiEvent, cx: &mut App) {
     match event {
         UiEvent::Environment(env) => {
             cx.set_global(EnvGlobal(env));
+            cx.refresh_windows();
+        }
+        UiEvent::Models(models) => {
+            cx.global_mut::<Berth>().models = models;
             cx.refresh_windows();
         }
         UiEvent::Settings { model, theme } => {

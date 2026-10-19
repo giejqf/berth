@@ -36,6 +36,78 @@ pub struct SessionStart {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub effort: Option<Effort>,
+}
+
+/// How much the agent thinks before it acts: the SDK's `effort`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "lowercase")]
+pub enum Effort {
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
+impl Effort {
+    pub const ALL: [Self; 5] = [Self::Low, Self::Medium, Self::High, Self::Xhigh, Self::Max];
+
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|e| e.as_str() == s)
+    }
+
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Low => "Low",
+            Self::Medium => "Medium",
+            Self::High => "High",
+            Self::Xhigh => "Extra high",
+            Self::Max => "Max",
+        }
+    }
+}
+
+/// Change a live session's model and effort; `None` is Claude Code's default.
+/// Takes effect from the agent's next request, mid-round included.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SessionConfigure {
+    pub model: Option<String>,
+    pub effort: Option<Effort>,
+}
+
+/// A model the agent can run on (the SDK's `supportedModels()`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ModelChoice {
+    /// What to pass as `model` (an alias or an id).
+    pub value: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub description: String,
+    /// The effort levels it takes; empty when it takes none.
+    #[serde(default)]
+    pub efforts: Vec<Effort>,
+}
+
+/// The models on offer, reported once a session has started.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SessionModels {
+    pub models: Vec<ModelChoice>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -95,6 +167,8 @@ pub enum AppToSidecar {
     QuestionAnswer(QuestionAnswer),
     #[serde(rename = "slot_request.resolved")]
     SlotRequestResolved(SlotRequestResolved),
+    #[serde(rename = "session.configure")]
+    SessionConfigure(SessionConfigure),
 }
 
 impl AppToSidecar {
@@ -108,6 +182,7 @@ impl AppToSidecar {
             Self::SessionStop => "session.stop",
             Self::QuestionAnswer(_) => "question.answer",
             Self::SlotRequestResolved(_) => "slot_request.resolved",
+            Self::SessionConfigure(_) => "session.configure",
         }
     }
 }
@@ -312,6 +387,8 @@ pub enum SidecarToApp {
     SessionCost(SessionCost),
     #[serde(rename = "session.error")]
     SessionError(SessionError),
+    #[serde(rename = "session.models")]
+    SessionModels(SessionModels),
 }
 
 impl SidecarToApp {
@@ -331,6 +408,7 @@ impl SidecarToApp {
             Self::RoundEnded(_) => "round.ended",
             Self::SessionCost(_) => "session.cost",
             Self::SessionError(_) => "session.error",
+            Self::SessionModels(_) => "session.models",
         }
     }
 }

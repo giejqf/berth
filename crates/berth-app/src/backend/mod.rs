@@ -146,7 +146,9 @@ impl Shared {
             | Command::FollowUpToSlot { workflow_id, .. } => workflow_id.clone(),
             Command::LoadDiff(r) => r.workflow_id.clone(),
             Command::AddReviewComment(c) => c.workflow_id.clone(),
-            Command::DestroySlot { slot_id } | Command::RenameSlot { slot_id, .. } => {
+            Command::DestroySlot { slot_id }
+            | Command::RenameSlot { slot_id, .. }
+            | Command::SetSlotAgent { slot_id, .. } => {
                 return self.core().store.slot(slot_id).ok().map(|s| s.repo_id);
             }
             Command::OpenLastRepo
@@ -224,6 +226,11 @@ impl Shared {
                     .await
             }
             Command::DestroySlot { slot_id } => self.destroy_slot(&slot_id).await,
+            Command::SetSlotAgent {
+                slot_id,
+                model,
+                effort,
+            } => self.set_slot_agent(&slot_id, model, effort),
             Command::RenameSlot { slot_id, name } => {
                 let name = name.as_deref().map(str::trim).filter(|n| !n.is_empty());
                 let slot = self.core().store.set_slot_custom_name(&slot_id, name)?;

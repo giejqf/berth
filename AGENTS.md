@@ -524,7 +524,7 @@ Core tables (see migrations for exact columns):
 ```
 repos            id, path, default_slot_type, created_at
 slots            id, repo_id, type, name, custom_name, state, state_detail, checkout_path, placement, branch,
-                 base_ref, created_at
+                 base_ref, created_at, model, effort
 workflows        id, slot_id, origin_json, state, claude_session_id, section_no, total_cost_usd, last_error,
                  created_at, closed_at
 rounds           id, workflow_id, section_no, started_at, ended_at, terminal_kind, nudges, cost_usd, duration_ms
@@ -559,13 +559,14 @@ from `berth-protocol`; the list below is the contract, the Rust types are the tr
 
 **App → sidecar**
 ```
-session.start    { workflow_id, cwd, system_prompt, env, allowed_tools, connector_skills, model? }
+session.start    { workflow_id, cwd, system_prompt, env, allowed_tools, connector_skills, model?, effort? }
 session.resume   { workflow_id, claude_session_id, cwd, … }
 session.turn     { text, attachments?: [{ path, mime }] }   # a Prompt or nudge; images become image blocks
 session.interrupt
 session.stop
 question.answer  { question_id, text }
 slot_request.resolved { request_id, approved, slot_id? }
+session.configure { model, effort }   # mid-session switch; null = default (ADR 0007)
 ```
 
 **Sidecar → app**
@@ -581,6 +582,7 @@ slot.request     { request_id, … }
 round.ended      { terminal_kind, cost_usd, duration_ms, nudges, last_text? }
 session.cost     { total_usd }
 session.error    { message, fatal }
+session.models   { models: [{ value, display_name, description, efforts }] }   # supportedModels()
 ```
 
 The sidecar is stateless across restarts: all state lives in SQLite on the app side.
@@ -663,6 +665,13 @@ stdin EOF stops the session; stdout carries protocol lines only (logs go to
   **New workflow here** (⌥⌘N, the rail's context menu, More, ⌘K, the menu bar)
   opens it on the selected slot; a closed workflow's composer offers it too, and
   its follow-ups offer **Continue here** beside **Create slot**.
+- **Model and effort** are per slot (`slots.model`, `slots.effort`; ADR 0007): a chip
+  in the composer shows them ("Opus · High", "Default model"); it, ⌘⇧M, ⌘K and the
+  menu bar open the picker (`ui/agent_dialog.rs`). They change any time: a live session
+  switches from the agent's next request (`session.configure`), mid-round included;
+  otherwise the next session starts with them. `None` is the default: Settings'
+  "Default agent model", the model's own effort. The models on offer are the SDK's
+  (`session.models`, kept in settings), else Claude Code's aliases.
 - Dialogs (New workflow, Settings, ⌘K, confirmations) are drawn by the app
   (`ui/modal.rs`): scrim, 10px radius, one soft shadow, ⌘↩ confirms, esc closes.
 - Theme tokens in `berth-app/src/theme.rs`; light/dark follow the system unless

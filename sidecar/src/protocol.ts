@@ -126,7 +126,23 @@ system_prompt: string, env: { [key in string]: string },
  * Extra tools to allow in addition to the defaults. Permissions are always
  * pre-approved (§1.6); this only widens the tool set.
  */
-allowed_tools: Array<string>, connector_skills: Array<ConnectorSkill>, model?: string, };
+allowed_tools: Array<string>, connector_skills: Array<ConnectorSkill>, model?: string, effort?: Effort, };
+
+export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+
+export type SessionConfigure = { model: string | null, effort: Effort | null, };
+
+export type ModelChoice = { 
+/**
+ * What to pass as `model` (an alias or an id).
+ */
+value: string, display_name: string, description: string, 
+/**
+ * The effort levels it takes; empty when it takes none.
+ */
+efforts: Array<Effort>, };
+
+export type SessionModels = { models: Array<ModelChoice>, };
 
 export type SessionResume = { claude_session_id: string, workflow_id: string, 
 /**
@@ -141,7 +157,7 @@ system_prompt: string, env: { [key in string]: string },
  * Extra tools to allow in addition to the defaults. Permissions are always
  * pre-approved (§1.6); this only widens the tool set.
  */
-allowed_tools: Array<string>, connector_skills: Array<ConnectorSkill>, model?: string, };
+allowed_tools: Array<string>, connector_skills: Array<ConnectorSkill>, model?: string, effort?: Effort, };
 
 export type SessionTurn = { text: string, 
 /**
@@ -160,7 +176,7 @@ export type QuestionAnswer = { question_id: string, text: string, };
 
 export type SlotRequestResolved = { request_id: string, approved: boolean, slot_id?: string, };
 
-export type AppToSidecar = { "type": "session.start" } & SessionStart | { "type": "session.resume" } & SessionResume | { "type": "session.turn" } & SessionTurn | { "type": "session.interrupt" } | { "type": "session.stop" } | { "type": "question.answer" } & QuestionAnswer | { "type": "slot_request.resolved" } & SlotRequestResolved;
+export type AppToSidecar = { "type": "session.start" } & SessionStart | { "type": "session.resume" } & SessionResume | { "type": "session.turn" } & SessionTurn | { "type": "session.interrupt" } | { "type": "session.stop" } | { "type": "question.answer" } & QuestionAnswer | { "type": "slot_request.resolved" } & SlotRequestResolved | { "type": "session.configure" } & SessionConfigure;
 
 export type SessionStarted = { claude_session_id: string, };
 
@@ -219,11 +235,11 @@ export type SessionCost = { total_usd: number, };
 
 export type SessionError = { message: string, fatal: boolean, };
 
-export type SidecarToApp = { "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.artifact" } & NodeArtifact | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError;
+export type SidecarToApp = { "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.artifact" } & NodeArtifact | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels;
 
-export type AppMessage = { id: string, } & ({ "type": "session.start" } & SessionStart | { "type": "session.resume" } & SessionResume | { "type": "session.turn" } & SessionTurn | { "type": "session.interrupt" } | { "type": "session.stop" } | { "type": "question.answer" } & QuestionAnswer | { "type": "slot_request.resolved" } & SlotRequestResolved);
+export type AppMessage = { id: string, } & ({ "type": "session.start" } & SessionStart | { "type": "session.resume" } & SessionResume | { "type": "session.turn" } & SessionTurn | { "type": "session.interrupt" } | { "type": "session.stop" } | { "type": "question.answer" } & QuestionAnswer | { "type": "slot_request.resolved" } & SlotRequestResolved | { "type": "session.configure" } & SessionConfigure);
 
-export type SidecarMessage = { id: string, reply_to?: string, } & ({ "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.artifact" } & NodeArtifact | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError);
+export type SidecarMessage = { id: string, reply_to?: string, } & ({ "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.artifact" } & NodeArtifact | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels);
 
 export const MCP_SERVER_NAME = "berth" as const;
 

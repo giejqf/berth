@@ -18,10 +18,12 @@ use crate::backend::{Command, ToolState, ToolStatus};
 use crate::keymap::Confirm;
 use crate::theme::{Appearance, MONO, Tokens, ty};
 
-const MODELS: [(&str, &str); 3] = [
+const MODELS: [(&str, &str); 5] = [
     ("", "Claude Code default"),
+    ("fable", "Fable"),
     ("opus", "Opus"),
     ("sonnet", "Sonnet"),
+    ("haiku", "Haiku"),
 ];
 
 pub struct SettingsForm {
@@ -270,7 +272,7 @@ impl Render for SettingsForm {
             .child(self.tool_row(&t, "Docker", "docker", &env.docker, true, cx));
 
         let custom = !model.is_empty() && !MODELS.iter().any(|(id, _)| *id == model);
-        let mut models = div().flex().items_center().gap(px(8.));
+        let mut models = div().flex().flex_wrap().items_center().gap(px(8.));
         for (id, label) in MODELS {
             let active = model == id && !(self.custom_open && id.is_empty());
             models = models.child(
@@ -546,7 +548,7 @@ impl Render for SettingsForm {
                             .flex()
                             .flex_col()
                             .gap(px(8.))
-                            .child(caption("Agent model", t.text3))
+                            .child(caption("Default agent model", t.text3))
                             .child(models)
                             .when(self.custom_open || custom, |d| {
                                 d.child(
@@ -557,7 +559,7 @@ impl Render for SettingsForm {
                                         .child(super::kit::bare_input(&self.custom_model)),
                                 )
                             })
-                            .child(div().ty(ty::META).text_color(t.text3).child("Applies to rounds started from now on. Running rounds keep their model.")),
+                            .child(div().ty(ty::META).text_color(t.text3).child("For slots without their own (⌘⇧M sets a slot's model and effort). Takes effect when a session starts.")),
                     )
                     .child(
                         div()

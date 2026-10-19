@@ -587,6 +587,9 @@ impl Engine {
                     fatal: e.fatal,
                 });
             }
+            // The models on offer are the app's, not the workflow's: the
+            // backend keeps them.
+            SidecarToApp::SessionModels(_) => {}
         }
         Ok(fx)
     }
