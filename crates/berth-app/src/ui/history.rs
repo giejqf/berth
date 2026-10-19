@@ -107,7 +107,8 @@ fn meta(entry: &HistoryEntry, repo: &str) -> String {
                 },
                 WorkflowState::AwaitingAnswer => "Waiting on you".to_owned(),
                 WorkflowState::Idle => "Idle".to_owned(),
-                WorkflowState::Running | WorkflowState::Starting => "Working".to_owned(),
+                WorkflowState::Running => "Working".to_owned(),
+                WorkflowState::Starting => "Starting".to_owned(),
             });
             let slot = w
                 .slot

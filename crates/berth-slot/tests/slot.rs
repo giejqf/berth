@@ -638,3 +638,39 @@ async fn worktree_example_end_to_end() {
     assert_eq!(text(&out.stdout), "berth/test");
     script.destroy().await.unwrap();
 }
+
+#[tokio::test]
+async fn worktree_fetches_a_remote_base_it_has_not_seen() {
+    let tmp = tempfile::tempdir().unwrap();
+    let upstream = tmp.path().join("upstream");
+    init_repo(&upstream);
+    let repo = tmp.path().join("repo");
+    host_git(
+        tmp.path(),
+        &["clone", "--quiet", &upstream.to_string_lossy(), "repo"],
+    );
+    // A pull request's branch, pushed after the clone: the repo has never fetched it.
+    host_git(&upstream, &["checkout", "--quiet", "-b", "fix-login"]);
+    fs::write(upstream.join("fix.txt"), "fixed\n").unwrap();
+    host_git(&upstream, &["add", "fix.txt"]);
+    host_git(&upstream, &["commit", "--quiet", "-m", "fix"]);
+    host_git(&upstream, &["checkout", "--quiet", "main"]);
+
+    let ty = load_type(&examples_dir().join("worktree"));
+    let mut env = slot_env(tmp.path(), &repo);
+    env.base_ref = "origin/fix-login".to_owned();
+    env.branch = "fix-login".to_owned();
+    let script = SlotScript::new(ty.clone(), env);
+    let created = script.create().await.unwrap();
+    assert!(Path::new(&created.path).join("fix.txt").is_file());
+    script.destroy().await.unwrap();
+
+    // A base that exists nowhere fails with the script's word for it.
+    let mut env = slot_env(tmp.path(), &repo);
+    env.slot_id = "slot-2".to_owned();
+    env.state_dir = tmp.path().join("state/slot-2");
+    env.base_ref = "origin/no-such-branch".to_owned();
+    env.branch = "nope".to_owned();
+    let err = SlotScript::new(ty, env).create().await.unwrap_err();
+    assert!(err.to_string().contains("could not fetch"), "{err}");
+}

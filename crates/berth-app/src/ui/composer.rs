@@ -4,8 +4,8 @@
 
 use std::path::{Path, PathBuf};
 
-use berth_core::WorkflowState;
 use berth_core::files::{MAX_ATTACHMENT_BYTES, human_size, is_inline_image, mime_for};
+use berth_core::{SlotState, WorkflowState};
 use gpui::{
     AnimationExt as _, AppContext as _, ClipboardEntry, ClipboardItem, Context, DragMoveEvent,
     Entity, ExternalPaths, Focusable as _, ImageFormat, InteractiveElement as _, IntoElement,
@@ -176,8 +176,9 @@ impl Composer {
         if text.is_empty() && self.attachments.is_empty() && !comments {
             return;
         }
-        // Questions are answered in their card in the flow (`AnswerCard`).
-        if !view.workflow.state.accepts_prompt() {
+        // Questions are answered in their card in the flow (`AnswerCard`);
+        // nothing is sent before the slot exists.
+        if !view.workflow.state.accepts_prompt() || slot_creating(state) {
             return;
         }
         state.backend.send(Command::SendPrompt {
@@ -236,7 +237,8 @@ impl Render for Composer {
         }
         let focused = self.input.read(cx).focus_handle(cx).is_focused(window);
         let has_text = !self.input.read(cx).value().trim().is_empty();
-        let can_send = wf.state.accepts_prompt();
+        let creating = slot_creating(state);
+        let can_send = wf.state.accepts_prompt() && !creating;
         let ready = can_send && (has_text || !self.attachments.is_empty() || !pending.is_empty());
         let last_is_summary = view
             .nodes
@@ -245,7 +247,19 @@ impl Render for Composer {
 
         let reviewing = view.pending_review().is_some();
         let status: gpui::AnyElement = match wf.state {
-            WorkflowState::Running | WorkflowState::Starting => div()
+            // Before the first round: the slot is being made, then the agent starts.
+            WorkflowState::Starting => div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(spinner("composer-spin", 10, t.text2))
+                .child(if creating {
+                    "Creating the slot. The agent starts once it is ready."
+                } else {
+                    "Starting the agent…"
+                })
+                .into_any_element(),
+            WorkflowState::Running => div()
                 .flex()
                 .items_center()
                 .gap(px(8.))
@@ -305,6 +319,9 @@ impl Render for Composer {
                 .into_any_element(),
         };
         let footer_hint: gpui::AnyElement = match wf.state {
+            WorkflowState::Starting if creating => div()
+                .child("Unlocks when the slot is ready")
+                .into_any_element(),
             WorkflowState::Running | WorkflowState::Starting => div()
                 .child("Unlocks when the agent asks or summarizes")
                 .into_any_element(),
@@ -568,4 +585,11 @@ fn closed_row(t: &Tokens) -> impl IntoElement {
                 .medium()
                 .on_click(|_, w, cx| w.dispatch_action(Box::new(NewWorkflow), cx)),
         )
+}
+
+/// The selected slot is still being created (`slot.sh create`, then `status`).
+fn slot_creating(state: &super::RepoState) -> bool {
+    state
+        .selected()
+        .is_some_and(|e| e.slot.state == SlotState::Creating)
 }

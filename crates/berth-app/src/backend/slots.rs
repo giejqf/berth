@@ -20,6 +20,11 @@ use super::{
 
 /// Slot types shipped with Berth, installed on first run if none exist.
 const BUNDLED_SLOT_TYPES: &[&str] = &["worktree"];
+/// How long a new slot may report "not ready" through `slot.sh status`, how
+/// often it is asked, and how long one answer may take.
+const READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+const STATUS_POLL: std::time::Duration = std::time::Duration::from_secs(2);
+const STATUS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl Shared {
     pub(super) async fn open_repo(self: &Arc<Self>, path: &Path) -> Result<()> {
@@ -257,10 +262,11 @@ impl Shared {
         };
         let origin = self.enrich_origin(&repo_path, req.origin.clone()).await;
         let slot_id = new_id();
+        // The app reads the repo to choose the branch and its base; making
+        // the checkout, fetching that base included, is the slot script's job.
         let git = LocalGit::new(&repo_path);
         let (branch, base_ref) = if origin.kind == OriginKind::GhPr {
             let pr = Gh::new(&repo_path).pr(&origin.r#ref).await?;
-            berth_git::git_ok(&git, &["fetch", "origin", &pr.head_ref_name], &[]).await?;
             (
                 pr.head_ref_name.clone(),
                 format!("origin/{}", pr.head_ref_name),
@@ -365,17 +371,23 @@ impl Shared {
         }
         let script = self.slot_script(&slot)?;
         std::fs::create_dir_all(paths::slot_state_dir(&slot.id))?;
-        match script.create().await {
+        let created = match script.create().await {
             Ok(out) => {
+                self.core().store.set_slot_checkout(&slot.id, &out.path)?;
+                self.wait_until_ready(&slot.id, &script).await
+            }
+            Err(e) => Err(anyhow!("slot creation failed: {e}")),
+        };
+        match created {
+            Ok(()) => {
                 let core = self.core();
-                core.store.set_slot_checkout(&slot.id, &out.path)?;
                 core.store
                     .transition_slot(&slot.id, SlotState::Ready, None)?;
                 core.store
                     .transition_slot(&slot.id, SlotState::Running, None)?;
             }
             Err(e) => {
-                let message = format!("slot creation failed: {e}");
+                let message = e.to_string();
                 {
                     let core = self.core();
                     core.store
@@ -388,6 +400,43 @@ impl Shared {
             }
         }
         self.start_workflow(wf).await
+    }
+
+    /// After `create`: while the script's optional `slot.sh status` says the
+    /// environment is not ready (a VM booting, a container provisioning), the
+    /// slot stays Creating with the status's detail on show (§6.2). A script
+    /// without `status` is ready once `create` returns.
+    async fn wait_until_ready(&self, slot_id: &str, script: &SlotScript) -> Result<()> {
+        let script = script.clone().with_timeout(STATUS_TIMEOUT);
+        let deadline = std::time::Instant::now() + READY_TIMEOUT;
+        let mut shown = String::new();
+        loop {
+            let detail = match script.status().await {
+                Ok(None) => return Ok(()),
+                Ok(Some(s)) if s.ready => return Ok(()),
+                Ok(Some(s)) => s.detail,
+                // A status that hangs or fails to run says nothing yet; ask again.
+                Err(e) => format!("status: {e}"),
+            };
+            if std::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "slot not ready after {} minutes: {detail}",
+                    READY_TIMEOUT.as_secs() / 60
+                ));
+            }
+            if detail != shown {
+                let repo_id = {
+                    let core = self.core();
+                    let detail = Some(detail.as_str()).filter(|d| !d.trim().is_empty());
+                    core.store
+                        .transition_slot(slot_id, SlotState::Creating, detail)?
+                        .repo_id
+                };
+                self.emit_slots(&repo_id);
+                shown = detail;
+            }
+            tokio::time::sleep(STATUS_POLL).await;
+        }
     }
 
     /// Snapshot the checkout, start the session, and send the origin turn.

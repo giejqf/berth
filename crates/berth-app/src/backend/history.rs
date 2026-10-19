@@ -242,20 +242,14 @@ impl Shared {
     }
 
     /// Record the branch the slot's checkout is on now; earlier work, or a
-    /// person in its terminal, may have moved it.
+    /// person in its terminal, may have moved it. Asked through the slot
+    /// (`slot.sh exec -- git`, §6.2), as every git question about a checkout is.
     pub(super) async fn refresh_branch(&self, slot: &Slot) -> Result<Slot> {
-        if let Ok(out) = self
-            .run_beside_agent(
-                slot,
-                "git",
-                &["branch".into(), "--show-current".into()],
-                None,
-            )
-            .await
-        {
-            let branch = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-            if out.success() && !branch.is_empty() && branch != slot.branch {
-                self.core().store.set_slot_branch(&slot.id, &branch)?;
+        let script = self.slot_script(slot)?;
+        if let Ok(out) = berth_git::git_ok(&script, &["branch", "--show-current"], &[]).await {
+            let branch = out.trim();
+            if !branch.is_empty() && branch != slot.branch {
+                self.core().store.set_slot_branch(&slot.id, branch)?;
             }
         }
         Ok(self.core().store.slot(&slot.id)?)

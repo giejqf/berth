@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use berth_core::activity::RoundActivity;
 use berth_core::flow::{FlowItem, Lane, SubagentGroup};
-use berth_core::{BranchState, Node, WorkflowState, WorkflowView};
+use berth_core::{BranchState, Node, SlotState, WorkflowState, WorkflowView};
 use berth_protocol::{
     Artifact, Decision, FollowUp, NodePayload, Origin, OriginKind, Outcome, OutcomeKind, Prompt,
     Question, Reopened, Review, Rewind, Summary,
@@ -40,6 +40,8 @@ pub enum Row {
     Item(FlowItem),
     /// The open round: what the agent is doing right now.
     Live,
+    /// Before the first round: the slot being created, then the agent starting.
+    Setup,
     /// The workflow's last error.
     Error(String),
 }
@@ -167,6 +169,7 @@ pub fn render_row(ix: usize, ctx: &RowCtx, window: &mut Window, cx: &mut App) ->
         Row::Item(FlowItem::Subagents(g)) => group_row(&t, g, ctx, !last, window, cx),
         Row::Item(FlowItem::SectionEnd { section_no }) => section_end(&t, *section_no, ctx, !last),
         Row::Live => live_row(&t, ctx, window, cx),
+        Row::Setup => setup_row(&t, ctx),
         Row::Error(e) => error_row(&t, e),
     };
     // What just arrived rises into place.
@@ -210,7 +213,7 @@ fn arrived_at(ix: usize, ctx: &RowCtx) -> Option<i64> {
             .as_ref()
             .map(|a| a.started_at)
             .filter(|&at| at > 0),
-        Row::Error(_) => None,
+        Row::Setup | Row::Error(_) => None,
     }
 }
 
@@ -531,6 +534,60 @@ fn prompt(t: &Tokens, node: &Node, p: &Prompt, ctx: &RowCtx, line: bool) -> Div 
         glyph(t.accent, icon("user-medium", 14., t.on_accent)),
         line,
         div().pb(px(16.)).child(card),
+    )
+}
+
+/// Before the first round: the slot's script is making it (`create`, then
+/// `status` until ready, showing what it says), then the agent starts.
+fn setup_row(t: &Tokens, ctx: &RowCtx) -> Div {
+    let wf = &ctx.view.workflow;
+    let slot = ctx.slots.iter().find(|e| e.slot.id == wf.slot_id);
+    let creating = slot.is_some_and(|e| e.slot.state == SlotState::Creating);
+    let (title, detail, since) = match slot {
+        Some(e) if creating => (
+            format!("Creating the {} slot", e.slot.slot_type),
+            e.slot
+                .state_detail
+                .clone()
+                .unwrap_or_else(|| "Its slot.sh is making the environment.".to_owned()),
+            e.slot.created_at,
+        ),
+        _ => (
+            "Starting the agent".to_owned(),
+            "Claude Code is starting in the slot's checkout.".to_owned(),
+            wf.created_at,
+        ),
+    };
+    row(
+        t,
+        glyph(t.card, spinner("setup-spin", 14, t.text2)),
+        false,
+        div().pb(px(16.)).child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .bg(t.card)
+                .border_1()
+                .border_color(t.border)
+                .rounded(px(6.))
+                .px(px(14.))
+                .py(px(10.))
+                .child(
+                    div()
+                        .flex()
+                        .items_baseline()
+                        .gap(px(8.))
+                        .child(div().semibold().child(title))
+                        .child(
+                            div()
+                                .ty(ty::META)
+                                .text_color(t.text3)
+                                .child(dur(super::kit::now_ms() - since)),
+                        ),
+                )
+                .child(div().ty(ty::META).text_color(t.text2).child(detail)),
+        ),
     )
 }
 

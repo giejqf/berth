@@ -53,6 +53,19 @@ vm_status() {
     limactl list --format '{{.Status}}' "$instance" 2>/dev/null || echo missing
 }
 
+# BERTH_BASE_REF may name a remote branch the repo has not fetched yet (a pull
+# request's head, say origin/fix-login): fetch it before using it.
+ensure_base_ref() {
+    git -C "$BERTH_REPO" rev-parse --verify --quiet "$BERTH_BASE_REF^{commit}" >/dev/null && return
+    local remote=${BERTH_BASE_REF%%/*} branch=${BERTH_BASE_REF#*/}
+    if [ "$remote" != "$BERTH_BASE_REF" ] && git -C "$BERTH_REPO" remote get-url "$remote" >/dev/null 2>&1; then
+        git -C "$BERTH_REPO" fetch --quiet "$remote" "$branch" >&2 ||
+            die "could not fetch '$branch' from $remote"
+    fi
+    git -C "$BERTH_REPO" rev-parse --verify --quiet "$BERTH_BASE_REF^{commit}" >/dev/null ||
+        die "base ref '$BERTH_BASE_REF' not found in $BERTH_REPO"
+}
+
 is_checkout() {
     [ -e "$checkout/.git" ] && git -C "$checkout" rev-parse --is-inside-work-tree >/dev/null 2>&1
 }
@@ -66,6 +79,7 @@ make_worktree() {
     if git -C "$BERTH_REPO" show-ref --verify --quiet "refs/heads/$BERTH_BRANCH"; then
         git -C "$BERTH_REPO" worktree add --quiet "$checkout" "$BERTH_BRANCH" >&2
     else
+        ensure_base_ref
         git -C "$BERTH_REPO" worktree add --quiet --no-track \
             -b "$BERTH_BRANCH" "$checkout" "$BERTH_BASE_REF" >&2
     fi

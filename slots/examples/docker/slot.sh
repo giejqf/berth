@@ -52,6 +52,19 @@ container_state() {
     docker container inspect -f '{{.State.Running}}' "$container" 2>/dev/null || echo missing
 }
 
+# BERTH_BASE_REF may name a remote branch the repo has not fetched yet (a pull
+# request's head, say origin/fix-login): fetch it before using it.
+ensure_base_ref() {
+    git -C "$BERTH_REPO" rev-parse --verify --quiet "$BERTH_BASE_REF^{commit}" >/dev/null && return
+    local remote=${BERTH_BASE_REF%%/*} branch=${BERTH_BASE_REF#*/}
+    if [ "$remote" != "$BERTH_BASE_REF" ] && git -C "$BERTH_REPO" remote get-url "$remote" >/dev/null 2>&1; then
+        git -C "$BERTH_REPO" fetch --quiet "$remote" "$branch" >&2 ||
+            die "could not fetch '$branch' from $remote"
+    fi
+    git -C "$BERTH_REPO" rev-parse --verify --quiet "$BERTH_BASE_REF^{commit}" >/dev/null ||
+        die "base ref '$BERTH_BASE_REF' not found in $BERTH_REPO"
+}
+
 make_checkout() {
     if [ -d "$checkout/.git" ]; then
         return # a previous create got this far
@@ -59,6 +72,7 @@ make_checkout() {
     rm -rf "$checkout"
 
     local base_sha start origin_url key value
+    ensure_base_ref
     base_sha=$(git -C "$BERTH_REPO" rev-parse --verify --quiet "$BERTH_BASE_REF^{commit}") ||
         die "base ref '$BERTH_BASE_REF' not found in $BERTH_REPO"
     if git -C "$BERTH_REPO" show-ref --verify --quiet "refs/heads/$BERTH_BRANCH"; then

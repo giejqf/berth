@@ -199,11 +199,10 @@ impl FlowView {
             .into_iter()
             .map(|r| Row::Item(r.item))
             .collect();
-        if matches!(
-            v.workflow.state,
-            WorkflowState::Running | WorkflowState::Starting
-        ) {
+        if v.workflow.state == WorkflowState::Running {
             rows.push(Row::Live);
+        } else if v.workflow.state == WorkflowState::Starting && v.workflow.last_error.is_none() {
+            rows.push(Row::Setup);
         } else if let Some(e) = &v.workflow.last_error {
             rows.push(Row::Error(e.clone()));
         }
@@ -329,7 +328,26 @@ impl FlowView {
         let failed =
             entry.is_some_and(|e| e.slot.state == SlotState::Failed) || wf.last_error.is_some();
         let state_chip = match wf.state {
-            WorkflowState::Running | WorkflowState::Starting => chip(t, Tone::Accent, "Working")
+            // The slot, the agent's start, or a round failed.
+            WorkflowState::Starting | WorkflowState::Idle if failed => {
+                chip(t, Tone::Danger, "Failed")
+            }
+            // Before the first round: no agent is working yet.
+            WorkflowState::Starting => {
+                let creating = entry.is_some_and(|e| e.slot.state == SlotState::Creating);
+                chip(
+                    t,
+                    Tone::Neutral,
+                    if creating {
+                        "Creating slot"
+                    } else {
+                        "Starting"
+                    },
+                )
+                .child(spinner("header-spin", 10, t.text2))
+                .flex_row_reverse()
+            }
+            WorkflowState::Running => chip(t, Tone::Accent, "Working")
                 .child(spinner("header-spin", 10, t.accent))
                 .flex_row_reverse(),
             WorkflowState::AwaitingAnswer if view.pending_review().is_some() => {
@@ -356,7 +374,6 @@ impl FlowView {
                     .child(icon("check-bold", 12., t.on_done))
                     .flex_row_reverse()
             }
-            WorkflowState::Idle if failed => chip(t, Tone::Danger, "Failed"),
             WorkflowState::Idle if interrupted => chip(t, Tone::Neutral, "Interrupted"),
             WorkflowState::Idle
                 if !view
@@ -370,7 +387,8 @@ impl FlowView {
                 .child(icon("flag-bold", 12., t.accent))
                 .flex_row_reverse(),
         };
-        let running = matches!(wf.state, WorkflowState::Running | WorkflowState::Starting);
+        // Only a round in flight can be interrupted.
+        let running = wf.state == WorkflowState::Running;
         let review_open = state.review_open;
         let sections = wf.section_no.saturating_sub(1).max(1);
         let rounds = view.rounds.len();

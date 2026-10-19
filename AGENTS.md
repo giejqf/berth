@@ -365,6 +365,8 @@ The app always runs the script with cwd = the slot type's directory; `create`,
 ```
 slot.sh create
     Must create a git checkout at BERTH_BRANCH off BERTH_BASE_REF.
+    BERTH_BASE_REF may name a remote branch BERTH_REPO has not fetched yet
+    (`origin/<branch>`, a pull request's head): fetch it first.
     stdout: JSON {"path": "<checkout path as seen by the agent>"}
     Non-zero exit = slot creation failed; app shows stderr.
 
@@ -380,11 +382,18 @@ slot.sh destroy
 
 slot.sh status        (optional)
     stdout: JSON {"ready": bool, "detail": string}
+    After create, the app asks every 2 s while it says ready: false, showing
+    detail ("Booting the VM"), for up to 10 minutes; then the slot fails. Each
+    answer may take 30 s. Without status (non-zero exit, no JSON) a slot is ready
+    once create returns.
 ```
 
-The app never assumes anything about the environment beyond this contract. All git
-operations the app needs (snapshots, diffs, branch listing) go through
-`slot.sh exec -- git …`, so they work identically for both placements.
+The app never assumes anything about the environment beyond this contract, and
+making the environment is the script's job alone. The app chooses `BERTH_BRANCH`
+and `BERTH_BASE_REF` by reading the repo (`origin/HEAD`, or the pull request's head
+from `gh`); it never fetches into it or touches it otherwise. All git operations the
+app needs on a checkout (snapshots, diffs, its current branch) go through
+`slot.sh exec -- git …`, so they work identically for both placements (ADR 0012).
 
 Reference implementations in `slots/examples/`: `worktree` (git worktree, host),
 `docker` (container, inside), `vm` (Lima VM + docker gates, host).
@@ -393,6 +402,8 @@ Reference implementations in `slots/examples/`: `worktree` (git worktree, host),
 
 `Creating → Ready → Running(workflow_id) → Ready → Destroying → Destroyed`, plus
 `Failed` (create or destroy failed; detail shown; the only way out is Destroying).
+Creating lasts through `create` and, for scripts with `status`, until it says
+ready; the rail shows its detail ("Creating slot… · Booting the VM").
 A closed workflow releases its slot (`Running → Ready`). Destroying a slot with an
 open workflow closes that workflow.
 
@@ -651,11 +662,14 @@ stdin EOF stops the session; stdout carries protocol lines only (logs go to
   slot** (R with the rail focused, a double-click, the row's context menu, the flow's
   More menu, ⌘K) stores `slots.custom_name`; an empty name goes back to the title.
   `slots.name` stays as it was (the agent's context uses it).
-- The flow header carries the title, one state chip (Working, Needs answer, Needs
-  decisions, Ready to review, Done · …, Failed, Interrupted), Interrupt while running,
-  the review toggle and a More menu; the meta line shows origin, branch, slot type,
-  section and round. A running round renders a **live card** (the agent's latest line,
-  its tool steps with durations, subagent and tool-call counts). After a Summary a
+- The flow header carries the title, one state chip (Creating slot, Starting, Working,
+  Needs answer, Needs decisions, Ready to review, Done · …, Failed, Interrupted),
+  Interrupt while a round runs, the review toggle and a More menu; the meta line shows
+  origin, branch, slot type, section and round. Before the first round a **setup
+  card** says the slot is being created (with what its `status` reports) and then
+  that the agent is starting; nothing is sent until the slot is ready. A running
+  round renders a **live card** (the agent's latest line, its tool steps with
+  durations, subagent and tool-call counts). After a Summary a
   marker says where the section ends. Summary and outcome cards show diff stats (the
   flow fetches the diff they describe).
 - Views are GPUI `Render` entities; app state is held in `RepoState` entities in

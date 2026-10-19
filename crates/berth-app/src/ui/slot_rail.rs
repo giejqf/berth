@@ -107,7 +107,11 @@ pub fn rail_lines(entry: &SlotEntry, state: &RepoState) -> (String, String) {
     let title = slot_title(entry);
     let f = &entry.facts;
     let sub = match (entry.slot.state, entry.workflow.as_ref()) {
-        (SlotState::Creating, _) => "Creating slot…".to_owned(),
+        // `slot.sh status` may say what the environment is still doing.
+        (SlotState::Creating, _) => match entry.slot.state_detail.as_deref() {
+            Some(d) => format!("Creating slot… · {}", d.lines().next().unwrap_or(d)),
+            None => "Creating slot…".to_owned(),
+        },
         (SlotState::Destroying, _) => "Destroying slot…".to_owned(),
         (SlotState::Failed, _) => format!(
             "Slot failed{}",
