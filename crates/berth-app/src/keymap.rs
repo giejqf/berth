@@ -31,6 +31,7 @@ actions!(
         RailNext,
         RailPrev,
         RailOpen,
+        RenameSlot,
         DestroySlot,
         // event flow
         NextNode,
@@ -60,6 +61,13 @@ actions!(
         ReviewSection,
         ReviewWorkflow,
         ReviewBranch,
+        // review pane: files
+        ShowFiles,
+        NextFile,
+        PrevFile,
+        ToggleZoom,
+        QuickLookFile,
+        CopyShownFile,
         // dialogs
         Confirm,
         // terminal
@@ -106,6 +114,23 @@ pub struct ScrollFlowTo(pub usize);
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = berth, no_json)]
 pub struct ExpandLane(pub usize);
+
+/// Show this file (an artifact or attachment, by `FileRef.id`) in the review
+/// pane's Files tab (a click on it in the flow; no binding).
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = berth, no_json)]
+pub struct ShowFile(pub String);
+
+/// Copy this file (the app's copy): an image as image data, anything else as a
+/// Finder file reference (a file's right-click menu; no binding).
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = berth, no_json)]
+pub struct CopyFile(pub PathBuf);
+
+/// Show this file (the app's copy) in Finder (a file's right-click menu).
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = berth, no_json)]
+pub struct RevealFile(pub PathBuf);
 
 /// Close this terminal (the × on a row of the terminal list; no binding).
 #[derive(Clone, PartialEq, Action)]
@@ -196,6 +221,11 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut {
         keys: "↩",
         label: "Open the slot",
+        group: "Slot rail",
+    },
+    Shortcut {
+        keys: "R",
+        label: "Rename the slot (or double-click it)",
         group: "Slot rail",
     },
     Shortcut {
@@ -314,6 +344,26 @@ pub const SHORTCUTS: &[Shortcut] = &[
         group: "Review pane",
     },
     Shortcut {
+        keys: "← →",
+        label: "Previous / next file (Files)",
+        group: "Review pane",
+    },
+    Shortcut {
+        keys: "Z",
+        label: "Fit or actual size (Files)",
+        group: "Review pane",
+    },
+    Shortcut {
+        keys: "Space",
+        label: "Open the file in Quick Look (Files)",
+        group: "Review pane",
+    },
+    Shortcut {
+        keys: "⌘C",
+        label: "Copy the file (Files; right-click for Show in Finder)",
+        group: "Review pane",
+    },
+    Shortcut {
         keys: "C",
         label: "Comment on the hovered or focused line",
         group: "Comments & dialogs",
@@ -418,6 +468,8 @@ pub fn palette_actions() -> Vec<(&'static str, &'static str, Box<dyn Action>)> {
             "",
             Box::new(ToggleTerminalSize),
         ),
+        ("Show the workflow's files", "", Box::new(ShowFiles)),
+        ("Rename slot…", "", Box::new(RenameSlot)),
         ("Destroy slot…", "", Box::new(DestroySlot)),
         ("Close window", "⌘W", Box::new(CloseWindow)),
     ]
@@ -460,6 +512,7 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("down", RailNext, Some("SlotRail")),
         KeyBinding::new("up", RailPrev, Some("SlotRail")),
         KeyBinding::new("enter", RailOpen, Some("SlotRail")),
+        KeyBinding::new("r", RenameSlot, Some("SlotRail")),
         KeyBinding::new("backspace", DestroySlot, Some("SlotRail")),
         KeyBinding::new("a", FocusAnswer, Some("SlotRail")),
         // event flow
@@ -489,6 +542,11 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("c", CommentLine, Some("ReviewPane")),
         KeyBinding::new("cmd-shift-p", PostToPr, None),
         KeyBinding::new("cmd-r", RefreshReview, None),
+        KeyBinding::new("right", NextFile, Some("ReviewFiles")),
+        KeyBinding::new("left", PrevFile, Some("ReviewFiles")),
+        KeyBinding::new("z", ToggleZoom, Some("ReviewFiles")),
+        KeyBinding::new("space", QuickLookFile, Some("ReviewFiles")),
+        KeyBinding::new("cmd-c", CopyShownFile, Some("ReviewFiles")),
         // dialogs
         KeyBinding::new("cmd-enter", Confirm, Some("Dialog")),
     ];
@@ -576,6 +634,17 @@ mod tests {
         assert!(resolve("a", &["RepoWindow", "Terminal"]).is_empty());
         assert!(resolve("c", &["RepoWindow", "ReviewPane", "Input"]).is_empty());
         assert!(resolve("tab", &["Root", "RepoWindow", "Terminal"]).is_empty());
+    }
+
+    #[test]
+    fn r_renames_the_slot_from_the_rail_only() {
+        assert_eq!(
+            resolve("r", &["RepoWindow", "SlotRail"]),
+            ["berth::RenameSlot"]
+        );
+        assert!(resolve("r", &["RepoWindow", "EventFlow"]).is_empty());
+        // The rename field itself takes the letter.
+        assert!(resolve("r", &["RepoWindow", "Dialog", "Input"]).is_empty());
     }
 
     #[test]

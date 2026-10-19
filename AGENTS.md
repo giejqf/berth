@@ -510,7 +510,8 @@ Core tables (see migrations for exact columns):
 
 ```
 repos            id, path, default_slot_type, created_at
-slots            id, repo_id, type, name, state, state_detail, checkout_path, placement, branch, base_ref, created_at
+slots            id, repo_id, type, name, custom_name, state, state_detail, checkout_path, placement, branch,
+                 base_ref, created_at
 workflows        id, slot_id, origin_json, state, claude_session_id, section_no, total_cost_usd, last_error,
                  created_at, closed_at
 rounds           id, workflow_id, section_no, started_at, ended_at, terminal_kind, nudges, cost_usd, duration_ms
@@ -593,6 +594,10 @@ stdin EOF stops the session; stdout carries protocol lines only (logs go to
   a summary), **Done**. The second line says what is happening (the live round's
   current step from `berth_core::activity`, "Asked a question · 40s ago", "Committed ·
   1 follow-up"). The footer shows Claude Code / GitHub CLI status (`backend/env.rs`).
+- A slot's first line is its workflow's title, or the name the user gave it: **Rename
+  slot** (R with the rail focused, a double-click, the row's context menu, the flow's
+  More menu, ⌘K) stores `slots.custom_name`; an empty name goes back to the title.
+  `slots.name` stays as it was (the agent's context uses it).
 - The flow header carries the title, one state chip (Working, Needs answer, Ready to
   review, Done · …, Failed, Interrupted), Interrupt while running, the review toggle and
   a More menu; the meta line shows origin, branch, slot type, section and round. A
@@ -613,9 +618,24 @@ stdin EOF stops the session; stdout carries protocol lines only (logs go to
   read-only.
 - The composer takes **attachments**: drop files on it, paste files or images, or
   pick them (⌘⇧O). They show as chips until sent. Attachments and **artifacts**
-  render in the flow: images inline, video/PDF/HTML as a Quick Look thumbnail, other
-  files as a tile. Clicking opens Quick Look (`qlmanage -p`), which is read-only; never
-  an editor (§1.1). See `ui/composer.rs`, `ui/files.rs`, `backend/files.rs`.
+  show in the flow as small tiles: a 56px thumbnail (the image itself, or Quick
+  Look's for video/PDF/HTML; an icon otherwise) with the name and size. Clicking an
+  image (PNG, JPEG, GIF, WebP) shows it in the review pane's Files tab; anything
+  else opens in Quick Look (`qlmanage -p`). Both are
+  read-only; never an editor (§1.1). See `ui/composer.rs`, `ui/files.rs`,
+  `backend/files.rs`.
+- The review pane has two tabs: **Changes** (the diff, §7) and **Files**
+  (`ui/review_pane/files.rs`): every file in the workflow, presented by the agent or
+  attached, one at a time above a strip of thumbnails (newest unless one is picked).
+  Images fit the pane, never past their actual size (one image pixel per screen
+  pixel), or show at actual size and scroll (Z, or a click); GIFs animate. ← → step
+  through the files, Space opens Quick Look. Other files show their thumbnail and
+  open in Quick Look. Asking for a diff switches back to Changes.
+- Right-click a file (its tile in the flow, the image in the Files tab, a thumbnail
+  in its strip) for **Copy** and **Show in Finder**; ⌘C on the Files tab copies the
+  shown file. Images copy as image data (they paste into chats and documents), other
+  files as a file reference, the way Finder copies (`osascript`: GPUI can't). Both
+  act on the app's copy of the file (`CopyFile`, `RevealFile` in `ui/files.rs`).
 - Keyboard-first: every action has a binding; see `berth-app/src/keymap.rs` (its
   `SHORTCUTS` list is what ⌘K shows). Single letters (J/K, E, D, A, C, /, 1–9) act
   on the focused pane and never type into a field: macOS offers keys to bindings

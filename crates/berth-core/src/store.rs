@@ -15,7 +15,10 @@ use crate::model::{
     WorkflowView,
 };
 
-const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_init.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_init.sql"),
+    include_str!("../migrations/0002_slot_custom_name.sql"),
+];
 
 pub struct Store {
     conn: Connection,
@@ -39,7 +42,7 @@ fn u32_col(v: i64) -> u32 {
     u32::try_from(v).unwrap_or(0)
 }
 
-const SLOT_COLS: &str = "id, repo_id, type, name, state, state_detail, checkout_path, placement, branch, base_ref, created_at";
+const SLOT_COLS: &str = "id, repo_id, type, name, state, state_detail, checkout_path, placement, branch, base_ref, created_at, custom_name";
 const WORKFLOW_COLS: &str = "id, slot_id, origin_json, state, claude_session_id, section_no, total_cost_usd, \
                              last_error, created_at, closed_at";
 const ROUND_COLS: &str = "id, workflow_id, section_no, started_at, ended_at, terminal_kind, nudges, cost_usd, duration_ms";
@@ -65,6 +68,7 @@ fn slot_row(r: &Row<'_>) -> rusqlite::Result<(Slot, String)> {
             branch: r.get(8)?,
             base_ref: r.get(9)?,
             created_at: r.get(10)?,
+            custom_name: r.get(11)?,
         },
         state,
     ))
@@ -488,7 +492,7 @@ impl Store {
 
     pub fn insert_slot(&self, s: &Slot) -> Result<()> {
         self.conn.execute(
-            &format!("INSERT INTO slots ({SLOT_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"),
+            &format!("INSERT INTO slots ({SLOT_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"),
             params![
                 s.id,
                 s.repo_id,
@@ -500,7 +504,8 @@ impl Store {
                 s.placement,
                 s.branch,
                 s.base_ref,
-                s.created_at
+                s.created_at,
+                s.custom_name
             ],
         )?;
         Ok(())
@@ -540,6 +545,18 @@ impl Store {
             "UPDATE slots SET state = ?2, state_detail = ?3 WHERE id = ?1",
             params![id, to.as_str(), detail],
         )?;
+        self.slot(id)
+    }
+
+    /// Rename the slot, or with `None` go back to showing its workflow's title.
+    pub fn set_slot_custom_name(&self, id: &str, name: Option<&str>) -> Result<Slot> {
+        let n = self.conn.execute(
+            "UPDATE slots SET custom_name = ?2 WHERE id = ?1",
+            params![id, name],
+        )?;
+        if n == 0 {
+            return Err(not_found("slot", id));
+        }
         self.slot(id)
     }
 

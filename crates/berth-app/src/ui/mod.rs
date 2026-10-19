@@ -13,6 +13,7 @@ mod motion;
 mod new_workflow;
 mod nodes;
 mod palette;
+mod rename_slot;
 mod repo_state;
 mod repo_window;
 mod review_pane;
@@ -68,6 +69,7 @@ impl Berth {
 }
 
 pub fn init(backend: BackendHandle, events: UnboundedReceiver<UiEvent>, cx: &mut App) {
+    files::register_actions(cx);
     cx.set_global(Berth {
         backend,
         repos: HashMap::new(),

@@ -22,6 +22,7 @@ use super::modal::{self, ConfirmDialog};
 use super::motion;
 use super::new_workflow::NewWorkflowForm;
 use super::palette::Palette;
+use super::rename_slot::RenameSlotDialog;
 use super::repo_state::RepoEvent;
 use super::review_pane::ReviewPane;
 use super::settings::SettingsForm;
@@ -32,8 +33,9 @@ use crate::backend::{Command, ToastLevel};
 use crate::keymap::{
     AttachFiles, AttachPaths, CloseWindow, CommandPalette, DestroySlot, FocusAnswer, FocusComposer,
     FollowUpFromOutcome, Interrupt, JumpToNeeding, NewWorkflow, NewWorkflowTab, NextChange,
-    NextSlot, OpenSettings, PrevChange, PrevSlot, RefreshReview, ReviewBranch, ReviewSection,
-    ReviewWorkflow, SelectSlot, ToggleDiffMode, ToggleRail, ToggleReview,
+    NextSlot, OpenSettings, PrevChange, PrevSlot, RefreshReview, RenameSlot, ReviewBranch,
+    ReviewSection, ReviewWorkflow, SelectSlot, ShowFile, ShowFiles, ToggleDiffMode, ToggleRail,
+    ToggleReview,
 };
 use crate::keymap::{
     CloseTerminal, HideTerminal, KillTerminal, NewTerminal, NextTerminal, PrevTerminal,
@@ -477,6 +479,20 @@ impl RepoWindow {
         self.state.read(cx).selected_workflow_id()
     }
 
+    /// Open the review pane on its Files tab (on `file`, a `FileRef.id`) and
+    /// give it the keys, so ← → go through the files.
+    fn show_files(
+        &mut self,
+        file: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.review.update(cx, |r, cx| r.show_file(file, cx));
+        self.set_review(true, cx);
+        let focus = self.review.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+    }
+
     fn open_review(&mut self, preset: DiffPreset, cx: &mut Context<'_, Self>) {
         self.review.update(cx, |r, cx| r.load(preset, None, cx));
         self.set_review(true, cx);
@@ -512,6 +528,16 @@ impl RepoWindow {
         self.open_modal(p, window, cx);
     }
 
+    fn rename_slot(&mut self, _: &RenameSlot, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let state = self.state.read(cx);
+        let Some(entry) = state.selected().cloned() else {
+            return;
+        };
+        let backend = state.backend.clone();
+        let dialog = cx.new(|cx| RenameSlotDialog::new(&entry, backend, window, cx));
+        self.open_modal(dialog, window, cx);
+    }
+
     fn destroy_slot(&mut self, _: &DestroySlot, window: &mut Window, cx: &mut Context<'_, Self>) {
         let Some(entry) = self.state.read(cx).selected().cloned() else {
             return;
@@ -519,10 +545,7 @@ impl RepoWindow {
         let backend = self.state.read(cx).backend.clone();
         let open = entry.workflow.as_ref().is_some_and(|w| w.state.is_open());
         let slot_id = entry.slot.id.clone();
-        let title = entry
-            .workflow
-            .as_ref()
-            .map_or_else(|| entry.slot.name.clone(), |w| w.origin.title.clone());
+        let title = slot_rail::slot_title(&entry);
         let body = vec![
             SharedString::from(title),
             format!(
@@ -754,6 +777,13 @@ impl Render for RepoWindow {
                 this.new_workflow_tab(a.0, window, cx);
             }))
             .on_action(cx.listener(Self::destroy_slot))
+            .on_action(cx.listener(Self::rename_slot))
+            .on_action(cx.listener(|this, a: &ShowFile, window, cx| {
+                this.show_files(Some(a.0.clone()), window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ShowFiles, window, cx| {
+                this.show_files(None, window, cx);
+            }))
             .on_action(
                 cx.listener(|this, _: &ToggleReview, _, cx| this.set_review(!this.review_open, cx)),
             )

@@ -175,8 +175,18 @@ impl FlowView {
             Some(v) => (v.workflow.id.clone(), None),
             None => (String::new(), None),
         };
+        let card_focused = self
+            .answer
+            .read(cx)
+            .focus_handle(cx)
+            .contains_focused(window, cx);
         self.answer
             .update(cx, |a, cx| a.bind(&wf, pending.as_ref(), window, cx));
+        // The card goes with its question; keep the keyboard in the flow, or
+        // shortcuts would dispatch from an element that is no longer drawn.
+        if card_focused && pending.is_none() {
+            window.focus(&self.focus, cx);
+        }
         cx.notify();
     }
 
@@ -458,6 +468,7 @@ fn more_menu(t: &Tokens) -> impl IntoElement {
                 .menu("Branch diff", Box::new(crate::keymap::ReviewBranch))
                 .menu("Command palette…", Box::new(crate::keymap::CommandPalette))
                 .separator()
+                .menu("Rename slot…", Box::new(crate::keymap::RenameSlot))
                 .menu("Destroy slot…", Box::new(DestroySlot))
         })
 }

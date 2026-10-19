@@ -47,6 +47,11 @@ pub enum Command {
     DestroySlot {
         slot_id: String,
     },
+    /// `None` (or blank) goes back to the workflow's title.
+    RenameSlot {
+        slot_id: String,
+        name: Option<String>,
+    },
     LoadWorkflow {
         workflow_id: String,
     },

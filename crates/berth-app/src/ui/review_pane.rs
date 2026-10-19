@@ -1,14 +1,16 @@
 //! Review pane (AGENTS.md §7): read-only diff between two tree snapshots,
-//! with presets, a file list, line comments, and "ask agent about this hunk".
-//! No editing.
+//! with presets, a file list, line comments, and "ask agent about this hunk";
+//! and the workflow's files (`files`). No editing.
+
+mod files;
 
 use std::sync::Arc;
 
 use berth_protocol::DiffPreset;
 use gpui::{
     AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
-    div, prelude::FluentBuilder as _, px,
+    KeyContext, ParentElement as _, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::input::{InputEvent, InputState};
 
@@ -18,8 +20,8 @@ use super::kit::{Btn, Size, TypeExt as _, caption, dot, field_frame, icon, spinn
 use super::nodes::diff_stats;
 use crate::backend::{Command, DiffResult};
 use crate::keymap::{
-    AskAboutHunk, FilterFiles, NextChange, NextSection, PostToPr, PrevChange, PrevSection,
-    ToggleFileList, ToggleReview,
+    AskAboutHunk, CopyShownFile, FilterFiles, NextChange, NextFile, NextSection, PostToPr,
+    PrevChange, PrevFile, PrevSection, QuickLookFile, ToggleFileList, ToggleReview, ToggleZoom,
 };
 use crate::theme::{MONO, Tokens, ty};
 
@@ -34,6 +36,19 @@ pub struct ReviewPane {
     files_open: bool,
     visible: bool,
     focus: FocusHandle,
+    tab: Tab,
+    /// The file the Files tab shows (`FileRef.id`); `None` follows the newest.
+    file: Option<String>,
+    /// Files: the image at its actual size (scrolling) instead of fitted.
+    actual_size: bool,
+    strip: ScrollHandle,
+}
+
+/// What the pane shows: the diff, or the workflow's files.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    Changes,
+    Files,
 }
 
 impl ReviewPane {
@@ -62,6 +77,10 @@ impl ReviewPane {
             files_open: true,
             visible: false,
             focus: cx.focus_handle(),
+            tab: Tab::Changes,
+            file: None,
+            actual_size: false,
+            strip: ScrollHandle::new(),
         };
         this.sync(cx);
         this
@@ -96,7 +115,18 @@ impl ReviewPane {
         }
     }
 
+    /// Show the Files tab, on `file` (a `FileRef.id`) if given.
+    pub fn show_file(&mut self, file: Option<String>, cx: &mut Context<'_, Self>) {
+        self.tab = Tab::Files;
+        if file.is_some() {
+            self.file = file;
+            self.actual_size = false;
+        }
+        cx.notify();
+    }
+
     pub fn load(&mut self, preset: DiffPreset, section: Option<u32>, cx: &mut Context<'_, Self>) {
+        self.tab = Tab::Changes;
         self.custom_open = false;
         if let Some(wf) = self.workflow_id(cx) {
             self.state
@@ -184,7 +214,12 @@ impl Focusable for ReviewPane {
 impl Render for ReviewPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let t = Tokens::get(cx);
+        let on_files = self.tab == Tab::Files;
+        let files_body = on_files.then(|| self.files_body(&t, window, cx));
         let state = self.state.read(cx);
+        let file_count = state
+            .selected_view()
+            .map_or(0, |v| files::workflow_files(&v).len());
         let wf = state.selected_workflow_id();
         let loading = wf
             .as_ref()
@@ -237,12 +272,54 @@ impl Render for ReviewPane {
                 .tooltip(move |w, cx| gpui_component::tooltip::Tooltip::new(tip).build(w, cx))
                 .child(icon(ico, 14., if active { t.text } else { t.text2 }))
         };
+        // Changes | Files, as the pane's title.
+        let title_tab = |id: &'static str, label: &'static str, count: Option<usize>, on: bool| {
+            let hover = t.text2;
+            div()
+                .id(id)
+                .flex()
+                .items_baseline()
+                .gap(px(6.))
+                .ty(ty::TITLE)
+                .semibold()
+                .cursor_pointer()
+                .when(on, |d| d.text_color(t.text))
+                .when(!on, |d| {
+                    d.text_color(t.text3).hover(move |s| s.text_color(hover))
+                })
+                .child(label)
+                .when_some(count, |d, n| {
+                    d.child(
+                        div()
+                            .ty(ty::META)
+                            .font_weight(gpui::FontWeight::NORMAL)
+                            .text_color(t.text3)
+                            .child(n.to_string()),
+                    )
+                })
+        };
         let mut row1 = div()
             .flex()
             .items_center()
-            .gap(px(10.))
-            .child(div().ty(ty::TITLE).semibold().child("Review"));
-        if let Some(d) = &shown {
+            .gap(px(14.))
+            .child(
+                title_tab("tab-changes", "Changes", None, !on_files).on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.tab = Tab::Changes;
+                        cx.notify();
+                    },
+                )),
+            )
+            .child(
+                title_tab(
+                    "tab-files",
+                    "Files",
+                    (file_count > 0).then_some(file_count),
+                    on_files,
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.show_file(None, cx))),
+            );
+        if let Some(d) = shown.as_ref().filter(|_| !on_files) {
             row1 = row1.child(diff_stats(
                 &t,
                 d.stats.files,
@@ -252,32 +329,34 @@ impl Render for ReviewPane {
         }
         row1 = row1
             .child(div().flex_1())
-            .child(
-                div()
-                    .flex()
-                    .border_1()
-                    .border_color(t.border_strong)
-                    .rounded(px(6.))
-                    .overflow_hidden()
-                    .child(
-                        seg("mode-unified", "unified", !split, "Unified  ⌘⇧U", false).on_click(
-                            cx.listener(move |this, _, _, cx| {
-                                if split {
-                                    this.toggle_mode(cx);
-                                }
-                            }),
+            .when(!on_files, |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .border_1()
+                        .border_color(t.border_strong)
+                        .rounded(px(6.))
+                        .overflow_hidden()
+                        .child(
+                            seg("mode-unified", "unified", !split, "Unified  ⌘⇧U", false).on_click(
+                                cx.listener(move |this, _, _, cx| {
+                                    if split {
+                                        this.toggle_mode(cx);
+                                    }
+                                }),
+                            ),
+                        )
+                        .child(
+                            seg("mode-split", "split", split, "Split  ⌘⇧U", true).on_click(
+                                cx.listener(move |this, _, _, cx| {
+                                    if !split {
+                                        this.toggle_mode(cx);
+                                    }
+                                }),
+                            ),
                         ),
-                    )
-                    .child(
-                        seg("mode-split", "split", split, "Split  ⌘⇧U", true).on_click(
-                            cx.listener(move |this, _, _, cx| {
-                                if !split {
-                                    this.toggle_mode(cx);
-                                }
-                            }),
-                        ),
-                    ),
-            )
+                )
+            })
             .child(
                 Btn::new("close-review")
                     .ghost()
@@ -414,8 +493,7 @@ impl Render for ReviewPane {
             .border_b_1()
             .border_color(t.border)
             .child(row1)
-            .child(row2)
-            .children(custom);
+            .when(!on_files, |d| d.child(row2).children(custom));
 
         // ---- files ----
         let filter_focused = self.filter.read(cx).focus_handle(cx).is_focused(window);
@@ -516,7 +594,9 @@ impl Render for ReviewPane {
         }
 
         // ---- body ----
-        let body = if let Some(e) = error {
+        let body = if let Some(files) = files_body {
+            files
+        } else if let Some(e) = error {
             div()
                 .flex_1()
                 .flex()
@@ -558,7 +638,9 @@ impl Render for ReviewPane {
         };
 
         // ---- footer ----
-        let left = if all_comments.is_empty() {
+        let left = if on_files {
+            files::hints(&t)
+        } else if all_comments.is_empty() {
             div()
                 .flex()
                 .child("Hover a line and press ")
@@ -586,36 +668,50 @@ impl Render for ReviewPane {
             .ty(ty::META)
             .text_color(t.text3)
             .child(left.flex_1().min_w_0().flex_wrap())
-            .child(
-                Btn::new("ask-hunk")
-                    .size(Size::S26)
-                    .label("Ask agent about hunk")
-                    .disabled(files.is_empty())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.diff.update(cx, DiffView::ask_about_hunk);
-                    })),
-            )
-            .child({
-                let b = Btn::new("post-pr")
-                    .size(Size::S26)
-                    .label(if unposted > 0 {
-                        format!("Post {unposted} to PR")
+            .when(!on_files, |d| {
+                d.child(
+                    Btn::new("ask-hunk")
+                        .size(Size::S26)
+                        .label("Ask agent about hunk")
+                        .disabled(files.is_empty())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.diff.update(cx, DiffView::ask_about_hunk);
+                        })),
+                )
+                .child({
+                    let b = Btn::new("post-pr")
+                        .size(Size::S26)
+                        .label(if unposted > 0 {
+                            format!("Post {unposted} to PR")
+                        } else {
+                            "Post to PR".to_owned()
+                        })
+                        .disabled(unposted == 0)
+                        .on_click(cx.listener(|this, _, _, cx| this.post(cx)));
+                    if unposted > 0 {
+                        b.icon("pr-medium", 12.)
                     } else {
-                        "Post to PR".to_owned()
-                    })
-                    .disabled(unposted == 0)
-                    .on_click(cx.listener(|this, _, _, cx| this.post(cx)));
-                if unposted > 0 {
-                    b.icon("pr-medium", 12.)
-                } else {
-                    b
-                }
+                        b
+                    }
+                })
             });
 
+        let mut context = KeyContext::new_with_defaults();
+        context.add("ReviewPane");
+        if on_files {
+            context.add("ReviewFiles");
+        }
         div()
             .id("review-pane")
             .track_focus(&self.focus)
-            .key_context("ReviewPane")
+            .key_context(context)
+            .on_action(cx.listener(|this, _: &NextFile, _, cx| this.step_file(1, cx)))
+            .on_action(cx.listener(|this, _: &PrevFile, _, cx| this.step_file(-1, cx)))
+            .on_action(cx.listener(|this, _: &ToggleZoom, _, cx| this.toggle_zoom(cx)))
+            .on_action(cx.listener(|this, _: &QuickLookFile, _, cx| this.quick_look(cx)))
+            .on_action(cx.listener(|this, _: &CopyShownFile, window, cx| {
+                this.copy_shown(window, cx);
+            }))
             .on_action(cx.listener(|this, _: &NextChange, _, cx| this.next_change(cx)))
             .on_action(cx.listener(|this, _: &PrevChange, _, cx| this.prev_change(cx)))
             .on_action(cx.listener(|this, _: &NextSection, _, cx| this.step_section(1, cx)))
@@ -634,7 +730,11 @@ impl Render for ReviewPane {
             .on_action(cx.listener(|this, _: &PostToPr, _, cx| this.post(cx)))
             .on_click(cx.listener(|this, _, window, cx| {
                 if !this.focus.contains_focused(window, cx) {
-                    let f = this.diff.read(cx).focus_handle(cx);
+                    // The diff takes the keys on Changes; the pane itself on Files.
+                    let f = match this.tab {
+                        Tab::Changes => this.diff.read(cx).focus_handle(cx),
+                        Tab::Files => this.focus.clone(),
+                    };
                     window.focus(&f, cx);
                 }
             }))
@@ -645,7 +745,9 @@ impl Render for ReviewPane {
             .border_l_1()
             .border_color(t.border)
             .child(header)
-            .when(self.files_open && !files.is_empty(), |d| d.child(file_list))
+            .when(!on_files && self.files_open && !files.is_empty(), |d| {
+                d.child(file_list)
+            })
             .child(body)
             .child(footer)
     }

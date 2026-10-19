@@ -396,6 +396,7 @@ impl Seeder<'_> {
             repo_id: repo_id.to_owned(),
             slot_type: "worktree".into(),
             name: name.to_owned(),
+            custom_name: None,
             state: SlotState::Running,
             state_detail: None,
             checkout_path: Some(checkout.to_string_lossy().into_owned()),

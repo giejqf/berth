@@ -9,10 +9,11 @@ use berth_core::{SlotState, WorkflowState};
 use berth_protocol::OutcomeKind;
 use gpui::{
     App, BoxShadow, Context, Div, Entity, FocusHandle, Focusable, FontWeight, Hsla,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Window, div, point, prelude::FluentBuilder as _,
     px,
 };
+use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::tooltip::Tooltip;
 
@@ -23,7 +24,9 @@ use super::motion;
 use super::repo_state::{RailGroup, rail_group};
 use super::{EnvGlobal, RepoState};
 use crate::backend::{SlotEntry, ToolState, ToolStatus};
-use crate::keymap::{NewWorkflow, RailNext, RailOpen, RailPrev, ToggleRail};
+use crate::keymap::{
+    DestroySlot, NewWorkflow, RailNext, RailOpen, RailPrev, RenameSlot, ToggleRail,
+};
 use crate::theme::{Tokens, ty};
 
 /// Width of the collapsed strip, as rendered.
@@ -80,12 +83,26 @@ impl Focusable for SlotRail {
     }
 }
 
-/// The rail's two lines for a slot.
-pub fn rail_lines(entry: &SlotEntry, state: &RepoState) -> (String, String) {
-    let title = entry
+/// What a slot is called: the name the user gave it, else [`default_title`].
+pub fn slot_title(entry: &SlotEntry) -> String {
+    entry
+        .slot
+        .custom_name
+        .clone()
+        .unwrap_or_else(|| default_title(entry))
+}
+
+/// A slot's title without a custom name: its workflow's, else its own name.
+pub fn default_title(entry: &SlotEntry) -> String {
+    entry
         .workflow
         .as_ref()
-        .map_or_else(|| entry.slot.name.clone(), |w| w.origin.title.clone());
+        .map_or_else(|| entry.slot.name.clone(), |w| w.origin.title.clone())
+}
+
+/// The rail's two lines for a slot.
+pub fn rail_lines(entry: &SlotEntry, state: &RepoState) -> (String, String) {
+    let title = slot_title(entry);
     let f = &entry.facts;
     let sub = match (entry.slot.state, entry.workflow.as_ref()) {
         (SlotState::Creating, _) => "Creating slot…".to_owned(),
@@ -329,8 +346,19 @@ impl Render for SlotRail {
                         inset: true,
                     }])
                 })
-                .on_click(move |_, window, cx| {
-                    window.focus(&focus, cx);
+                .on_click({
+                    let (id, rail_state) = (id.clone(), rail_state.clone());
+                    move |e, window, cx| {
+                        window.focus(&focus, cx);
+                        let id = id.clone();
+                        rail_state.update(cx, |s, cx| s.select_slot(id, cx));
+                        if e.click_count() == 2 {
+                            window.dispatch_action(Box::new(RenameSlot), cx);
+                        }
+                    }
+                })
+                // The context menu acts on the selected slot: select it first.
+                .on_mouse_down(MouseButton::Right, move |_, _, cx| {
                     let id = id.clone();
                     rail_state.update(cx, |s, cx| s.select_slot(id, cx));
                 })
@@ -381,10 +409,14 @@ impl Render for SlotRail {
                                 .child(sub),
                         ),
                 );
-            list = list.child(match arrived {
+            let row = match arrived {
                 Some(p) => motion::rise(row, p),
                 None => row,
-            });
+            };
+            list = list.child(row.context_menu(|menu, _, _| {
+                menu.menu("Rename…", Box::new(RenameSlot))
+                    .menu("Destroy slot…", Box::new(DestroySlot))
+            }));
         }
 
         div()

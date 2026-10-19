@@ -22,6 +22,7 @@ fn setup() -> (Store, Engine, String) {
         repo_id: repo.id,
         slot_type: "worktree".into(),
         name: "fix".into(),
+        custom_name: None,
         state: SlotState::Ready,
         state_detail: None,
         checkout_path: Some("/tmp/co".into()),

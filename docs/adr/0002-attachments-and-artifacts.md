@@ -74,6 +74,11 @@ description cost nothing to ask for.
   is unreadable at tile size); it gets an icon.
 - Clicking a file opens it in Quick Look (`qlmanage -p`), which is read-only for
   every type, including source files. There is no "open in editor" (§1.1).
+- Amended in 0.1.1: the flow shows every file as a small tile (thumbnail, name,
+  size) instead of a large inline preview, and clicking an image (PNG, JPEG, GIF,
+  WebP) shows it in the review pane's Files tab, fitted or at actual size, with
+  the workflow's other files beside it (AGENTS.md §11). Other types still open in
+  Quick Look.
 
 ### 4. Drag-over feedback is tracked by the composer
 

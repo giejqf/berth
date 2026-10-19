@@ -18,6 +18,7 @@
 //! secret linear LINEAR_API_KEY x  # store a connector key (use BERTH_SECRETS=memory)
 //! term_type ls -la            # type into the selected slot's terminal (`keys enter` runs it)
 //! fake_node Title             # append a just-recorded decision to the flow (view only)
+//! fake_artifact /a.png | Title # append an artifact, the file used in place (view only)
 //! quit
 //! ```
 
@@ -212,6 +213,10 @@ pub fn start(cx: &mut App) {
                 // the design's Working state without spending tokens.
                 "fake_live" => cx.update(|cx| fake_live(arg, cx)),
                 "fake_node" => cx.update(|cx| fake_node(arg, cx)),
+                "fake_artifact" => cx.update(|cx| {
+                    let (path, title) = arg.split_once('|').unwrap_or((arg, "Artifact"));
+                    fake_artifact(path.trim(), title.trim(), cx);
+                }),
                 "expand_lane" => cx.update(|cx| {
                     let n: usize = arg.parse().unwrap_or(0);
                     with_window(cx, |window, cx| {
@@ -452,9 +457,46 @@ fn fake_live(preset: &str, cx: &mut App) {
     });
 }
 
+/// Append an artifact (a local file, used in place) to the selected workflow's
+/// flow, as if the agent had presented it (the view only; nothing is stored).
+fn fake_artifact(path: &str, title: &str, cx: &mut App) {
+    let name = path.rsplit('/').next().unwrap_or(path).to_owned();
+    let size_bytes = std::fs::metadata(path).map_or(0, |m| m.len());
+    push_fake_node(
+        berth_protocol::NodePayload::Artifact(berth_protocol::Artifact {
+            artifact_id: berth_core::ids::new_id(),
+            title: title.to_owned(),
+            description: Some("Added by the devtools script.".to_owned()),
+            file: berth_protocol::FileRef {
+                id: berth_core::ids::new_id(),
+                mime: berth_core::files::mime_for(&name).to_owned(),
+                name,
+                size_bytes,
+                slot_path: None,
+                stored: Some(path.to_owned()),
+                thumbnail: None,
+            },
+            error: None,
+        }),
+        cx,
+    );
+}
+
 /// Append a decision titled `title` to the selected workflow's flow, as if
 /// the agent had just recorded it (the view only; nothing is stored).
 fn fake_node(title: &str, cx: &mut App) {
+    push_fake_node(
+        berth_protocol::NodePayload::Decision(berth_protocol::Decision {
+            title: title.to_owned(),
+            rationale: "Added by the devtools script.".to_owned(),
+            affects: Vec::new(),
+            reversible: true,
+        }),
+        cx,
+    );
+}
+
+fn push_fake_node(payload: berth_protocol::NodePayload, cx: &mut App) {
     let Some(state) = ui::first_repo_state(cx) else {
         return;
     };
@@ -470,12 +512,7 @@ fn fake_node(title: &str, cx: &mut App) {
             round_id: None,
             branch_id: None,
             seq,
-            payload: berth_protocol::NodePayload::Decision(berth_protocol::Decision {
-                title: title.to_owned(),
-                rationale: "Added by the devtools script.".to_owned(),
-                affects: Vec::new(),
-                reversible: true,
-            }),
+            payload,
             raw_first: None,
             raw_last: None,
             created_at: ui::kit::now_ms(),
@@ -502,6 +539,11 @@ fn dispatch(name: &str, cx: &mut App) {
         "ToggleDiffMode" => Box::new(keymap::ToggleDiffMode),
         "OpenSettings" => Box::new(keymap::OpenSettings),
         "DestroySlot" => Box::new(keymap::DestroySlot),
+        "RenameSlot" => Box::new(keymap::RenameSlot),
+        "ShowFiles" => Box::new(keymap::ShowFiles),
+        "NextFile" => Box::new(keymap::NextFile),
+        "PrevFile" => Box::new(keymap::PrevFile),
+        "ToggleZoom" => Box::new(keymap::ToggleZoom),
         "FocusComposer" => Box::new(keymap::FocusComposer),
         "NextSlot" => Box::new(keymap::NextSlot),
         "PrevSlot" => Box::new(keymap::PrevSlot),

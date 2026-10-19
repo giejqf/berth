@@ -267,6 +267,7 @@ impl Shared {
             repo_id: req.repo_id.clone(),
             slot_type: ty.name.clone(),
             name: slot_name(&origin),
+            custom_name: None,
             state: SlotState::Creating,
             state_detail: None,
             checkout_path: None,

@@ -95,6 +95,10 @@ pub struct Slot {
     pub repo_id: String,
     pub slot_type: String,
     pub name: String,
+    /// What the user renamed the slot to; the rail shows it instead of the
+    /// workflow's title.
+    #[serde(default)]
+    pub custom_name: Option<String>,
     pub state: SlotState,
     pub state_detail: Option<String>,
     pub checkout_path: Option<String>,
