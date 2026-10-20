@@ -133,7 +133,7 @@ impl SettingsForm {
         // Claude Code signs in the chosen way, and switches accounts; one set
         // up in the environment (an API key, a cloud provider) is only checked.
         let (label, sign_in) = match (tool, s.state) {
-            ("docker", _) | (_, ToolState::Missing) => ("Check again", None),
+            ("docker" | "node", _) | (_, ToolState::Missing) => ("Check again", None),
             ("claude", _) if !s.switchable => ("Check again", None),
             (_, ToolState::Ok) => ("Sign out", Some(false)),
             _ => ("Sign in…", Some(true)),
@@ -143,6 +143,13 @@ impl SettingsForm {
                 .size(Size::S26)
                 .label("Switch account…")
                 .on_click(cx.listener(|this, _, window, cx| this.open_sign_in(window, cx)))
+        });
+        // Agents can't run without Node.js (or with an old one): where to get it.
+        let get_node = (tool == "node" && s.blocks_agents.is_some()).then(|| {
+            Btn::new("tool-node-get")
+                .size(Size::S26)
+                .label("Get Node.js")
+                .on_click(|_, _, cx| cx.open_url(super::sign_in::NODE_URL))
         });
         row(t, last)
             .child(dot(8., color))
@@ -162,6 +169,7 @@ impl SettingsForm {
                     )),
             )
             .children(switch)
+            .children(get_node)
             .child(
                 Btn::new(SharedString::from(format!("tool-{tool}")))
                     .size(Size::S26)
@@ -291,6 +299,7 @@ impl Render for SettingsForm {
 
         let connections = group(&t)
             .child(self.tool_row(&t, "Claude Code", "claude", &env.claude, false, cx))
+            .child(self.tool_row(&t, "Node.js", "node", &env.node, false, cx))
             .child(self.tool_row(&t, "GitHub CLI", "gh", &env.gh, false, cx))
             .child(self.tool_row(&t, "Docker", "docker", &env.docker, true, cx));
 

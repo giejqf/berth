@@ -13,9 +13,34 @@ const IMPORTED: &[&str] = &[
     "HOMEBREW_PREFIX",
 ];
 
-/// Must run before any other thread starts (it mutates the process environment).
+/// Must run before any other thread starts (it mutates the process
+/// environment), so before logging: what went wrong is returned, to log once
+/// logging is up.
 #[allow(unsafe_code)]
-pub fn import_login_shell_env() {
+pub fn import_login_shell_env() -> Vec<String> {
+    let mut notes = login_shell_env();
+    // Node.js set up only in ~/.zshrc (nvm) isn't on the login shell's PATH:
+    // add the one Berth found, so agents' own commands find it too.
+    if crate::backend::which("node").is_none()
+        && let Some(node) = crate::backend::find_node()
+        && let Some(dir) = node.parent()
+    {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let dirs = std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&path));
+        if let Ok(joined) = std::env::join_paths(dirs) {
+            notes.push(format!(
+                "node is not on the login PATH; using {}",
+                node.display()
+            ));
+            // SAFETY: as in `login_shell_env`.
+            unsafe { std::env::set_var("PATH", joined) };
+        }
+    }
+    notes
+}
+
+#[allow(unsafe_code)]
+fn login_shell_env() -> Vec<String> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_owned());
     let output = match Command::new(&shell)
         .args(["-l", "-c", "/usr/bin/env -0"])
@@ -23,13 +48,14 @@ pub fn import_login_shell_env() {
     {
         Ok(o) if o.status.success() => o,
         Ok(o) => {
-            tracing::warn!(status = ?o.status, "login shell env failed");
-            return;
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            return vec![format!(
+                "login shell env failed ({shell}, {}): {}",
+                o.status,
+                stderr.trim()
+            )];
         }
-        Err(e) => {
-            tracing::warn!(error = %e, "could not run login shell");
-            return;
-        }
+        Err(e) => return vec![format!("could not run login shell {shell}: {e}")],
     };
     for entry in output.stdout.split(|b| *b == 0) {
         let entry = String::from_utf8_lossy(entry);
@@ -42,4 +68,5 @@ pub fn import_login_shell_env() {
             unsafe { std::env::set_var(key, value) };
         }
     }
+    Vec::new()
 }

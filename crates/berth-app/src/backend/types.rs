@@ -136,7 +136,7 @@ pub enum Command {
         key: String,
         value: String,
     },
-    /// Re-check Claude Code, GitHub CLI and Docker.
+    /// Re-check Claude Code, Node.js, GitHub CLI and Docker.
     CheckEnvironment,
     /// [`Command::CheckEnvironment`] when a window comes to the front, unless
     /// one ran moments ago.
@@ -326,8 +326,8 @@ pub struct ToolStatus {
     /// Berth's sign in, switch and sign out apply (not to an API key or a
     /// cloud provider set in the environment).
     pub switchable: bool,
-    /// Why agents on this Mac can't run (Claude Code missing or signed out);
-    /// `None` while it is checking or could not tell.
+    /// Why agents on this Mac can't run (Claude Code missing or signed out,
+    /// no Node.js); `None` while it is checking or could not tell.
     pub blocks_agents: Option<&'static str>,
 }
 
@@ -376,8 +376,31 @@ impl ToolStatus {
 #[derive(Debug, Clone, Default)]
 pub struct EnvStatus {
     pub claude: ToolStatus,
+    /// Node.js, which runs the sidecar of every agent on this Mac.
+    pub node: ToolStatus,
     pub gh: ToolStatus,
     pub docker: ToolStatus,
+}
+
+/// What it takes for agents on this Mac to run again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentFix {
+    /// Sign Claude Code in.
+    SignIn,
+    /// Install Node.js (or a newer one).
+    GetNode,
+}
+
+impl EnvStatus {
+    /// Why agents on this Mac can't run, and the fix: Node.js first, since
+    /// without it no agent starts whoever is signed in.
+    #[must_use]
+    pub fn agents_blocked(&self) -> Option<(&'static str, AgentFix)> {
+        self.node
+            .blocks_agents
+            .map(|why| (why, AgentFix::GetNode))
+            .or_else(|| self.claude.blocks_agents.map(|why| (why, AgentFix::SignIn)))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -492,7 +515,7 @@ pub enum UiEvent {
         workflow_id: String,
         activity: Option<RoundActivity>,
     },
-    Environment(EnvStatus),
+    Environment(Box<EnvStatus>),
     OpenReview {
         workflow_id: String,
     },
@@ -552,6 +575,8 @@ pub enum UiEvent {
     Settings {
         model: String,
         theme: String,
+        /// The review pane's width as the user dragged it.
+        review_width: Option<f32>,
     },
     /// The models the agent can run on, as the SDK last reported them.
     Models(Vec<ModelChoice>),

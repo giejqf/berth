@@ -24,7 +24,7 @@ use futures::channel::mpsc::UnboundedSender;
 use tokio::sync::mpsc;
 
 pub use files::stage_pasted_image;
-pub use launch::SidecarLaunch;
+pub use launch::{SidecarLaunch, find_node, which};
 use session::Session;
 pub use types::*;
 
@@ -64,7 +64,7 @@ pub(crate) struct Shared {
     /// When the tools were last checked ([`Command::RefreshEnvironment`]).
     env_checked: Mutex<Option<std::time::Instant>>,
     /// Why agents on this Mac can't run, as the last check found.
-    claude_blocked: Mutex<Option<&'static str>>,
+    agents_blocked: Mutex<Option<(&'static str, AgentFix)>>,
     /// Sessions to restart once their round ends: Claude Code signed in as
     /// another account while they worked (ADR 0017).
     restart_after_round: Mutex<HashSet<String>>,
@@ -100,7 +100,7 @@ pub fn start(rt: &tokio::runtime::Handle, ui: UnboundedSender<UiEvent>) -> Resul
         launch,
         ui,
         env_checked: Mutex::default(),
-        claude_blocked: Mutex::default(),
+        agents_blocked: Mutex::default(),
         restart_after_round: Mutex::default(),
         background: Mutex::default(),
     });

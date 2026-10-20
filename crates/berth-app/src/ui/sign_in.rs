@@ -12,7 +12,7 @@ use gpui::{
 use super::EnvGlobal;
 use super::kit::{Btn, Size, TypeExt as _, radio};
 use super::modal::{footer, frame, header};
-use crate::backend::{BackendHandle, Command, LoginMethod, ToolState};
+use crate::backend::{AgentFix, BackendHandle, Command, LoginMethod, ToolState};
 use crate::keymap::Confirm;
 use crate::theme::{Tokens, ty};
 
@@ -58,6 +58,17 @@ impl SignInDialog {
 pub fn switching(cx: &App) -> bool {
     cx.try_global::<EnvGlobal>()
         .is_some_and(|e| e.0.claude.state == ToolState::Ok && e.0.claude.switchable)
+}
+
+/// Where to get Node.js when agents can't run without it.
+pub const NODE_URL: &str = "https://nodejs.org/en/download";
+
+/// The button that fixes why agents can't run.
+pub fn fix_label(fix: AgentFix) -> &'static str {
+    match fix {
+        AgentFix::SignIn => "Sign in…",
+        AgentFix::GetNode => "Get Node.js",
+    }
 }
 
 fn label(method: LoginMethod) -> (&'static str, &'static str) {

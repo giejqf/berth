@@ -82,6 +82,9 @@ pub struct Berth {
     pub quota: Option<berth_core::Quota>,
     /// Who Claude Code works as, as a session last reported it (ADR 0016).
     pub account: Option<berth_protocol::Account>,
+    /// The review pane's width as the user dragged it (`settings.review_width`);
+    /// `None` is the design's.
+    pub review_width: Option<f32>,
 }
 
 impl Global for Berth {}
@@ -101,6 +104,7 @@ pub fn init(backend: BackendHandle, events: UnboundedReceiver<UiEvent>, cx: &mut
         models: Vec::new(),
         quota: None,
         account: None,
+        review_width: None,
     });
     cx.spawn(async move |cx| {
         let mut events = events;
@@ -217,7 +221,7 @@ fn repo(repo_id: &str, cx: &App) -> Option<Entity<RepoState>> {
 fn route(event: UiEvent, cx: &mut App) {
     match event {
         UiEvent::Environment(env) => {
-            cx.set_global(EnvGlobal(env));
+            cx.set_global(EnvGlobal(*env));
             cx.refresh_windows();
         }
         UiEvent::Models(models) => {
@@ -232,7 +236,12 @@ fn route(event: UiEvent, cx: &mut App) {
             cx.global_mut::<Berth>().account = account;
             cx.refresh_windows();
         }
-        UiEvent::Settings { model, theme } => {
+        UiEvent::Settings {
+            model,
+            theme,
+            review_width,
+        } => {
+            cx.global_mut::<Berth>().review_width = review_width;
             crate::theme::set_appearance(crate::theme::Appearance::parse(&theme), cx);
             for handle in cx.windows() {
                 let _ = handle.update(cx, |_, window, cx| crate::theme::apply(window, cx));
@@ -241,7 +250,14 @@ fn route(event: UiEvent, cx: &mut App) {
             for state in live_repos(cx) {
                 let (model, theme) = (model.clone(), theme.clone());
                 state.update(cx, |s, cx| {
-                    s.apply_scoped(UiEvent::Settings { model, theme }, cx);
+                    s.apply_scoped(
+                        UiEvent::Settings {
+                            model,
+                            theme,
+                            review_width,
+                        },
+                        cx,
+                    );
                 });
             }
         }

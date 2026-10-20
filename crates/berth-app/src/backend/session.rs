@@ -15,7 +15,7 @@ use berth_sidecar_client::{Sidecar, SidecarEvent};
 use berth_slot::Placement;
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use super::{Shared, ToastLevel, UiEvent, lock};
+use super::{AgentFix, Shared, ToastLevel, UiEvent, lock};
 
 pub(crate) struct Session {
     sidecar: Sidecar,
@@ -67,11 +67,16 @@ impl Shared {
         // Up front, not as an authentication error from the first request.
         // An `inside` slot signs its own agent in (§6.1).
         if slot.placement != Placement::Inside.as_str()
-            && let Some(why) = self.claude_unavailable().await
+            && let Some((why, fix)) = self.agents_unavailable().await
         {
-            return Err(anyhow!(
-                "{why} Sign in from Settings › Claude Code, then send your message again."
-            ));
+            return Err(match fix {
+                AgentFix::SignIn => anyhow!(
+                    "{why} Sign in from Settings › Claude Code, then send your message again."
+                ),
+                AgentFix::GetNode => anyhow!(
+                    "{why} Install Node.js 22 or newer (nodejs.org, or `brew install node`), then send your message again."
+                ),
+            });
         }
         let checkout = slot
             .checkout_path
@@ -131,10 +136,8 @@ impl Shared {
         });
 
         let cmd = if host {
-            let mut cmd = tokio::process::Command::new(&self.launch.program);
-            cmd.args(&self.launch.args)
-                .current_dir(&checkout)
-                .envs(&env);
+            let mut cmd = self.launch.command()?;
+            cmd.current_dir(&checkout).envs(&env);
             cmd
         } else {
             let (program, args) = self.launch.inside_args();
@@ -749,14 +752,21 @@ impl Shared {
 
     /// The app's settings (the default model, the theme), for the windows.
     pub(super) fn emit_settings(&self) -> Result<()> {
-        let (model, theme) = {
+        let (model, theme, review_width) = {
             let core = self.core();
             (
                 core.store.setting("model")?.unwrap_or_default(),
                 core.store.setting("theme")?.unwrap_or_default(),
+                core.store
+                    .setting("review_width")?
+                    .and_then(|w| w.parse::<f32>().ok()),
             )
         };
-        self.emit(UiEvent::Settings { model, theme });
+        self.emit(UiEvent::Settings {
+            model,
+            theme,
+            review_width,
+        });
         Ok(())
     }
 

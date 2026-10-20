@@ -634,7 +634,11 @@ impl Render for FlowView {
             .get(&view.workflow.id)
             .map_or(0, |c| c.iter().filter(|c| c.sent_in_node.is_none()).count());
         let width = window.viewport_size().width.as_f32()
-            - if state.review_open { 521. + 57. } else { 257. }
+            - if state.review_open {
+                super::repo_window::review_width(window, cx) + super::slot_rail::STRIP_W
+            } else {
+                super::repo_window::RAIL_W
+            }
             - 40.;
         let ctx = Rc::new(RowCtx {
             view: view.clone(),

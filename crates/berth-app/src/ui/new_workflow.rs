@@ -16,7 +16,7 @@ use super::RepoState;
 use super::kit::{Btn, Size, TypeExt as _, field_frame, icon, radio, spinner};
 use super::modal;
 use super::sign_in::SignInDialog;
-use crate::backend::{Command, NewWorkflow, OriginChoice, OriginSource};
+use crate::backend::{AgentFix, Command, NewWorkflow, OriginChoice, OriginSource};
 use crate::keymap::{Confirm, OriginTab};
 use crate::theme::{MONO, Tokens, ty};
 
@@ -114,9 +114,9 @@ impl NewWorkflowForm {
         }
     }
 
-    /// Why the workflow's agent couldn't start: it would run on this Mac,
-    /// where Claude Code is signed out (or missing).
-    fn agent_blocked(&self, cx: &App) -> Option<&'static str> {
+    /// Why the workflow's agent couldn't start, and the fix: it would run on
+    /// this Mac, where Claude Code is signed out (or missing) or Node.js is.
+    fn agent_blocked(&self, cx: &App) -> Option<(&'static str, AgentFix)> {
         let s = self.state.read(cx);
         let placement = match &self.reuse {
             Some(picked) => s
@@ -132,7 +132,7 @@ impl NewWorkflowForm {
                 .map(|t| t.placement.clone()),
         };
         let host = placement.is_none_or(|p| p != berth_slot::Placement::Inside.as_str());
-        let why = cx.try_global::<super::EnvGlobal>()?.0.claude.blocks_agents;
+        let why = cx.try_global::<super::EnvGlobal>()?.0.agents_blocked();
         why.filter(|_| host)
     }
 
@@ -894,7 +894,7 @@ impl Render for NewWorkflowForm {
                 modal::footer(
                     &t,
                     match blocked {
-                        Some(why) => div().text_color(t.attention).child(why),
+                        Some((why, _)) => div().text_color(t.attention).child(why),
                         None => div().child(if reusing {
                             "The agent takes the first round in the slot's files as they are."
                         } else {
@@ -902,12 +902,15 @@ impl Render for NewWorkflowForm {
                         }),
                     },
                 )
-                    .when(blocked.is_some(), |d| {
+                    .when_some(blocked, |d, (_, fix)| {
                         d.child(
-                            Btn::new("nw-sign-in")
+                            Btn::new("nw-fix")
                                 .size(Size::S32)
-                                .label("Sign in…")
-                                .on_click(cx.listener(|this, _, window, cx| this.open_sign_in(window, cx))),
+                                .label(super::sign_in::fix_label(fix))
+                                .on_click(cx.listener(move |this, _, window, cx| match fix {
+                                    AgentFix::SignIn => this.open_sign_in(window, cx),
+                                    AgentFix::GetNode => cx.open_url(super::sign_in::NODE_URL),
+                                })),
                         )
                     })
                     .child(

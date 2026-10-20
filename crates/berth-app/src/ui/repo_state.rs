@@ -668,7 +668,7 @@ impl RepoState {
                 self.connectors = connectors;
                 cx.notify();
             }
-            UiEvent::Settings { model, theme } => {
+            UiEvent::Settings { model, theme, .. } => {
                 self.model_setting = Some(model);
                 self.theme_setting = Some(theme);
                 cx.notify();

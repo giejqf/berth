@@ -94,6 +94,7 @@ fn check_row(
             "{} · runs every agent round",
             s.detail.split(" · ").next().unwrap_or(&s.detail)
         ),
+        ("Node.js", ToolState::Ok) => format!("{} · runs Berth's agents", s.summary),
         ("GitHub CLI", ToolState::Ok) => format!(
             "Signed in as {} · issues, PRs and comments",
             s.user.clone().unwrap_or_default()
@@ -139,7 +140,7 @@ impl Render for Welcome {
             .try_global::<EnvGlobal>()
             .map(|e| e.0.clone())
             .unwrap_or_default();
-        let ready = [&env.claude, &env.gh]
+        let ready = [&env.claude, &env.node, &env.gh]
             .iter()
             .filter(|s| s.state == ToolState::Ok)
             .count();
@@ -291,13 +292,14 @@ impl Render for Welcome {
                             .border_b_1()
                             .border_color(t.border)
                             .child(div().semibold().child("Before you start"))
-                            .child(div().ml_auto().ty(ty::META).text_color(t.text2).child(format!("{ready} of 2 ready"))),
+                            .child(div().ml_auto().ty(ty::META).text_color(t.text2).child(format!("{ready} of 3 ready"))),
                     )
                     .child(check_row(&t, "Claude Code", &env.claude, Some(if env.claude.switchable {
                         ("Sign in…", Box::new(cx.listener(|this, _, window, cx| this.open_sign_in(window, cx))) as Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>)
                     } else {
                         ("Check again", Box::new(|_: &ClickEvent, _: &mut Window, cx: &mut App| Berth::backend(cx).send(Command::CheckEnvironment)))
                     }), false))
+                    .child(check_row(&t, "Node.js", &env.node, Some(("Get Node.js", |_: &ClickEvent, _: &mut Window, cx: &mut App| cx.open_url(super::sign_in::NODE_URL))), false))
                     .child(check_row(&t, "GitHub CLI", &env.gh, Some(("Sign in…", |_: &ClickEvent, _: &mut Window, cx: &mut App| Berth::backend(cx).send(Command::ToolAuth { tool: "gh".into(), sign_in: true }))), true)),
             )
             .child(

@@ -42,8 +42,8 @@ impl Shared {
 
     /// Claude Code's sessions for `dir` and its git worktrees, newest first.
     async fn list_sessions(&self, dir: &Path) -> Result<Vec<PastSession>> {
-        let mut cmd = tokio::process::Command::new(&self.launch.program);
-        cmd.args(&self.launch.args).current_dir(dir);
+        let mut cmd = self.launch.command()?;
+        cmd.current_dir(dir);
         let (sidecar, mut events) = Sidecar::spawn(cmd)?;
         sidecar.send(AppToSidecar::SessionsList(SessionsList {
             dir: dir.to_string_lossy().into_owned(),
@@ -93,8 +93,8 @@ impl Shared {
             .clone()
             .unwrap_or_else(|| wf.origin.title.clone());
         let renamed = async {
-            let mut cmd = tokio::process::Command::new(&self.launch.program);
-            cmd.args(&self.launch.args).current_dir(&dir);
+            let mut cmd = self.launch.command()?;
+            cmd.current_dir(&dir);
             let (sidecar, mut events) = Sidecar::spawn(cmd)?;
             sidecar.send(AppToSidecar::SessionsRename(SessionsRename {
                 session_id,

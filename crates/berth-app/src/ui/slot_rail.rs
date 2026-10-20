@@ -252,10 +252,12 @@ fn footer(t: &Tokens, cx: &App, collapsed: bool) -> Div {
         .filter(|_| claude.state == ToolState::Ok)
         .or_else(|| account.as_ref().and_then(account_detail))
         .map(Into::into);
-    let rows = [
-        ("Claude Code", &claude, "claude"),
-        ("GitHub", &env.gh, "gh"),
-    ];
+    // Node.js only when agents can't run for want of it.
+    let mut rows = vec![("Claude Code", &claude, "claude")];
+    if env.node.blocks_agents.is_some() {
+        rows.push(("Node.js", &env.node, "node"));
+    }
+    rows.push(("GitHub", &env.gh, "gh"));
     let base = div()
         .mt_auto()
         .flex()

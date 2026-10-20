@@ -1,5 +1,5 @@
-//! What the app depends on outside itself: Claude Code, the GitHub CLI and
-//! Docker. Shown in the rail footer, Settings › Connections and Welcome.
+//! What the app depends on outside itself: Claude Code, Node.js, the GitHub
+//! CLI and Docker. Shown in the rail footer, Settings › Connections and Welcome.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
-use super::launch::which;
-use super::types::{EnvStatus, LoginMethod, ToolState, ToolStatus, UiEvent};
+use super::launch::{NODE_MIN_MAJOR, NODE_MISSING, find_node, version, which};
+use super::types::{AgentFix, EnvStatus, LoginMethod, ToolState, ToolStatus, UiEvent};
 use super::{Shared, lock};
 
 const CHECK_TIMEOUT: Duration = Duration::from_secs(8);
@@ -20,13 +20,23 @@ impl Shared {
     pub(super) async fn check_environment(self: &Arc<Self>) {
         *lock(&self.env_checked) = Some(Instant::now());
         let claude = claude_binary(&self.launch.bundle_dir);
-        let ((claude, auth), gh, docker) =
-            tokio::join!(check_claude(claude), check_gh(), check_docker());
-        *lock(&self.claude_blocked) = claude.blocks_agents;
+        let ((claude, auth), node, gh, docker) = tokio::join!(
+            check_claude(claude),
+            check_node(),
+            check_gh(),
+            check_docker()
+        );
         if let Some(auth) = auth {
             self.saw_claude_auth(&auth);
         }
-        self.emit(UiEvent::Environment(EnvStatus { claude, gh, docker }));
+        let env = EnvStatus {
+            claude,
+            node,
+            gh,
+            docker,
+        };
+        *lock(&self.agents_blocked) = env.agents_blocked();
+        self.emit(UiEvent::Environment(Box::new(env)));
     }
 
     /// [`Self::check_environment`], unless one ran in the last few seconds
@@ -38,12 +48,13 @@ impl Shared {
         }
     }
 
-    /// Why an agent on this Mac can't start, checking again first when the
-    /// last check said so (the user may have signed in since).
-    pub(super) async fn claude_unavailable(self: &Arc<Self>) -> Option<&'static str> {
-        lock(&self.claude_blocked).as_ref()?;
+    /// Why an agent on this Mac can't start, and the fix, checking again
+    /// first when the last check said so (the user may have signed in or
+    /// installed Node.js since).
+    pub(super) async fn agents_unavailable(self: &Arc<Self>) -> Option<(&'static str, AgentFix)> {
+        lock(&self.agents_blocked).as_ref()?;
         self.check_environment().await;
-        *lock(&self.claude_blocked)
+        *lock(&self.agents_blocked)
     }
 
     /// Run a sign-in or sign-out command for a tool.
@@ -312,6 +323,53 @@ fn provider_name(provider: &str) -> &str {
     }
 }
 
+/// The `node` the sidecar would run on, and whether it is new enough.
+async fn check_node() -> ToolStatus {
+    let Some(bin) = find_node() else {
+        let mut s = ToolStatus::new(
+            ToolState::Missing,
+            "missing",
+            &format!("Not found. Berth's agents run on Node.js {NODE_MIN_MAJOR} or newer."),
+        );
+        s.blocks_agents = Some(NODE_MISSING);
+        return s;
+    };
+    node_status(&bin, run(&bin, &["--version"]).await.map(|(_, out, _)| out))
+}
+
+fn node_status(bin: &Path, answer: Option<String>) -> ToolStatus {
+    let at = bin.display();
+    let Some(out) = answer else {
+        return ToolStatus::new(
+            ToolState::Warn,
+            "not responding",
+            &format!("{at} didn't answer"),
+        );
+    };
+    match version(&out) {
+        Some((major, ..)) if major >= NODE_MIN_MAJOR => {
+            let mut s = ToolStatus::new(ToolState::Ok, &out, &format!("{out} · {at}"));
+            s.tip = Some(format!("Node.js {out} at {at}"));
+            s
+        }
+        Some(_) => {
+            let mut s = ToolStatus::new(
+                ToolState::Warn,
+                &format!("{out}, too old"),
+                &format!("{out} at {at} is too old: agents need {NODE_MIN_MAJOR} or newer."),
+            );
+            s.blocks_agents =
+                Some("Node.js on this Mac is too old for agents (they need 22 or newer).");
+            s
+        }
+        None => ToolStatus::new(
+            ToolState::Warn,
+            "unknown version",
+            &format!("{at} says {out:?}"),
+        ),
+    }
+}
+
 async fn check_gh() -> ToolStatus {
     let Some(bin) = which("gh") else {
         return ToolStatus::new(
@@ -441,6 +499,31 @@ mod tests {
         );
         assert_eq!(console.summary, "Console");
         assert!(console.switchable);
+    }
+
+    #[test]
+    fn node_needs_a_recent_version_and_says_where_it_is() {
+        let bin = Path::new("/opt/homebrew/bin/node");
+        let ok = node_status(bin, Some("v24.1.0".to_owned()));
+        assert_eq!(ok.state, ToolState::Ok);
+        assert_eq!(ok.detail, "v24.1.0 · /opt/homebrew/bin/node");
+        assert!(ok.blocks_agents.is_none());
+        let old = node_status(bin, Some("v18.20.4".to_owned()));
+        assert!(old.blocks_agents.is_some() && old.state == ToolState::Warn);
+        let silent = node_status(bin, None);
+        assert!(silent.blocks_agents.is_none());
+    }
+
+    #[test]
+    fn node_blocks_agents_before_signing_in_does() {
+        let mut env = EnvStatus::default();
+        env.claude.blocks_agents = Some("signed out");
+        assert_eq!(env.agents_blocked(), Some(("signed out", AgentFix::SignIn)));
+        env.node.blocks_agents = Some(NODE_MISSING);
+        assert_eq!(
+            env.agents_blocked(),
+            Some((NODE_MISSING, AgentFix::GetNode))
+        );
     }
 
     #[test]

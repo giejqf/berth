@@ -14,9 +14,12 @@ mod ui;
 use gpui::{App, Menu, MenuItem};
 
 fn main() {
-    shell_env::import_login_shell_env();
+    let env_notes = shell_env::import_login_shell_env();
     disable_font_smoothing();
     let _log_guard = init_logging();
+    for note in env_notes {
+        tracing::warn!("{note}");
+    }
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)

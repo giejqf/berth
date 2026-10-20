@@ -11,10 +11,10 @@ use std::time::{Duration, Instant};
 
 use berth_protocol::DiffPreset;
 use gpui::{
-    AnyView, AppContext as _, Context, DismissEvent, DragMoveEvent, Entity, EntityId, EventEmitter,
-    FocusHandle, Focusable, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, SharedString, Styled as _,
-    Subscription, Window, div, point, prelude::FluentBuilder as _, px,
+    AnyView, App, AppContext as _, Context, DismissEvent, DragMoveEvent, Entity, EntityId,
+    EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, SharedString,
+    Styled as _, Subscription, Window, div, point, prelude::FluentBuilder as _, px,
 };
 use gpui_component::notification::Notification;
 use gpui_component::{TitleBar, WindowExt as _};
@@ -58,6 +58,10 @@ const WIDE: f32 = 1400.;
 /// stated widths): rail 240 + 2×8 padding + 1 border, review 520 + 1 border.
 pub const RAIL_W: f32 = 257.;
 pub const REVIEW_W: f32 = 521.;
+/// The review pane's narrowest, and the room a wider one always leaves the
+/// flow (next to the collapsed rail), so its header's meta line still fits.
+const REVIEW_MIN_W: f32 = 400.;
+const FLOW_MIN_W: f32 = 560.;
 /// The terminal panel's default and smallest heights.
 const TERMINAL_H: f32 = 280.;
 const TERMINAL_MIN_H: f32 = 120.;
@@ -86,6 +90,8 @@ pub struct RepoWindow {
     terminal_max: bool,
     /// Mouse y and panel height when a resize drag started.
     terminal_drag: Option<(Pixels, Pixels)>,
+    /// Mouse x and the review pane's width when a resize drag started.
+    review_drag: Option<(Pixels, f32)>,
     /// The slot the panel last showed: a newly shown slot gets a shell.
     terminal_slot: Option<String>,
     /// A terminal had focus at the last frame: switching slots keeps typing
@@ -176,6 +182,7 @@ impl RepoWindow {
             terminal_height: px(TERMINAL_H),
             terminal_max: false,
             terminal_drag: None,
+            review_drag: None,
             terminal_slot: None,
             terminal_focused: false,
             terminal_shown: PanelMode::Hidden,
@@ -394,6 +401,44 @@ impl RepoWindow {
         }
         self.terminal_height = clamp_terminal(h + (y - e.position.y), window);
         cx.notify();
+    }
+
+    fn start_review_drag(
+        &mut self,
+        e: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        cx.stop_propagation();
+        // A double click puts it back to the design's width.
+        if e.click_count == 2 {
+            self.review_drag = None;
+            set_review_width(None, cx);
+            return;
+        }
+        self.review_drag = Some((e.position.x, review_width(window, cx)));
+    }
+
+    fn drag_review(&mut self, e: &MouseMoveEvent, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let Some((x, w)) = self.review_drag else {
+            return;
+        };
+        if e.pressed_button != Some(MouseButton::Left) {
+            self.end_review_drag(cx);
+            return;
+        }
+        // The pane's left edge follows the pointer.
+        let w = clamp_review(w + (x - e.position.x).as_f32(), window);
+        cx.global_mut::<super::Berth>().review_width = Some(w);
+        cx.notify();
+    }
+
+    /// Keep the width the drag left, for every window and the next launch.
+    fn end_review_drag(&mut self, cx: &mut Context<'_, Self>) {
+        if self.review_drag.take().is_some() {
+            let w = cx.global::<super::Berth>().review_width;
+            set_review_width(w, cx);
+        }
     }
 
     fn on_repo_event(
@@ -759,8 +804,11 @@ impl RepoWindow {
         }
     }
 
-    fn rail_collapsed(&self, window: &Window) -> bool {
-        let auto = self.review_open && window.viewport_size().width < px(WIDE);
+    fn rail_collapsed(&self, window: &Window, cx: &App) -> bool {
+        // As at the design's width below 1400px: whenever the review pane
+        // leaves the flow less room than that.
+        let room = window.viewport_size().width.as_f32() - review_width(window, cx) - RAIL_W;
+        let auto = self.review_open && room < WIDE - REVIEW_W - RAIL_W;
         self.rail_override.unwrap_or(auto)
     }
 
@@ -856,7 +904,7 @@ impl Render for RepoWindow {
                 .and_then(|t| t.active())
                 .is_some_and(|v| v.focus_handle(cx).contains_focused(window, cx));
         let review_open = self.review_open && has_workflow;
-        let collapsed = self.rail_collapsed(window);
+        let collapsed = self.rail_collapsed(window, cx);
         let modal = self.modal.as_ref().map(|(v, ..)| v.clone());
         let closing = self.closing.as_ref().and_then(|(v, at)| {
             motion::since(*at, motion::FAST, window, cx).map(|p| (v.clone(), p))
@@ -880,9 +928,11 @@ impl Render for RepoWindow {
             window,
             cx,
         );
+        // Opening and closing slide; a drag and a window resize follow at once.
+        let review_w = review_width(window, cx);
         let review = motion::value(
-            "review-width",
-            if review_open { REVIEW_W } else { 0. },
+            "review-open",
+            if review_open { 1. } else { 0. },
             motion::PANEL,
             window,
             cx,
@@ -974,7 +1024,7 @@ impl Render for RepoWindow {
                 cx.listener(|this, _: &ToggleReview, _, cx| this.set_review(!this.review_open, cx)),
             )
             .on_action(cx.listener(|this, _: &ToggleRail, window, cx| {
-                let now = this.rail_collapsed(window);
+                let now = this.rail_collapsed(window, cx);
                 this.rail_override = Some(!now);
                 cx.notify();
             }))
@@ -1121,9 +1171,13 @@ impl Render for RepoWindow {
                 this.cycle_terminal(-1, window, cx);
             }))
             .on_mouse_move(cx.listener(Self::drag_terminal))
+            .on_mouse_move(cx.listener(Self::drag_review))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _, _, _| this.terminal_drag = None),
+                cx.listener(|this, _, _, cx| {
+                    this.terminal_drag = None;
+                    this.end_review_drag(cx);
+                }),
             )
             .child(self.title_bar(&t, cx))
             .child(
@@ -1238,13 +1292,14 @@ impl Render for RepoWindow {
                     })
                     .when(review_open || motion::moving(&review), |d| {
                         // Slides in from the window's right edge.
+                        let sliding = motion::moving(&review);
                         d.child(
                             div()
                                 .relative()
-                                .w(px(if motion::moving(&review) {
-                                    review.value
+                                .w(px(if sliding {
+                                    review.value * review_w
                                 } else {
-                                    REVIEW_W
+                                    review_w
                                 }))
                                 .flex_none()
                                 .h_full()
@@ -1255,9 +1310,26 @@ impl Render for RepoWindow {
                                         .top_0()
                                         .right_0()
                                         .bottom_0()
-                                        .w(px(REVIEW_W))
+                                        .w(px(review_w))
                                         .child(self.review.clone()),
-                                ),
+                                )
+                                // Its left edge resizes it.
+                                .when(!sliding, |d| {
+                                    d.child(
+                                        div()
+                                            .id("review-resize")
+                                            .absolute()
+                                            .top_0()
+                                            .bottom_0()
+                                            .left_0()
+                                            .w(px(5.))
+                                            .cursor_col_resize()
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(Self::start_review_drag),
+                                            ),
+                                    )
+                                }),
                         )
                     }),
             )
@@ -1323,6 +1395,32 @@ fn drop_overlay(t: &Tokens, label: String, target: bool) -> gpui::AnyElement {
             .child(pill)
             .into_any_element()
     }
+}
+
+/// The review pane's width: as the user last dragged it (kept in settings,
+/// the same in every window), within its minimum and the flow's room.
+pub fn review_width(window: &Window, cx: &App) -> f32 {
+    let want = cx
+        .try_global::<super::Berth>()
+        .and_then(|b| b.review_width)
+        .unwrap_or(REVIEW_W);
+    clamp_review(want, window)
+}
+
+fn clamp_review(w: f32, window: &Window) -> f32 {
+    let room = window.viewport_size().width.as_f32() - slot_rail::STRIP_W - FLOW_MIN_W;
+    w.clamp(REVIEW_MIN_W, room.max(REVIEW_MIN_W))
+}
+
+/// Every window takes the width (`None`: the design's), and the next launch.
+fn set_review_width(w: Option<f32>, cx: &mut App) {
+    cx.global_mut::<super::Berth>().review_width = w;
+    let value = w.map_or_else(String::new, |w| format!("{}", w.round()));
+    super::Berth::backend(cx).send(Command::SetSetting {
+        key: "review_width".to_owned(),
+        value,
+    });
+    cx.refresh_windows();
 }
 
 /// The panel's height, kept between its minimum and leaving the flow room.

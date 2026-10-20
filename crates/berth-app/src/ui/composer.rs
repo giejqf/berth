@@ -19,7 +19,7 @@ use gpui_component::input::{InputEvent, Position, TextareaState};
 use super::RepoState;
 use super::kit::{Btn, Size, TypeExt as _, dot, field_frame, icon, kbd, plural, ring, spinner};
 use super::motion;
-use crate::backend::Command;
+use crate::backend::{AgentFix, Command};
 use crate::keymap::{
     AcceptCompletion, AcceptSuggestion, ChooseModel, ClaudeAccount, DismissCompletion,
     FollowUpFromOutcome, NewWorkflow, NewWorkflowHere, NextCompletion, PrevCompletion,
@@ -748,7 +748,9 @@ impl Render for Composer {
             .when_some(self.notice.clone().filter(|_| !completing), |d, notice| {
                 d.child(div().ty(ty::META).text_color(t.attention).child(notice))
             })
-            .when_some(signed_out, |d, why| d.child(sign_in_row(&t, why)))
+            .when_some(signed_out, |d, (why, fix)| {
+                d.child(blocked_row(&t, why, fix))
+            })
             .child(boxed)
             .into_any_element()
     }
@@ -907,19 +909,19 @@ fn closed_row(t: &Tokens) -> impl IntoElement {
 }
 
 /// The selected slot is still being created (`slot.sh create`, then `status`).
-/// Why the selected slot's agent can't run: Claude Code is signed out (or
-/// missing) on this Mac and the slot's agent runs here. An `inside` slot signs
-/// its agent in by itself.
-fn agent_blocked(state: &super::RepoState, cx: &App) -> Option<&'static str> {
+/// Why the selected slot's agent can't run, and the fix: Claude Code is
+/// signed out (or missing) or Node.js is, on this Mac, and the slot's agent
+/// runs here. An `inside` slot brings its own.
+fn agent_blocked(state: &super::RepoState, cx: &App) -> Option<(&'static str, AgentFix)> {
     let host = state
         .selected()
         .is_some_and(|e| e.slot.placement != berth_slot::Placement::Inside.as_str());
-    let why = cx.try_global::<super::EnvGlobal>()?.0.claude.blocks_agents;
+    let why = cx.try_global::<super::EnvGlobal>()?.0.agents_blocked();
     why.filter(|_| host)
 }
 
-/// The composer's "sign in first" line, with the way to do it.
-fn sign_in_row(t: &Tokens, why: &'static str) -> gpui::Div {
+/// The composer's "can't run yet" line, with the way to fix it.
+fn blocked_row(t: &Tokens, why: &'static str, fix: AgentFix) -> gpui::Div {
     div()
         .flex()
         .items_center()
@@ -929,10 +931,13 @@ fn sign_in_row(t: &Tokens, why: &'static str) -> gpui::Div {
         .child(dot(8., t.attention))
         .child(div().flex_1().min_w_0().child(why))
         .child(
-            Btn::new("composer-sign-in")
+            Btn::new("composer-fix")
                 .size(Size::S26)
-                .label("Sign in…")
-                .on_click(|_, window, cx| window.dispatch_action(Box::new(ClaudeAccount), cx)),
+                .label(super::sign_in::fix_label(fix))
+                .on_click(move |_, window, cx| match fix {
+                    AgentFix::SignIn => window.dispatch_action(Box::new(ClaudeAccount), cx),
+                    AgentFix::GetNode => cx.open_url(super::sign_in::NODE_URL),
+                }),
         )
 }
 

@@ -157,7 +157,7 @@ berth/
 | Visual system | Gruvbox tokens in `theme.rs` (dark and light), IBM Plex Sans 13/18 and JetBrains Mono 12, bundled (SIL OFL 1.1: fonts are data, compatible with MIT) | Sizes follow the design *as rendered* (its CSS adds padding/borders to stated widths). Text renders without CoreGraphics stroke dilation: Berth sets `AppleFontSmoothing = 0` in its own defaults domain at launch (ADR 0003). |
 | GitHub | `gh` CLI with `--json`, reusing the user's auth | No GitHub API client crate. |
 | Secrets | macOS Keychain via `security-framework` | Never written to SQLite or disk. |
-| Sidecar runtime | Node 22+, pnpm, `tsx` in dev, bundled with `esbuild` for release | Bundle shipped inside the app at `Contents/Resources/sidecar/`, with the SDK's native `claude` next to it. Claude binary: `$BERTH_CLAUDE_PATH`, else `claude` beside the bundle, else the SDK's own. TypeScript 6 (typescript-eslint does not support 7 yet), zod 4. |
+| Sidecar runtime | Node 22+, pnpm, `tsx` in dev, bundled with `esbuild` for release | Bundle shipped inside the app at `Contents/Resources/sidecar/`, with the SDK's native `claude` next to it. Claude binary: `$BERTH_CLAUDE_PATH`, else `claude` beside the bundle, else the SDK's own. Node: `node` on the login shell's `PATH`, else where Homebrew, MacPorts, Volta, mise, asdf, nodenv, n, nvm or fnm put it (`backend/launch.rs`; nvm's setup in `~/.zshrc` never reaches a login shell), looked up for each sidecar; without it, or older than 22, host agents don't start and the UI says so. TypeScript 6 (typescript-eslint does not support 7 yet), zod 4. |
 | Dev overrides | `BERTH_HOME` (app data), `BERTH_CONFIG_DIR` (slots/connectors), `BERTH_LOG_DIR`, `BERTH_SECRETS=memory`, `BERTH_SIDECAR` (command line), `BERTH_THEME=light\|dark`, `BERTH_DEV_SEED=<scenario>` (devtools) | Never needed in normal use. |
 | Logging | `tracing` (Rust), `pino` (TS); both to `~/Library/Logs/Berth/` | No telemetry. None. |
 
@@ -602,7 +602,7 @@ gh_entities      id, repo_id, kind, number_or_sha, json, synced_at
 workflow_links   workflow_id, entity_id, role(origin|outcome)
 connectors       name, path, enabled
 settings         key, value          # last_repo, recent_repos, model, models, quota, commands:<repo_id>, account,
-                                     # claude_identity
+                                     # claude_identity, review_width
 ```
 
 Timestamps are unix epoch milliseconds. `nodes.raw_first/raw_last` are `raw_events.id`
@@ -695,10 +695,13 @@ settles nothing (ADR 0013).
   welcome window opens when no repo is open; launch reopens the last repo (or the
   path in argv[1]).
 - Primary layout: 45px title bar; left **slot rail** (257px as rendered), center
-  **event flow** + composer, right **review pane** (521px). The rail collapses to a
-  57px strip of state dots: by hand (the button next to + in its header, the one at
-  the top of the strip, or ⌘⇧L), and on its own while the review pane is open on a
-  window under 1400px. The review pane opens automatically on `Summary` and `Outcome`.
+  **event flow** + composer, right **review pane** (521px; its left edge drags it
+  wider or narrower, 400px up to leaving the flow 560px, the same in every window and
+  kept in `settings.review_width`; a double click on the edge goes back to 521).
+  The rail collapses to a 57px strip of state dots: by hand (the button next to + in
+  its header, the one at the top of the strip, or ⌘⇧L), and on its own while the
+  review pane is open and leaves the flow less room than at 1400px (under 1400px at
+  the pane's own width). The review pane opens automatically on `Summary` and `Outcome`.
 - The rail groups slots by what they need: **Needs you** (a question, an idle workflow
   awaiting its next prompt, a failed slot), **Working**, **Ready to review** (idle after
   a summary), **Done**. Each slot's mark is a dot in its group's color; a busy slot's
@@ -708,7 +711,7 @@ settles nothing (ADR 0013).
   ago", "Review: 5 findings to decide · 1m ago", "Committed · 1 follow-up"); while
   Claude Code retries a failed API request it says so ("The API is overloaded; trying
   again (2 of 10) in 8s", `api_retry`). The footer shows Claude Code / GitHub CLI status
-  (`backend/env.rs`); once signed in, Claude Code's line names the plan ("Max plan",
+  (`backend/env.rs`; Node.js too while agents can't run without it); once signed in, Claude Code's line names the plan ("Max plan",
   "API key", or "via Bedrock"), and hovering it says who it signs in as (`claude auth
   status`, else `session.account`, kept in `settings.account`).
 - A slot's first line is its workflow's title, or the name the user gave it: **Rename
@@ -814,7 +817,8 @@ settles nothing (ADR 0013).
   (`settings.claude_identity`), the saved account and plan limits are dropped and
   host sessions restart on it: idle ones at once, others when their round ends.
   API keys and cloud providers from the environment show as ready, with no sign in
-  or out.
+  or out. Node.js missing (or older than 22) blocks host agents the same way, with
+  **Get Node.js** in place of Sign in…; Settings and Welcome list it with Claude Code.
 - **Usage ring** (`ui/usage.rs`, ADR 0014): at the end of the composer's status line,
   a ring of two arcs: the workflow's context window outside (`workflows.context_json`,
   reported by its session after each round, each compaction and on resume), the
