@@ -23,6 +23,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0005_workflow_opened_at.sql"),
     include_str!("../migrations/0006_slot_window.sql"),
     include_str!("../migrations/0007_workflow_context.sql"),
+    include_str!("../migrations/0008_turn_uuids.sql"),
 ];
 
 pub struct Store {
@@ -778,10 +779,46 @@ impl Store {
             })?)
     }
 
+    /// Where the next session resumes; clearing it clears the turn it drops too.
     pub fn set_workflow_resume_at(&self, id: &str, at: Option<&str>) -> Result<()> {
         self.conn.execute(
-            "UPDATE workflows SET resume_at = ?2 WHERE id = ?1",
+            "UPDATE workflows SET resume_at = ?2, \
+             resume_drops = CASE WHEN ?2 IS NULL THEN NULL ELSE resume_drops END WHERE id = ?1",
             params![id, at],
+        )?;
+        Ok(())
+    }
+
+    /// The one turn a pending rewind drops, when it is exactly one (ADR 0016).
+    pub fn workflow_resume_drops(&self, id: &str) -> Result<Option<String>> {
+        Ok(self.conn.query_row(
+            "SELECT resume_drops FROM workflows WHERE id = ?1",
+            [id],
+            |r| r.get(0),
+        )?)
+    }
+
+    pub fn set_workflow_resume_drops(&self, id: &str, turn: Option<&str>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE workflows SET resume_drops = ?2 WHERE id = ?1",
+            params![id, turn],
+        )?;
+        Ok(())
+    }
+
+    /// The uuid of the user message that opened round `id`, when Berth sent one.
+    pub fn round_turn(&self, id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT turn_uuid FROM rounds WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })?)
+    }
+
+    pub fn set_round_turn(&self, id: &str, turn: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE rounds SET turn_uuid = ?2 WHERE id = ?1",
+            params![id, turn],
         )?;
         Ok(())
     }

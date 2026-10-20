@@ -294,6 +294,62 @@ pub struct Review {
     pub answered_at: Option<i64>,
 }
 
+/// A slash command Claude Code ran by itself, without the model (`/context`,
+/// `/usage`), and what it printed (ADR 0015).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct Command {
+    /// As the user typed it: `/context`.
+    pub command: String,
+    /// What it printed, markdown; empty when it printed nothing.
+    #[serde(default)]
+    pub output: String,
+}
+
+/// The model refused a request (ADR 0016): Claude Code went on with its
+/// fallback model, or the round stopped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct Refusal {
+    /// The model that refused.
+    pub model: String,
+    /// The model that answered instead, if one did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub fallback_model: Option<String>,
+    /// The refusal's category (`cyber`, `bio`, …), when the API gave one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub category: Option<String>,
+    /// The API's explanation, for display only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub explanation: Option<String>,
+    /// A subagent's request, not the main conversation's.
+    #[serde(default)]
+    pub subagent: bool,
+}
+
+/// Who compacted the conversation: the user (`/compact`) or Claude Code, as
+/// the context window filled up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactTrigger {
+    Manual,
+    Auto,
+}
+
+/// Claude Code compacted the conversation: what came before is a summary now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct Compacted {
+    pub trigger: CompactTrigger,
+    /// The context before, in tokens.
+    #[ts(type = "number")]
+    pub pre_tokens: u64,
+    /// The context after, when Claude Code says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub post_tokens: Option<u64>,
+}
+
 /// The user rewound the conversation to here: the Prompt that stood here and
 /// everything after it were dropped, and the agent resumes from the moment
 /// before it. Files were not rewound.
@@ -439,10 +495,13 @@ pub enum NodeKind {
     Review,
     Rewind,
     Reopened,
+    Command,
+    Compacted,
+    Refusal,
 }
 
 impl NodeKind {
-    pub const ALL: [NodeKind; 12] = [
+    pub const ALL: [NodeKind; 15] = [
         Self::Origin,
         Self::Prompt,
         Self::Question,
@@ -455,6 +514,9 @@ impl NodeKind {
         Self::Review,
         Self::Rewind,
         Self::Reopened,
+        Self::Command,
+        Self::Compacted,
+        Self::Refusal,
     ];
 
     #[must_use]
@@ -472,6 +534,9 @@ impl NodeKind {
             Self::Review => "review",
             Self::Rewind => "rewind",
             Self::Reopened => "reopened",
+            Self::Command => "command",
+            Self::Compacted => "compacted",
+            Self::Refusal => "refusal",
         }
     }
 
@@ -499,6 +564,9 @@ pub enum NodePayload {
     Review(Review),
     Rewind(Rewind),
     Reopened(Reopened),
+    Command(Command),
+    Compacted(Compacted),
+    Refusal(Refusal),
 }
 
 impl NodePayload {
@@ -517,6 +585,9 @@ impl NodePayload {
             Self::Review(_) => NodeKind::Review,
             Self::Rewind(_) => NodeKind::Rewind,
             Self::Reopened(_) => NodeKind::Reopened,
+            Self::Command(_) => NodeKind::Command,
+            Self::Compacted(_) => NodeKind::Compacted,
+            Self::Refusal(_) => NodeKind::Refusal,
         }
     }
 
@@ -535,6 +606,9 @@ impl NodePayload {
             Self::Review(p) => serde_json::to_string(p),
             Self::Rewind(p) => serde_json::to_string(p),
             Self::Reopened(p) => serde_json::to_string(p),
+            Self::Command(p) => serde_json::to_string(p),
+            Self::Compacted(p) => serde_json::to_string(p),
+            Self::Refusal(p) => serde_json::to_string(p),
         }
     }
 
@@ -553,6 +627,9 @@ impl NodePayload {
             NodeKind::Review => Self::Review(serde_json::from_str(json)?),
             NodeKind::Rewind => Self::Rewind(serde_json::from_str(json)?),
             NodeKind::Reopened => Self::Reopened(serde_json::from_str(json)?),
+            NodeKind::Command => Self::Command(serde_json::from_str(json)?),
+            NodeKind::Compacted => Self::Compacted(serde_json::from_str(json)?),
+            NodeKind::Refusal => Self::Refusal(serde_json::from_str(json)?),
         })
     }
 }

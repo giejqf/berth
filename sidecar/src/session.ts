@@ -11,9 +11,11 @@ import { fileURLToPath } from "node:url";
 
 import {
   query as sdkQuery,
+  type AccountInfo,
   type ModelInfo,
   type Options,
   type SDKMessage,
+  type SlashCommand,
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 
@@ -76,7 +78,10 @@ export interface AgentQuery extends AsyncIterable<SDKMessage> {
   setModel(model?: string): Promise<void>;
   applyFlagSettings(settings: { effortLevel?: Effort | null }): Promise<void>;
   supportedModels(): Promise<ModelInfo[]>;
-  /** Optional so test fakes may leave them out; the SDK's `Query` has both. */
+  /** Optional so test fakes may leave them out; the SDK's `Query` has them. */
+  supportedCommands?(): Promise<SlashCommand[]>;
+  accountInfo?(): Promise<AccountInfo>;
+  backgroundTasks?(toolUseId?: string): Promise<boolean>;
   getContextUsage?(opts?: { detail?: "summary" | "full" }): Promise<ContextReport>;
   usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET?(opts?: { skipBehaviors?: boolean }): Promise<UsageReport>;
 }
@@ -104,7 +109,15 @@ interface Round {
   terminal: TerminalTool | null;
   interrupted: boolean;
   lastText?: string;
+  /** The turn that opened it was a slash command (`/name`). */
+  command?: boolean;
 }
+
+/** How Claude Code's refusal of a guarded resume starts (`resumeDropsTurn`). */
+export const RESUME_REJECTED = "Resume rejected by --resume-drops-turn:";
+
+/** `/name` at the start of a turn: what Claude Code would run as a command. */
+const SLASH_COMMAND = /^\/[A-Za-z0-9][A-Za-z0-9:._-]*(?:\s|$)/;
 
 interface ObservedToolUse {
   id: string;
@@ -131,7 +144,13 @@ export class Session implements ToolHost {
   private readonly log: Logger;
   private readonly queryFn: QueryFn;
   private readonly now: () => number;
-  private readonly input = new AsyncQueue<SDKUserMessage>();
+  private input = new AsyncQueue<SDKUserMessage>();
+  /** How the session started, for a plain resume when Claude Code refuses
+   * a rewind's guarded one (ADR 0016). */
+  private launch?: { msg: SessionStart | SessionResume; resume?: string };
+  /** Turns sent since a guarded resume, until it is known to have gone
+   * through: a refused one sends them again. */
+  private replay?: SDKUserMessage[];
   private readonly branches: BranchTracker;
   private readonly toolUses = new Map<string, ObservedToolUse>();
   private readonly toolUseWaiters = new Map<string, Array<(t: ObservedToolUse) => void>>();
@@ -151,6 +170,8 @@ export class Session implements ToolHost {
   private contextBusy = false;
   private contextAgain = false;
   private quotaAt = -Infinity;
+  /** Commands bound to Claude Code's terminal (from `init`), sent with the list. */
+  private terminalCommands: string[] = [];
 
   constructor(deps: SessionDeps) {
     this.emitter = deps.emitter;
@@ -180,8 +201,11 @@ export class Session implements ToolHost {
     this.cwd = msg.cwd;
     const resume = "claude_session_id" in msg ? msg.claude_session_id : undefined;
     const resumeAt = "resume_at" in msg ? msg.resume_at : undefined;
+    const dropsTurn = "drops_turn" in msg && resumeAt ? msg.drops_turn : undefined;
     if (resume) this.claudeSessionId = resume;
-    this.q = this.queryFn({ prompt: this.input, options: this.options(msg, resume, resumeAt) });
+    this.launch = { msg, resume };
+    if (dropsTurn) this.replay = [];
+    this.q = this.queryFn({ prompt: this.input, options: this.options(msg, resume, resumeAt, dropsTurn) });
     this.consuming = this.consume(this.q);
     void this.reportModels(this.q);
   }
@@ -225,14 +249,32 @@ export class Session implements ToolHost {
     }
   }
 
-  turn(text: string, attachments: TurnAttachment[] = []): void {
+  turn(text: string, attachments: TurnAttachment[] = [], uuid?: string): void {
     if (!this.q) {
       this.error("session.turn before session.start", false);
       return;
     }
     // A turn sent while a round runs is folded into it by the SDK.
-    this.round ??= this.newRound();
-    this.push(text, attachments);
+    if (!this.round) {
+      this.round = this.newRound();
+      this.round.command = SLASH_COMMAND.test(text.trimStart());
+    }
+    this.push(text, attachments, uuid);
+  }
+
+  /** Move running foreground tool calls to the background (all of them, or
+   * the one `toolUseId` names). */
+  async background(toolUseId?: string): Promise<void> {
+    if (!this.q?.backgroundTasks) {
+      this.error("Nothing to move to the background: no session.", false);
+      return;
+    }
+    try {
+      const moved = await this.q.backgroundTasks(toolUseId);
+      if (!moved) this.error("Nothing was running in the foreground to move.", false);
+    } catch (e) {
+      this.error(`Could not move it to the background: ${e instanceof Error ? e.message : String(e)}`, false);
+    }
   }
 
   async interrupt(): Promise<void> {
@@ -292,7 +334,12 @@ export class Session implements ToolHost {
 
   // ---- SDK stream ----
 
-  private options(msg: SessionStart, resume: string | undefined, resumeAt: string | undefined): Options {
+  private options(
+    msg: SessionStart,
+    resume: string | undefined,
+    resumeAt: string | undefined,
+    dropsTurn: string | undefined,
+  ): Options {
     const skills =
       msg.connector_skills.length > 0
         ? `\n\nConnector skills installed in this checkout:\n${msg.connector_skills
@@ -312,8 +359,18 @@ export class Session implements ToolHost {
       skills: "all",
       env: { ...process.env, ...msg.env, CLAUDE_AGENT_SDK_CLIENT_APP: "berth/0.1.0" },
       ...(resume ? { resume } : {}),
-      // A rewound conversation goes on from this entry; later ones are dropped (ADR 0009).
+      // A rewound conversation goes on from this entry; later ones are dropped
+      // (ADR 0009). When it drops exactly one turn, Claude Code checks that
+      // nothing else goes with it (ADR 0016).
       ...(resume && resumeAt ? { resumeSessionAt: resumeAt } : {}),
+      ...(resume && resumeAt && dropsTurn ? { resumeDropsTurn: dropsTurn } : {}),
+      // A new session's title in Claude Code's history; a resumed one keeps its own.
+      ...(msg.title && !resume ? { title: msg.title } : {}),
+      // What each subagent is doing, every ~30s; its own words in "Details";
+      // a suggested next prompt after each round (ADR 0016).
+      agentProgressSummaries: true,
+      forwardSubagentText: true,
+      promptSuggestions: true,
       ...(msg.model ? { model: msg.model } : {}),
       ...(msg.effort ? { effort: msg.effort } : {}),
       ...(claudePath() ? { pathToClaudeCodeExecutable: claudePath() } : {}),
@@ -323,8 +380,13 @@ export class Session implements ToolHost {
 
   private async consume(q: AgentQuery): Promise<void> {
     try {
-      for await (const msg of q) this.handle(msg);
+      for await (const msg of q) {
+        // A query replaced by a plain resume: what it still says is moot.
+        if (q !== this.q) return;
+        this.handle(msg);
+      }
     } catch (e) {
+      if (q !== this.q) return;
       this.error(`agent stream failed: ${(e as Error).message}`, true);
     } finally {
       for (const pending of [this.questions, this.reviews]) {
@@ -350,9 +412,18 @@ export class Session implements ToolHost {
 
     switch (msg.type) {
       case "system":
-        if (msg.subtype === "init") this.onInit(msg.session_id);
+        if (msg.subtype === "init") this.onInit(msg.session_id, msg.terminal_slash_commands ?? []);
         else if (msg.subtype === "task_notification") this.onTaskNotification(msg);
-        else if (msg.subtype === "compact_boundary") void this.reportContext();
+        else if (msg.subtype === "compact_boundary") this.onCompacted(msg.compact_metadata);
+        else if (msg.subtype === "commands_changed") this.emitCommands(msg.commands);
+        else if (msg.subtype === "local_command_output") this.onCommandOutput(msg.content);
+        else if (msg.subtype === "task_progress") this.onTaskProgress(msg.tool_use_id, msg.summary);
+        else if (msg.subtype === "background_tasks_changed") this.onBackgroundTasks(msg.tasks);
+        else if (msg.subtype === "model_refusal_fallback" || msg.subtype === "model_refusal_no_fallback")
+          this.onRefusal(msg);
+        break;
+      case "prompt_suggestion":
+        if (msg.suggestion.trim()) this.emitter.emit({ type: "session.suggestion", text: msg.suggestion.trim() });
         break;
       case "rate_limit_event": {
         const quota = quotaFromRateLimit(msg.rate_limit_info);
@@ -361,28 +432,175 @@ export class Session implements ToolHost {
         break;
       }
       case "assistant":
+        // The guarded resume went through.
+        if (!parent) this.replay = undefined;
         this.onAssistant(msg.message.id, msg.message.content, parent, branch);
         break;
       case "user":
-        this.onUser(msg.message.content, msg.tool_use_result);
+        if ("isReplay" in msg && msg.isReplay) this.onReplay(msg.message.content);
+        else this.onUser(msg.message.content, msg.tool_use_result);
         break;
       case "result":
-        this.onResult(msg.total_cost_usd, msg.subtype !== "success" || msg.is_error);
+        if (msg.subtype === "error_during_execution" && msg.errors.some((e) => e.startsWith(RESUME_REJECTED))) {
+          this.resumePlainly();
+          break;
+        }
+        this.replay = undefined;
+        this.onResult(msg.total_cost_usd, msg.subtype !== "success" || msg.is_error, msg.num_turns);
         break;
       default:
         break;
     }
   }
 
-  private onInit(sessionId: string): void {
+  private onInit(sessionId: string, terminalCommands: string[]): void {
     // Reply once to session.start/resume, and again only if the id changes.
     if (this.startReplyTo === undefined && sessionId === this.claudeSessionId) return;
+    const first = this.startReplyTo !== undefined;
     this.claudeSessionId = sessionId;
     this.emitter.emit({ type: "session.started", claude_session_id: sessionId }, this.startReplyTo);
     this.startReplyTo = undefined;
     // A resumed conversation already fills part of the window.
     void this.reportContext();
     void this.reportQuota();
+    if (first) {
+      this.terminalCommands = terminalCommands;
+      void this.reportCommands();
+      void this.reportAccount();
+    }
+  }
+
+  /** Who Claude Code works as, for the rail's footer (ADR 0016). */
+  private async reportAccount(): Promise<void> {
+    const q = this.q;
+    if (!q?.accountInfo) return;
+    try {
+      const a = await q.accountInfo();
+      this.emitter.emit({
+        type: "session.account",
+        ...(a.email ? { email: a.email } : {}),
+        ...(a.organization ? { organization: a.organization } : {}),
+        ...(a.subscriptionType ? { plan: a.subscriptionType } : {}),
+        ...(a.apiProvider ? { provider: a.apiProvider } : {}),
+      });
+    } catch (e) {
+      this.log.warn({ err: e }, "accountInfo failed");
+    }
+  }
+
+  /** A subagent's progress summary, on its branch. */
+  private onTaskProgress(toolUseId: string | undefined, summary: string | undefined): void {
+    const branch = toolUseId ? this.branches.get(toolUseId) : undefined;
+    const text = summary?.trim();
+    if (branch && text) this.emitter.emit({ type: "branch.progress", branch_id: branch.branchId, summary: text });
+  }
+
+  /** The live background tasks, housekeeping ones left out. */
+  private onBackgroundTasks(
+    tasks: ReadonlyArray<{ task_id: string; task_type: string; description: string; subagent_type?: string; ambient?: boolean }>,
+  ): void {
+    this.emitter.emit({
+      type: "session.tasks",
+      tasks: tasks
+        .filter((t) => !t.ambient)
+        .map((t) => ({
+          task_id: t.task_id,
+          kind: t.task_type,
+          description: t.description,
+          ...(t.subagent_type && t.subagent_type !== "main-session" ? { agent: t.subagent_type } : {}),
+        })),
+    });
+  }
+
+  private onRefusal(msg: {
+    subtype: string;
+    original_model: string;
+    fallback_model?: string;
+    scope?: "session" | "local";
+    api_refusal_category?: string | null;
+    api_refusal_explanation?: string | null;
+  }): void {
+    this.emitter.emit({
+      type: "node.refusal",
+      model: msg.original_model,
+      ...(msg.subtype === "model_refusal_fallback" && msg.fallback_model ? { fallback_model: msg.fallback_model } : {}),
+      ...(msg.api_refusal_category ? { category: msg.api_refusal_category } : {}),
+      ...(msg.api_refusal_explanation ? { explanation: msg.api_refusal_explanation } : {}),
+      subagent: msg.scope === "local",
+    });
+  }
+
+  /** Claude Code refused the rewind's guarded resume: something besides the
+   * dropped turn would have gone (a queued notification). As the SDK asks,
+   * resume the whole conversation instead and send the turns again; the
+   * prompt's rewind note tells the agent what was dropped (ADR 0016). */
+  private resumePlainly(): void {
+    const launch = this.launch;
+    const old = this.q;
+    if (!launch || !old) return;
+    const replay = this.replay ?? [];
+    this.replay = undefined;
+    this.log.warn("guarded resume refused; resuming the whole conversation");
+    this.input = new AsyncQueue<SDKUserMessage>();
+    this.q = this.queryFn({ prompt: this.input, options: this.options(launch.msg, launch.resume, undefined, undefined) });
+    old.close();
+    this.consuming = this.consume(this.q);
+    for (const m of replay) this.input.push(m);
+    this.error(
+      "Claude Code could not rewind exactly (something else happened in the dropped turn), so the agent resumed the whole conversation and was told what was dropped.",
+      false,
+    );
+  }
+
+  /** Tell the app which slash commands and skills the session offers (ADR 0015). */
+  private async reportCommands(): Promise<void> {
+    const q = this.q;
+    if (!q?.supportedCommands) return;
+    try {
+      this.emitCommands(await q.supportedCommands());
+    } catch (e) {
+      this.log.warn({ err: e }, "supportedCommands failed");
+    }
+  }
+
+  private emitCommands(commands: SlashCommand[]): void {
+    this.emitter.emit({
+      type: "session.commands",
+      commands: commands.map((c) => ({
+        name: c.name,
+        description: c.description,
+        argument_hint: c.argumentHint,
+        aliases: c.aliases ?? [],
+        builtin: c.builtin ?? false,
+      })),
+      terminal: this.terminalCommands,
+    });
+  }
+
+  private onCompacted(meta?: { trigger: "manual" | "auto"; pre_tokens: number; post_tokens?: number }): void {
+    void this.reportContext();
+    if (!meta) return;
+    this.emitter.emit({
+      type: "node.compacted",
+      trigger: meta.trigger,
+      pre_tokens: meta.pre_tokens,
+      ...(meta.post_tokens !== undefined ? { post_tokens: meta.post_tokens } : {}),
+    });
+  }
+
+  /** What a slash command printed: kept as the round's last text, which the
+   * app shows when the round turns out to be the command alone. */
+  private onCommandOutput(text: string): void {
+    const out = text.trim();
+    if (out && this.round) this.round.lastText = out;
+  }
+
+  /** Claude Code replays a local command's output as a user message:
+   * `<local-command-stdout>…</local-command-stdout>` (or stderr). */
+  private onReplay(content: unknown): void {
+    if (typeof content !== "string") return;
+    const m = /<local-command-(?:stdout|stderr)>([\s\S]*?)<\/local-command-(?:stdout|stderr)>/.exec(content);
+    if (m?.[1] !== undefined) this.onCommandOutput(m[1]);
   }
 
   /** Tell the app how full the context window is (ADR 0014). One report at a
@@ -500,7 +718,7 @@ export class Session implements ToolHost {
     });
   }
 
-  private onResult(totalUsd: number, isError: boolean): void {
+  private onResult(totalUsd: number, isError: boolean, numTurns: number): void {
     if (Number.isFinite(totalUsd)) this.totalUsd = totalUsd;
     this.emitter.emit({ type: "session.cost", total_usd: this.totalUsd });
     void this.reportContext();
@@ -512,6 +730,9 @@ export class Session implements ToolHost {
       return this.endRound(round.terminal);
     }
     if (isError) return this.endRound("error");
+    // No model turn for a slash command: Claude Code ran it by itself
+    // (/compact, /context). Nothing to nudge (ADR 0015).
+    if (numTurns === 0 && round.nudges === 0 && round.command) return this.endRound("command");
     if (round.nudges < MAX_NUDGES) {
       round.nudges += 1;
       this.push(NUDGE_TEXT);
@@ -538,17 +759,21 @@ export class Session implements ToolHost {
     return { startedAt: this.now(), startTotalUsd: this.totalUsd, nudges: 0, terminal: null, interrupted: false };
   }
 
-  private push(text: string, attachments: TurnAttachment[] = []): void {
+  private push(text: string, attachments: TurnAttachment[] = [], uuid?: string): void {
     const images = attachments.flatMap((a) => this.imageBlock(a));
-    this.input.push({
+    const message: SDKUserMessage = {
       type: "user",
       message: {
         role: "user",
         content: images.length > 0 ? [{ type: "text", text }, ...images] : text,
       },
       parent_tool_use_id: null,
+      // The transcript keeps it, so a rewind can name this turn (ADR 0016).
+      ...(uuid ? { uuid: uuid as `${string}-${string}-${string}-${string}-${string}` } : {}),
       ...(this.claudeSessionId ? { session_id: this.claudeSessionId } : {}),
-    });
+    };
+    this.replay?.push(message);
+    this.input.push(message);
   }
 
   /** An attached image as an image block; nothing if unreadable or too large. */

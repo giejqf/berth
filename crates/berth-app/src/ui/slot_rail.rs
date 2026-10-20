@@ -233,8 +233,20 @@ fn footer(t: &Tokens, cx: &App, collapsed: bool) -> Div {
         .try_global::<EnvGlobal>()
         .map(|e| e.0.clone())
         .unwrap_or_default();
+    // Once signed in: the plan Claude Code works on, from its last session;
+    // who it signs in as on hover (ADR 0016).
+    let mut claude = env.claude.clone();
+    let account = cx
+        .try_global::<super::Berth>()
+        .and_then(|b| b.account.clone())
+        .filter(|_| claude.state == ToolState::Ok);
+    if let Some(plan) = account.as_ref().and_then(plan_summary) {
+        claude.summary = plan;
+    }
+    let account_tip: Option<SharedString> =
+        account.as_ref().and_then(account_detail).map(Into::into);
     let rows = [
-        ("Claude Code", &env.claude, "claude"),
+        ("Claude Code", &claude, "claude"),
         ("GitHub", &env.gh, "gh"),
     ];
     let base = div()
@@ -264,17 +276,65 @@ fn footer(t: &Tokens, cx: &App, collapsed: bool) -> Div {
         .gap(px(6.))
         .ty(ty::META)
         .text_color(t.text2);
-    for (name, s, _) in rows {
+    for (name, s, id) in rows {
+        let tip = account_tip.clone().filter(|_| id == "claude");
         col = col.child(
             div()
+                .id(SharedString::from(format!("env-row-{id}")))
                 .flex()
                 .items_center()
                 .gap(px(8.))
+                .min_w_0()
+                .when_some(tip, |d, tip| {
+                    d.tooltip(move |w, cx| Tooltip::new(tip.clone()).build(w, cx))
+                })
                 .child(dot(6., tool_color(t, s)))
-                .child(format!("{name} · {}", summary(s))),
+                .child(
+                    div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .child(format!("{name} · {}", summary(s))),
+                ),
         );
     }
     col
+}
+
+/// Where API requests go, when it is not Anthropic.
+fn provider(a: &berth_protocol::Account) -> Option<&'static str> {
+    match a.provider.as_deref() {
+        None | Some("firstParty") => None,
+        Some("bedrock") => Some("via Bedrock"),
+        Some("vertex") => Some("via Vertex AI"),
+        Some("foundry") => Some("via Foundry"),
+        Some("gateway") => Some("via a gateway"),
+        Some(_) => Some("via a cloud provider"),
+    }
+}
+
+/// The footer's short form: "Max plan" ("Claude Max"), or where requests go.
+fn plan_summary(a: &berth_protocol::Account) -> Option<String> {
+    provider(a).map(str::to_owned).or_else(|| {
+        let plan = a.plan.as_deref()?.trim();
+        let plan = plan.strip_prefix("Claude ").unwrap_or(plan);
+        Some(format!("{plan} plan"))
+    })
+}
+
+/// The hover's long form: who, which organization, which plan, where.
+fn account_detail(a: &berth_protocol::Account) -> Option<String> {
+    let parts: Vec<&str> = [
+        a.email.as_deref(),
+        a.organization.as_deref(),
+        a.plan.as_deref(),
+        provider(a),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    (!parts.is_empty()).then(|| format!("Signed in as {}", parts.join(" · ")))
 }
 
 fn summary(s: &ToolStatus) -> String {

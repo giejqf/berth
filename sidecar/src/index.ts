@@ -1,6 +1,6 @@
 // Sidecar entrypoint: NDJSON over stdio between the app and one Agent SDK session.
 
-import { listPast } from "./history.js";
+import { listPast, renamePast } from "./history.js";
 import { createLogger, type Logger } from "./log.js";
 import { NdjsonWriter, parseAppMessage, readLines, type Emitter } from "./ndjson.js";
 import type { AppMessage } from "./protocol.js";
@@ -13,7 +13,7 @@ export function dispatch(session: Session, msg: AppMessage, emitter: Emitter): v
       session.start(msg, msg.id);
       break;
     case "session.turn":
-      session.turn(msg.text, msg.attachments ?? []);
+      session.turn(msg.text, msg.attachments ?? [], msg.uuid);
       break;
     case "session.interrupt":
       void session.interrupt();
@@ -35,6 +35,12 @@ export function dispatch(session: Session, msg: AppMessage, emitter: Emitter): v
       break;
     case "sessions.list":
       void listPast(msg.dir, msg.id, emitter);
+      break;
+    case "sessions.rename":
+      void renamePast(msg.session_id, msg.title, msg.dir, msg.id, emitter);
+      break;
+    case "session.background":
+      void session.background(msg.tool_use_id);
       break;
     default: {
       const unknown = msg as { type: string; id: string };

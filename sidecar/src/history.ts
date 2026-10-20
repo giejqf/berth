@@ -2,7 +2,7 @@
 // for a directory and its git worktrees, the ones Claude Code can resume from
 // any of them. No session is needed to list it.
 
-import { listSessions, type SDKSessionInfo } from "@anthropic-ai/claude-agent-sdk";
+import { listSessions, renameSession, type SDKSessionInfo } from "@anthropic-ai/claude-agent-sdk";
 
 import type { Emitter } from "./ndjson.js";
 import type { PastSession } from "./protocol.js";
@@ -31,5 +31,25 @@ export async function listPast(dir: string, replyTo: string, emitter: Emitter, l
       { type: "session.error", message: `Could not list sessions: ${e instanceof Error ? e.message : String(e)}`, fatal: false },
       replyTo,
     );
+  }
+}
+
+export type RenameFn = (sessionId: string, title: string, options: { dir: string }) => Promise<void>;
+
+/** Retitle a session in Claude Code's history (ADR 0016); answers with
+ * `sessions.renamed`. */
+export async function renamePast(
+  sessionId: string,
+  title: string,
+  dir: string,
+  replyTo: string,
+  emitter: Emitter,
+  rename: RenameFn = renameSession,
+): Promise<void> {
+  try {
+    await rename(sessionId, title, { dir });
+    emitter.emit({ type: "sessions.renamed", ok: true }, replyTo);
+  } catch (e) {
+    emitter.emit({ type: "sessions.renamed", ok: false, error: e instanceof Error ? e.message : String(e) }, replyTo);
   }
 }

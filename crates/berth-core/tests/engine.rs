@@ -104,12 +104,14 @@ fn prompt_decision_summary_round() {
     );
 
     let sub = engine
-        .submit_prompt(&store, &wf, "Do the thing", vec![])
+        .submit_prompt(&store, &wf, "Do the thing", vec![], false)
         .unwrap();
     assert_eq!(sub.turn_text, "Do the thing");
     assert_eq!(store.workflow(&wf).unwrap().state, WorkflowState::Running);
     assert!(
-        engine.submit_prompt(&store, &wf, "again", vec![]).is_err(),
+        engine
+            .submit_prompt(&store, &wf, "again", vec![], false)
+            .is_err(),
         "running workflows reject prompts"
     );
 
@@ -207,7 +209,9 @@ fn prompt_decision_summary_round() {
 fn questions_answer_live_or_as_turn_after_restart() {
     let (store, mut engine, wf) = setup();
     engine.session_started(&wf);
-    engine.submit_prompt(&store, &wf, "go", vec![]).unwrap();
+    engine
+        .submit_prompt(&store, &wf, "go", vec![], false)
+        .unwrap();
     let q = |id: &str| {
         SidecarToApp::NodeQuestion(NodeQuestion {
             question_id: id.into(),
@@ -274,7 +278,7 @@ fn reviews_wait_for_a_decision_on_every_finding() {
     let (store, mut engine, wf) = setup();
     engine.session_started(&wf);
     engine
-        .submit_prompt(&store, &wf, "review it", vec![])
+        .submit_prompt(&store, &wf, "review it", vec![], false)
         .unwrap();
     let finding = |title: &str, suggested| FindingInput {
         level: FindingLevel::High,
@@ -403,7 +407,7 @@ fn reviews_wait_for_a_decision_on_every_finding() {
         .apply(&store, &wf, &ended(TerminalKind::Interrupted, None))
         .unwrap();
     engine
-        .submit_prompt(&store, &wf, "review again", vec![])
+        .submit_prompt(&store, &wf, "review again", vec![], false)
         .unwrap();
     engine.apply(&store, &wf, &review("r3")).unwrap();
     let view = store.workflow_view(&wf).unwrap();
@@ -415,7 +419,9 @@ fn reviews_wait_for_a_decision_on_every_finding() {
 fn unterminated_round_gets_a_stub_summary() {
     let (store, mut engine, wf) = setup();
     engine.session_started(&wf);
-    engine.submit_prompt(&store, &wf, "go", vec![]).unwrap();
+    engine
+        .submit_prompt(&store, &wf, "go", vec![], false)
+        .unwrap();
     let fx = engine
         .apply(
             &store,
@@ -441,7 +447,9 @@ fn unterminated_round_gets_a_stub_summary() {
 fn branches_spawn_collect_and_cancel_at_outcome() {
     let (store, mut engine, wf) = setup();
     engine.session_started(&wf);
-    engine.submit_prompt(&store, &wf, "go", vec![]).unwrap();
+    engine
+        .submit_prompt(&store, &wf, "go", vec![], false)
+        .unwrap();
     let spawned = |id: &str| {
         SidecarToApp::BranchSpawned(BranchSpawned {
             branch_id: id.into(),
@@ -553,7 +561,9 @@ fn branches_spawn_collect_and_cancel_at_outcome() {
 fn self_started_turn_opens_an_implicit_round() {
     let (store, mut engine, wf) = setup();
     engine.session_started(&wf);
-    engine.submit_prompt(&store, &wf, "go", vec![]).unwrap();
+    engine
+        .submit_prompt(&store, &wf, "go", vec![], false)
+        .unwrap();
     engine
         .apply(&store, &wf, &ended(TerminalKind::WriteSummary, None))
         .unwrap();
@@ -569,7 +579,9 @@ fn self_started_turn_opens_an_implicit_round() {
 fn fatal_errors_and_recovery_settle_workflows() {
     let (store, mut engine, wf) = setup();
     engine.session_started(&wf);
-    engine.submit_prompt(&store, &wf, "go", vec![]).unwrap();
+    engine
+        .submit_prompt(&store, &wf, "go", vec![], false)
+        .unwrap();
     let fx = engine
         .apply(
             &store,
@@ -590,7 +602,9 @@ fn fatal_errors_and_recovery_settle_workflows() {
         Some(TerminalKind::Error)
     );
 
-    engine.submit_prompt(&store, &wf, "again", vec![]).unwrap();
+    engine
+        .submit_prompt(&store, &wf, "again", vec![], false)
+        .unwrap();
     let mut fresh = Engine::new();
     fresh.recover(&store).unwrap();
     assert_eq!(store.workflow(&wf).unwrap().state, WorkflowState::Idle);
@@ -614,7 +628,7 @@ fn review_comments_ride_along_with_the_next_prompt() {
         })
         .unwrap();
     let sub = engine
-        .submit_prompt(&store, &wf, "Address these", vec![])
+        .submit_prompt(&store, &wf, "Address these", vec![], false)
         .unwrap();
     assert_eq!(
         sub.turn_text,
@@ -692,7 +706,7 @@ fn artifacts_are_fetched_then_shown() {
     let (store, mut engine, wf) = setup();
     engine.session_started(&wf);
     engine
-        .submit_prompt(&store, &wf, "Take a screenshot", vec![])
+        .submit_prompt(&store, &wf, "Take a screenshot", vec![], false)
         .unwrap();
     engine
         .apply(&store, &wf, &raw(1, "assistant", None))
@@ -766,7 +780,7 @@ fn prompt_attachments_are_listed_in_the_turn() {
         thumbnail: None,
     };
     let sub = engine
-        .submit_prompt(&store, &wf, "Implement this", vec![file.clone()])
+        .submit_prompt(&store, &wf, "Implement this", vec![file.clone()], false)
         .unwrap();
     assert!(
         sub.turn_text.ends_with(
@@ -855,7 +869,9 @@ fn rewinding_drops_the_flow_from_a_prompt_and_resumes_before_it() {
     let (store, mut engine, wf) = setup();
     engine.session_started(&wf);
     // Round 1, section 1.
-    engine.submit_prompt(&store, &wf, "one", vec![]).unwrap();
+    engine
+        .submit_prompt(&store, &wf, "one", vec![], false)
+        .unwrap();
     engine
         .apply(&store, &wf, &entry(1, "assistant", "u1a"))
         .unwrap();
@@ -866,7 +882,9 @@ fn rewinding_drops_the_flow_from_a_prompt_and_resumes_before_it() {
         .apply(&store, &wf, &ended(TerminalKind::WriteSummary, None))
         .unwrap();
     // Round 2, section 2: a subagent, a summary.
-    let two = engine.submit_prompt(&store, &wf, "two", vec![]).unwrap();
+    let two = engine
+        .submit_prompt(&store, &wf, "two", vec![], false)
+        .unwrap();
     engine
         .apply(&store, &wf, &entry(3, "assistant", "u2a"))
         .unwrap();
@@ -907,7 +925,9 @@ fn rewinding_drops_the_flow_from_a_prompt_and_resumes_before_it() {
             body: "rename".into(),
         })
         .unwrap();
-    engine.submit_prompt(&store, &wf, "three", vec![]).unwrap();
+    engine
+        .submit_prompt(&store, &wf, "three", vec![], false)
+        .unwrap();
     assert!(store.pending_review_comments(&wf).unwrap().is_empty());
     engine
         .apply(&store, &wf, &entry(4, "assistant", "u3a"))
@@ -981,7 +1001,7 @@ fn rewinding_drops_the_flow_from_a_prompt_and_resumes_before_it() {
 
     // The next prompt says the files were not rewound.
     let sub = engine
-        .submit_prompt(&store, &wf, "two, better", vec![])
+        .submit_prompt(&store, &wf, "two, better", vec![], false)
         .unwrap();
     assert!(sub.turn_text.starts_with(berth_core::prompt::REWIND_NOTE));
     assert!(sub.turn_text.contains("two, better"));
@@ -995,7 +1015,9 @@ fn rewinding_drops_the_flow_from_a_prompt_and_resumes_before_it() {
     engine
         .apply(&store, &wf, &ended(TerminalKind::WriteSummary, None))
         .unwrap();
-    let sub = engine.submit_prompt(&store, &wf, "four", vec![]).unwrap();
+    let sub = engine
+        .submit_prompt(&store, &wf, "four", vec![], false)
+        .unwrap();
     assert!(!sub.turn_text.contains("rewound"));
 
     // A second rewind resumes on the new branch, past the dropped rounds' entries.
@@ -1015,7 +1037,9 @@ fn rewinding_drops_the_flow_from_a_prompt_and_resumes_before_it() {
 fn rewinding_past_an_outcome_reopens_the_workflow() {
     let (store, mut engine, wf) = setup();
     engine.session_started(&wf);
-    engine.submit_prompt(&store, &wf, "one", vec![]).unwrap();
+    engine
+        .submit_prompt(&store, &wf, "one", vec![], false)
+        .unwrap();
     engine
         .apply(&store, &wf, &entry(1, "assistant", "u1"))
         .unwrap();
@@ -1023,7 +1047,7 @@ fn rewinding_past_an_outcome_reopens_the_workflow() {
         .apply(&store, &wf, &ended(TerminalKind::WriteSummary, None))
         .unwrap();
     let two = engine
-        .submit_prompt(&store, &wf, "ship it", vec![])
+        .submit_prompt(&store, &wf, "ship it", vec![], false)
         .unwrap();
     engine
         .apply(&store, &wf, &entry(2, "assistant", "u2"))
@@ -1069,7 +1093,9 @@ fn a_closed_workflow_opens_in_another_slot_and_says_where() {
     let (store, mut engine, wf) = setup();
     let home = store.workflow(&wf).unwrap().slot_id;
     engine.session_started(&wf);
-    engine.submit_prompt(&store, &wf, "one", vec![]).unwrap();
+    engine
+        .submit_prompt(&store, &wf, "one", vec![], false)
+        .unwrap();
     engine
         .apply(&store, &wf, &entry(1, "assistant", "u1"))
         .unwrap();
@@ -1078,7 +1104,9 @@ fn a_closed_workflow_opens_in_another_slot_and_says_where() {
     engine
         .apply(&store, &wf, &ended(TerminalKind::WriteSummary, None))
         .unwrap();
-    engine.submit_prompt(&store, &wf, "two", vec![]).unwrap();
+    engine
+        .submit_prompt(&store, &wf, "two", vec![], false)
+        .unwrap();
     engine
         .apply(
             &store,
@@ -1137,7 +1165,9 @@ fn a_closed_workflow_opens_in_another_slot_and_says_where() {
     assert_eq!(r.from_checkout.as_deref(), Some("/tmp/co"));
     assert_eq!(r.from_branch.as_deref(), Some("berth/fix"));
     // The next prompt says so.
-    let sub = engine.submit_prompt(&store, &wf, "go on", vec![]).unwrap();
+    let sub = engine
+        .submit_prompt(&store, &wf, "go on", vec![], false)
+        .unwrap();
     assert!(
         sub.turn_text
             .starts_with("(This conversation was reopened in another checkout")
@@ -1186,7 +1216,7 @@ fn a_claude_code_session_becomes_a_workflow_that_resumes_it() {
     assert_eq!(kinds, ["origin", "reopened"]);
     // Its first prompt is a plain turn on the resumed session, with the note.
     let sub = engine
-        .submit_prompt(&store, &adopted.id, "where were we?", vec![])
+        .submit_prompt(&store, &adopted.id, "where were we?", vec![], false)
         .unwrap();
     assert!(
         sub.turn_text
@@ -1199,14 +1229,18 @@ fn rewinding_past_a_reopen_keeps_the_new_checkout() {
     let (store, mut engine, wf) = setup();
     let home = store.workflow(&wf).unwrap().slot_id;
     engine.session_started(&wf);
-    engine.submit_prompt(&store, &wf, "zero", vec![]).unwrap();
+    engine
+        .submit_prompt(&store, &wf, "zero", vec![], false)
+        .unwrap();
     engine
         .apply(&store, &wf, &entry(1, "assistant", "u0"))
         .unwrap();
     engine
         .apply(&store, &wf, &ended(TerminalKind::WriteSummary, None))
         .unwrap();
-    let one = engine.submit_prompt(&store, &wf, "one", vec![]).unwrap();
+    let one = engine
+        .submit_prompt(&store, &wf, "one", vec![], false)
+        .unwrap();
     engine
         .apply(&store, &wf, &entry(1, "assistant", "u1"))
         .unwrap();
@@ -1219,7 +1253,9 @@ fn rewinding_past_a_reopen_keeps_the_new_checkout() {
         .set_workflow_state(&wf, WorkflowState::Closed)
         .unwrap();
     engine.reopen(&store, &wf, &other).unwrap();
-    engine.submit_prompt(&store, &wf, "two", vec![]).unwrap();
+    engine
+        .submit_prompt(&store, &wf, "two", vec![], false)
+        .unwrap();
     engine
         .apply(&store, &wf, &entry(2, "assistant", "u2"))
         .unwrap();
@@ -1246,7 +1282,7 @@ fn rewinding_past_a_reopen_keeps_the_new_checkout() {
     assert_eq!(kinds, ["origin", "prompt", "reopened", "rewind"]);
     // The next prompt tells the agent both.
     let sub = engine
-        .submit_prompt(&store, &wf, "one again", vec![])
+        .submit_prompt(&store, &wf, "one again", vec![], false)
         .unwrap();
     assert!(sub.turn_text.contains("reopened in another checkout"));
     assert!(sub.turn_text.contains("rewound"));
@@ -1275,4 +1311,253 @@ fn context_reports_are_kept_on_the_workflow() {
     assert!(fx.iter().any(|e| matches!(e, Effect::FlowChanged { .. })));
     let context = store.workflow_view(&wf).unwrap().context.unwrap();
     assert_eq!((context.used(), context.window()), (30_000, 200_000));
+}
+
+#[test]
+fn slash_commands_go_as_typed_and_end_without_a_summary() {
+    let (store, mut engine, wf) = setup();
+    engine.session_started(&wf);
+    store
+        .insert_review_comment(&NewReviewComment {
+            workflow_id: wf.clone(),
+            from_snapshot: "a".into(),
+            to_snapshot: "b".into(),
+            preset: DiffPreset::Section,
+            path: "src/x.rs".into(),
+            side: DiffSide::New,
+            line: 3,
+            body: "rename".into(),
+        })
+        .unwrap();
+    store
+        .insert_node(
+            &wf,
+            None,
+            None,
+            NodePayload::Rewind(berth_protocol::Rewind {
+                dropped_rounds: 1,
+                from: 0,
+                to: 1,
+            }),
+            None,
+        )
+        .unwrap();
+
+    // The command goes verbatim: the comment and the rewind note wait.
+    let sub = engine
+        .submit_prompt(&store, &wf, "/context", vec![], true)
+        .unwrap();
+    assert_eq!(sub.turn_text, "/context");
+    assert_eq!(store.pending_review_comments(&wf).unwrap().len(), 1);
+    let fx = engine
+        .apply(
+            &store,
+            &wf,
+            &ended(
+                TerminalKind::Command,
+                Some("## Context Usage\n\n13.7k / 1m"),
+            ),
+        )
+        .unwrap();
+    assert!(fx.iter().any(|e| matches!(e, Effect::FlowChanged { .. })));
+    let view = store.workflow_view(&wf).unwrap();
+    assert_eq!(view.workflow.state, WorkflowState::Idle);
+    assert_eq!(view.workflow.section_no, 1, "a command ends no section");
+    let Some(NodePayload::Command(c)) = view.nodes.last().map(|n| &n.payload) else {
+        panic!("no command node");
+    };
+    assert_eq!(c.command, "/context");
+    assert!(c.output.starts_with("## Context Usage"));
+    let last = view.nodes.last().unwrap();
+    assert_eq!(last.round_id, view.nodes[view.nodes.len() - 2].round_id);
+    assert!(last.round_id.is_some());
+
+    // /compact shows its Compacted node, not a Command node.
+    engine
+        .submit_prompt(&store, &wf, "/compact", vec![], true)
+        .unwrap();
+    engine
+        .apply(
+            &store,
+            &wf,
+            &SidecarToApp::NodeCompacted(berth_protocol::NodeCompacted {
+                compacted: berth_protocol::Compacted {
+                    trigger: berth_protocol::CompactTrigger::Manual,
+                    pre_tokens: 17_895,
+                    post_tokens: Some(1_961),
+                },
+            }),
+        )
+        .unwrap();
+    engine
+        .apply(
+            &store,
+            &wf,
+            &ended(TerminalKind::Command, Some("Compacted")),
+        )
+        .unwrap();
+    let kinds: Vec<&str> = store
+        .workflow_view(&wf)
+        .unwrap()
+        .nodes
+        .iter()
+        .map(|n| n.payload.kind().as_str())
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "origin",
+            "rewind",
+            "prompt",
+            "command",
+            "prompt",
+            "compacted"
+        ]
+    );
+
+    // The next real prompt carries what waited.
+    let sub = engine
+        .submit_prompt(&store, &wf, "go on", vec![], false)
+        .unwrap();
+    assert!(sub.turn_text.contains("rewound"));
+    assert!(sub.turn_text.contains("src/x.rs:3 (new): rename"));
+}
+
+#[test]
+fn a_compaction_after_a_rewind_settles_where_sessions_resume() {
+    let (store, mut engine, wf) = setup();
+    store.set_workflow_resume_at(&wf, Some("u1")).unwrap();
+    engine.session_started(&wf);
+    engine
+        .submit_prompt(&store, &wf, "/compact", vec![], true)
+        .unwrap();
+    engine
+        .apply(
+            &store,
+            &wf,
+            &SidecarToApp::NodeCompacted(berth_protocol::NodeCompacted {
+                compacted: berth_protocol::Compacted {
+                    trigger: berth_protocol::CompactTrigger::Manual,
+                    pre_tokens: 10_000,
+                    post_tokens: None,
+                },
+            }),
+        )
+        .unwrap();
+    assert_eq!(store.workflow_resume_at(&wf).unwrap(), None);
+}
+
+#[test]
+fn a_command_round_without_an_open_round_still_shows() {
+    let (store, mut engine, wf) = setup();
+    engine.session_started(&wf);
+    // The round's opening was lost (the app restarted between): it ends anyway.
+    engine
+        .apply(&store, &wf, &ended(TerminalKind::Command, Some("Done")))
+        .unwrap();
+    let view = store.workflow_view(&wf).unwrap();
+    let Some(NodePayload::Command(c)) = view.nodes.last().map(|n| &n.payload) else {
+        panic!("no command node");
+    };
+    assert_eq!((c.command.as_str(), c.output.as_str()), ("", "Done"));
+    assert!(view.rounds.iter().all(|r| !r.is_work()));
+}
+
+#[test]
+fn prose_that_starts_with_a_slash_carries_the_notes() {
+    let (store, mut engine, wf) = setup();
+    engine.session_started(&wf);
+    store
+        .insert_node(
+            &wf,
+            None,
+            None,
+            NodePayload::Rewind(berth_protocol::Rewind {
+                dropped_rounds: 1,
+                from: 0,
+                to: 1,
+            }),
+            None,
+        )
+        .unwrap();
+    // The session's list knows no `/tmp`: the backend sends it as prose.
+    let sub = engine
+        .submit_prompt(&store, &wf, "/tmp is full, clean it", vec![], false)
+        .unwrap();
+    assert!(sub.turn_text.starts_with(berth_core::prompt::REWIND_NOTE));
+}
+
+#[test]
+fn a_rewind_declares_the_one_turn_it_drops() {
+    let (store, mut engine, wf) = setup();
+    engine.session_started(&wf);
+    let one = engine
+        .submit_prompt(&store, &wf, "one", vec![], false)
+        .unwrap();
+    engine
+        .apply(&store, &wf, &entry(1, "assistant", "u1"))
+        .unwrap();
+    engine
+        .apply(&store, &wf, &ended(TerminalKind::WriteSummary, None))
+        .unwrap();
+    let two = engine
+        .submit_prompt(&store, &wf, "two", vec![], false)
+        .unwrap();
+    assert_ne!(one.turn_uuid, two.turn_uuid);
+    engine
+        .apply(&store, &wf, &entry(2, "assistant", "u2"))
+        .unwrap();
+    engine
+        .apply(&store, &wf, &ended(TerminalKind::WriteSummary, None))
+        .unwrap();
+
+    // Back to "two": exactly its turn goes, and the resume says so.
+    engine.rewind(&store, &wf, &two.node.id).unwrap();
+    assert_eq!(
+        store.workflow_resume_at(&wf).unwrap().as_deref(),
+        Some("u1")
+    );
+    assert_eq!(
+        store.workflow_resume_drops(&wf).unwrap().as_deref(),
+        Some(two.turn_uuid.as_str())
+    );
+    // Settling the resume point settles it too.
+    store.set_workflow_resume_at(&wf, None).unwrap();
+    assert_eq!(store.workflow_resume_drops(&wf).unwrap(), None);
+}
+
+#[test]
+fn a_rewind_over_several_turns_declares_none() {
+    let (store, mut engine, wf) = setup();
+    engine.session_started(&wf);
+    engine
+        .submit_prompt(&store, &wf, "zero", vec![], false)
+        .unwrap();
+    engine
+        .apply(&store, &wf, &entry(1, "assistant", "u0"))
+        .unwrap();
+    engine
+        .apply(&store, &wf, &ended(TerminalKind::WriteSummary, None))
+        .unwrap();
+    let one = engine
+        .submit_prompt(&store, &wf, "one", vec![], false)
+        .unwrap();
+    engine
+        .apply(&store, &wf, &entry(2, "assistant", "u1"))
+        .unwrap();
+    engine
+        .apply(&store, &wf, &ended(TerminalKind::WriteSummary, None))
+        .unwrap();
+    engine
+        .submit_prompt(&store, &wf, "two", vec![], false)
+        .unwrap();
+    engine
+        .apply(&store, &wf, &entry(3, "assistant", "u2"))
+        .unwrap();
+    engine
+        .apply(&store, &wf, &ended(TerminalKind::WriteSummary, None))
+        .unwrap();
+    engine.rewind(&store, &wf, &one.node.id).unwrap();
+    assert!(store.workflow_resume_at(&wf).unwrap().is_some());
+    assert_eq!(store.workflow_resume_drops(&wf).unwrap(), None);
 }

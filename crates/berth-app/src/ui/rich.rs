@@ -1,10 +1,11 @@
 //! Agent prose: a small markdown subset rendered the design's way. Backticks
-//! become inline code chips, `**bold**` is 600, `- ` lines are a real list.
-//! Raw markdown never reaches the screen.
+//! become inline code chips, `**bold**` is 600, `- ` lines are a real list,
+//! `#` lines are headings and `| a | b |` rows a table (what Claude Code's
+//! commands print). Raw markdown never reaches the screen.
 
 use gpui::{
     AnyElement, Div, FontWeight, Hsla, IntoElement, ParentElement as _, SharedString, Styled as _,
-    StyledText, TextRun, div, font, px,
+    StyledText, TextRun, div, font, prelude::FluentBuilder as _, px,
 };
 
 use super::kit::{code, code_plain, dot};
@@ -21,6 +22,50 @@ pub enum Inline {
 pub enum Block {
     Para(Vec<Inline>),
     List(Vec<Vec<Inline>>),
+    Heading(Vec<Inline>),
+    /// Rows of cells, the header first; separator rows are dropped.
+    Table(Vec<Vec<String>>),
+}
+
+/// The cells of a `| a | b |` row, or `None` when the line is not one.
+fn table_row(l: &str) -> Option<Vec<String>> {
+    let inner = l.strip_prefix('|')?.strip_suffix('|')?;
+    // Pipes inside `code` and escaped `\|` belong to the cell.
+    let mut cells = vec![String::new()];
+    let (mut code, mut escaped) = (false, false);
+    for ch in inner.chars() {
+        let cell = cells.last_mut()?;
+        match ch {
+            '|' if escaped => {
+                cell.pop();
+                cell.push('|');
+            }
+            '|' if !code => cells.push(String::new()),
+            '`' => {
+                code = !code;
+                cell.push(ch);
+            }
+            _ => cell.push(ch),
+        }
+        escaped = ch == '\\';
+    }
+    Some(cells.into_iter().map(|c| c.trim().to_owned()).collect())
+}
+
+/// A cell that reads as a quantity ("3.1k", "16.5%", "1,204", "—").
+fn numeric(cell: &str) -> bool {
+    !cell.is_empty()
+        && cell.chars().any(|c| c.is_ascii_digit() || c == '—')
+        && cell
+            .chars()
+            .all(|c| c.is_ascii_digit() || " .,%kKMB/+-—$~<>".contains(c))
+}
+
+/// A `|---|:--:|` row between a table's header and body.
+fn separator(cells: &[String]) -> bool {
+    cells
+        .iter()
+        .all(|c| !c.is_empty() && c.chars().all(|ch| matches!(ch, '-' | ':' | ' ')))
 }
 
 /// Split prose into paragraphs and bullet lists.
@@ -29,6 +74,7 @@ pub fn parse(text: &str) -> Vec<Block> {
     let mut blocks = Vec::new();
     let mut para = String::new();
     let mut items: Vec<String> = Vec::new();
+    let mut table: Vec<Vec<String>> = Vec::new();
     let flush_para = |para: &mut String, blocks: &mut Vec<Block>| {
         let p = para.trim();
         if !p.is_empty() {
@@ -38,6 +84,31 @@ pub fn parse(text: &str) -> Vec<Block> {
     };
     for line in text.lines() {
         let l = line.trim();
+        if let Some(cells) = table_row(l) {
+            flush_para(&mut para, &mut blocks);
+            if !items.is_empty() {
+                blocks.push(Block::List(items.drain(..).map(|i| inlines(&i)).collect()));
+            }
+            if !separator(&cells) {
+                table.push(cells);
+            }
+            continue;
+        }
+        if !table.is_empty() {
+            blocks.push(Block::Table(std::mem::take(&mut table)));
+        }
+        let heading = l
+            .strip_prefix('#')
+            .map(|h| h.trim_start_matches('#'))
+            .filter(|h| h.starts_with(' '));
+        if let Some(h) = heading {
+            flush_para(&mut para, &mut blocks);
+            if !items.is_empty() {
+                blocks.push(Block::List(items.drain(..).map(|i| inlines(&i)).collect()));
+            }
+            blocks.push(Block::Heading(inlines(h.trim())));
+            continue;
+        }
         let bullet = l
             .strip_prefix("- ")
             .or_else(|| l.strip_prefix("* "))
@@ -64,6 +135,10 @@ pub fn parse(text: &str) -> Vec<Block> {
                 para.push(' ');
             }
             para.push_str(l);
+            // Two trailing spaces: a hard line break.
+            if line.ends_with("  ") {
+                flush_para(&mut para, &mut blocks);
+            }
         }
     }
     flush_para(&mut para, &mut blocks);
@@ -71,6 +146,9 @@ pub fn parse(text: &str) -> Vec<Block> {
         blocks.push(Block::List(
             items.into_iter().map(|i| inlines(&i)).collect(),
         ));
+    }
+    if !table.is_empty() {
+        blocks.push(Block::Table(table));
     }
     blocks
 }
@@ -125,8 +203,13 @@ pub fn plain(text: &str) -> String {
     parse(text)
         .iter()
         .map(|b| match b {
-            Block::Para(i) => flat(i),
+            Block::Para(i) | Block::Heading(i) => flat(i),
             Block::List(items) => items.iter().map(|i| flat(i)).collect::<Vec<_>>().join("; "),
+            Block::Table(rows) => rows
+                .iter()
+                .map(|r| r.join(" "))
+                .collect::<Vec<_>>()
+                .join("; "),
         })
         .collect::<Vec<_>>()
         .join(" ")
@@ -152,6 +235,8 @@ pub fn rich(t: &Tokens, text: &str, color: Hsla) -> Div {
     for b in blocks {
         col = col.child(match b {
             Block::Para(i) => para(t, &i),
+            Block::Heading(i) => para(t, &bolded(i)),
+            Block::Table(rows) => table(t, &rows),
             Block::List(items) => {
                 let mut list = div().flex().flex_col().gap(px(4.));
                 for item in items {
@@ -175,6 +260,55 @@ pub fn rich(t: &Tokens, text: &str, color: Hsla) -> Div {
         });
     }
     col
+}
+
+fn bolded(inl: Vec<Inline>) -> Vec<Inline> {
+    inl.into_iter()
+        .map(|i| match i {
+            Inline::Text(s) => Inline::Bold(s),
+            other => other,
+        })
+        .collect()
+}
+
+/// A table. Columns of quantities (counts, percentages) are narrow and
+/// right-aligned; the others share the room. The header row is quieter.
+fn table(t: &Tokens, rows: &[Vec<String>]) -> Div {
+    let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
+    let body = rows.get(1..).unwrap_or_default();
+    let quantity: Vec<bool> = (0..columns)
+        .map(|c| {
+            c > 0
+                && !body.is_empty()
+                && body
+                    .iter()
+                    .all(|r| r.get(c).is_none_or(|cell| numeric(cell)))
+        })
+        .collect();
+    let mut grid = div().flex().flex_col().gap(px(2.)).min_w_0();
+    for (n, row) in rows.iter().enumerate() {
+        let mut line = div()
+            .flex()
+            .gap(px(12.))
+            .min_w_0()
+            .overflow_hidden()
+            .when(n == 0, |d| d.text_color(t.text3));
+        for (c, cell) in row.iter().enumerate() {
+            let text = para(t, &inlines(cell));
+            line = line.child(if quantity.get(c).copied().unwrap_or(false) {
+                div()
+                    .flex_none()
+                    .w(px(96.))
+                    .flex()
+                    .justify_end()
+                    .child(text)
+            } else {
+                div().flex_1().min_w(px(48.)).child(text)
+            });
+        }
+        grid = grid.child(line);
+    }
+    grid
 }
 
 /// One wrapping paragraph.
@@ -293,6 +427,13 @@ pub fn clamped(t: &Tokens, text: &str, color: Hsla, lines: usize) -> AnyElement 
         }
         let spans: Vec<Inline> = match b {
             Block::Para(i) => i,
+            Block::Heading(i) => bolded(i),
+            Block::Table(rows) => vec![Inline::Text(
+                rows.iter()
+                    .map(|r| r.join(" "))
+                    .collect::<Vec<_>>()
+                    .join(" · "),
+            )],
             Block::List(items) => items
                 .into_iter()
                 .enumerate()
@@ -338,6 +479,36 @@ pub fn overflows(text: &str, width: f32, lines: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_output_reads_as_headings_and_tables() {
+        let out = "## Context Usage\n\n**Tokens:** 13.7k / 1m\n\n| Category | Tokens |\n|---|---:|\n| System prompt | 3.1k |\n| Messages | 9k |\nDone.";
+        assert_eq!(
+            parse(out),
+            vec![
+                Block::Heading(vec![Inline::Text("Context Usage".into())]),
+                Block::Para(vec![
+                    Inline::Bold("Tokens:".into()),
+                    Inline::Text(" 13.7k / 1m".into())
+                ]),
+                Block::Table(vec![
+                    vec!["Category".into(), "Tokens".into()],
+                    vec!["System prompt".into(), "3.1k".into()],
+                    vec!["Messages".into(), "9k".into()],
+                ]),
+                Block::Para(vec![Inline::Text("Done.".into())]),
+            ]
+        );
+        // Pipes in code stay in their cell.
+        assert_eq!(
+            table_row("| `a|b` | x \\| y |"),
+            Some(vec!["`a|b`".to_owned(), "x | y".to_owned()])
+        );
+        assert!(numeric("16.5%") && numeric("3.1k") && !numeric("fast") && !numeric("v2 API"));
+        // A hashtag is not a heading.
+        assert_eq!(parse("#42 is fixed").len(), 1);
+        assert!(matches!(parse("#42 is fixed")[0], Block::Para(_)));
+    }
 
     #[test]
     fn parses_code_bold_and_lists() {

@@ -40,6 +40,11 @@ pub struct SessionStart {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub effort: Option<Effort>,
+    /// The session's title in Claude Code's history (a new session's; a
+    /// resumed one keeps its own, see `sessions.rename`). ADR 0016.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub title: Option<String>,
 }
 
 /// How much the agent thinks before it acts: the SDK's `effort`.
@@ -119,6 +124,11 @@ pub struct SessionResume {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub resume_at: Option<String>,
+    /// With `resume_at`: the uuid of the one turn the rewind drops. Claude
+    /// Code then refuses a resume that would drop anything else (ADR 0016).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub drops_turn: Option<String>,
     #[serde(flatten)]
     pub start: SessionStart,
 }
@@ -131,6 +141,102 @@ pub struct SessionTurn {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<TurnAttachment>>")]
     pub attachments: Vec<TurnAttachment>,
+    /// The turn's uuid in Claude Code's transcript, so a rewind can name the
+    /// turn it drops (ADR 0016).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub uuid: Option<String>,
+}
+
+/// Move the running foreground tool calls (a long command, a subagent) to
+/// the background, or only the one `tool_use_id` names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SessionBackground {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tool_use_id: Option<String>,
+}
+
+/// Retitle a session in Claude Code's history (`renameSession`); no session
+/// needed. Answered with `sessions.renamed`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SessionsRename {
+    pub session_id: String,
+    pub title: String,
+    /// The project the session belongs to (its checkout).
+    pub dir: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SessionsRenamed {
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub error: Option<String>,
+}
+
+/// A subagent's one-line progress summary (`task_progress`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct BranchProgress {
+    pub branch_id: String,
+    pub summary: String,
+}
+
+/// The model refused a request (`model_refusal_fallback`/`_no_fallback`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct NodeRefusal {
+    #[serde(flatten)]
+    pub refusal: crate::Refusal,
+}
+
+/// A predicted next prompt, after a round (`prompt_suggestion`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SessionSuggestion {
+    pub text: String,
+}
+
+/// A task running in the session's background: a subagent, a shell command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct BackgroundTask {
+    pub task_id: String,
+    /// Claude Code's task type: `local_agent`, `local_bash`, …
+    pub kind: String,
+    pub description: String,
+    /// The subagent's type, for a subagent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub agent: Option<String>,
+}
+
+/// Every live background task, replacing the last list (`background_tasks_changed`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SessionTasks {
+    pub tasks: Vec<BackgroundTask>,
+}
+
+/// Who Claude Code works as (`accountInfo()`), for the rail's footer.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct Account {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub organization: Option<String>,
+    /// The subscription, as Claude Code names it ("Claude Max").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub plan: Option<String>,
+    /// `firstParty`, `bedrock`, `vertex`, … (where API requests go).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub provider: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SessionAccount {
+    #[serde(flatten)]
+    pub account: Account,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -219,6 +325,10 @@ pub enum AppToSidecar {
     SessionConfigure(SessionConfigure),
     #[serde(rename = "sessions.list")]
     SessionsList(SessionsList),
+    #[serde(rename = "session.background")]
+    SessionBackground(SessionBackground),
+    #[serde(rename = "sessions.rename")]
+    SessionsRename(SessionsRename),
 }
 
 impl AppToSidecar {
@@ -235,6 +345,8 @@ impl AppToSidecar {
             Self::SlotRequestResolved(_) => "slot_request.resolved",
             Self::SessionConfigure(_) => "session.configure",
             Self::SessionsList(_) => "sessions.list",
+            Self::SessionBackground(_) => "session.background",
+            Self::SessionsRename(_) => "sessions.rename",
         }
     }
 }
@@ -366,6 +478,8 @@ pub enum TerminalKind {
     Interrupted,
     /// The SDK reported an error result.
     Error,
+    /// A slash command Claude Code ran without the model (ADR 0015).
+    Command,
 }
 
 impl TerminalKind {
@@ -377,6 +491,7 @@ impl TerminalKind {
             Self::Unterminated => "unterminated",
             Self::Interrupted => "interrupted",
             Self::Error => "error",
+            Self::Command => "command",
         }
     }
 
@@ -388,6 +503,7 @@ impl TerminalKind {
             Self::Unterminated,
             Self::Interrupted,
             Self::Error,
+            Self::Command,
         ]
         .into_iter()
         .find(|k| k.as_str() == s)
@@ -406,6 +522,40 @@ pub struct RoundEnded {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub last_text: Option<String>,
+}
+
+/// Claude Code compacted the conversation (a `compact_boundary`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct NodeCompacted {
+    #[serde(flatten)]
+    pub compacted: crate::Compacted,
+}
+
+/// A slash command the session offers: Claude Code's own, or a skill.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct CommandInfo {
+    /// Without the slash: `compact`, `code-review`, `plugin:skill`.
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// What it takes after the name (`<file>`); empty when nothing.
+    #[serde(default)]
+    pub argument_hint: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    /// Claude Code's own command, not a skill.
+    #[serde(default)]
+    pub builtin: bool,
+}
+
+/// The slash commands the session offers (ADR 0015), at start and whenever
+/// Claude Code finds more skills. `terminal` names the ones bound to Claude
+/// Code's own terminal, which do nothing here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SessionCommands {
+    pub commands: Vec<CommandInfo>,
+    #[serde(default)]
+    pub terminal: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -536,6 +686,22 @@ pub enum SidecarToApp {
     SessionContext(SessionContext),
     #[serde(rename = "session.quota")]
     SessionQuota(SessionQuota),
+    #[serde(rename = "node.compacted")]
+    NodeCompacted(NodeCompacted),
+    #[serde(rename = "session.commands")]
+    SessionCommands(SessionCommands),
+    #[serde(rename = "branch.progress")]
+    BranchProgress(BranchProgress),
+    #[serde(rename = "node.refusal")]
+    NodeRefusal(NodeRefusal),
+    #[serde(rename = "session.suggestion")]
+    SessionSuggestion(SessionSuggestion),
+    #[serde(rename = "session.tasks")]
+    SessionTasks(SessionTasks),
+    #[serde(rename = "session.account")]
+    SessionAccount(SessionAccount),
+    #[serde(rename = "sessions.renamed")]
+    SessionsRenamed(SessionsRenamed),
 }
 
 impl SidecarToApp {
@@ -560,6 +726,14 @@ impl SidecarToApp {
             Self::SessionsListed(_) => "sessions.listed",
             Self::SessionContext(_) => "session.context",
             Self::SessionQuota(_) => "session.quota",
+            Self::NodeCompacted(_) => "node.compacted",
+            Self::SessionCommands(_) => "session.commands",
+            Self::BranchProgress(_) => "branch.progress",
+            Self::NodeRefusal(_) => "node.refusal",
+            Self::SessionSuggestion(_) => "session.suggestion",
+            Self::SessionTasks(_) => "session.tasks",
+            Self::SessionAccount(_) => "session.account",
+            Self::SessionsRenamed(_) => "sessions.renamed",
         }
     }
 }

@@ -4,7 +4,8 @@
 //!
 //! Scenarios: `question` (default), `working`, `review`, `comments`, `done`,
 //! `findings` (the third slot waits on decisions about a code review),
-//! `usage-api` (`question`, signed in with an API key: no plan limits), `empty`
+//! `usage-api` (`question`, signed in with an API key: no plan limits),
+//! `commands` (the third slot ran `/context` and `/compact`), `empty`
 //! (a repo without workflows), `welcome` (only recent repositories).
 
 use std::path::{Path, PathBuf};
@@ -358,11 +359,168 @@ pub fn seed(scenario: &str) -> Result<Option<PathBuf>> {
     let rc = s.round(&wc.id, 1, at(12, 5, 10))?;
     if scenario == "findings" {
         seed_findings(&s, &s.checkout(&c), &wc.id, &rc, at(12, 9, 0))?;
+    } else if scenario == "commands" {
+        seed_command_rounds(&s, &wc.id, &rc, at(12, 6, 0))?;
     } else {
         s.store.set_workflow_state(&wc.id, WorkflowState::Running)?;
     }
     seed_usage(&store, [&wa.id, &wb.id, &wc.id], scenario)?;
+    seed_command_list(&store, &repo.id)?;
+    store.set_setting(
+        "account",
+        &serde_json::to_string(&berth_protocol::Account {
+            email: Some("dev@example.com".into()),
+            organization: None,
+            plan: Some("Claude Max".into()),
+            provider: Some("firstParty".into()),
+        })?,
+    )?;
     Ok(Some(repo_dir))
+}
+
+/// The `commands` scenario: in the third slot, the user ran `/context` and
+/// then `/compact`; it waits for the next prompt.
+fn seed_command_rounds(s: &Seeder<'_>, wf: &str, round: &str, at: i64) -> Result<()> {
+    use berth_protocol::{Command, CompactTrigger, Compacted, TerminalKind};
+    let prompt = |text: &str| {
+        NodePayload::Prompt(Prompt {
+            text: text.into(),
+            review_comments: vec![],
+            attachments: vec![],
+        })
+    };
+    s.node(wf, Some(round), None, prompt("/context"), at)?;
+    s.node(wf, Some(round), None, NodePayload::Command(Command {
+        command: "/context".into(),
+        output: "## Context Usage\n\n**Model:** claude-opus-5-5  \n**Tokens:** 101k / 200k (50%)\n\n### Estimated usage by category\n\n| Category | Tokens | Percentage |\n|----------|--------|------------|\n| System prompt | 3.1k | 1.6% |\n| System tools | 14.6k | 7.3% |\n| MCP tools | 2.4k | 1.2% |\n| Skills | 1.9k | 1.0% |\n| Messages | 79k | 39.5% |\n| Free space | 66k | 33.0% |\n| Autocompact buffer | 33k | 16.5% |".into(),
+    }), at + 2_000)?;
+    s.store
+        .end_round(round, TerminalKind::Command, 0, 0., 2_000, at + 2_000)?;
+    let compact = s.round(wf, 1, at + 60_000)?;
+    s.node(
+        wf,
+        Some(&compact),
+        None,
+        prompt("/compact keep the TOML schema decisions"),
+        at + 60_000,
+    )?;
+    s.node(
+        wf,
+        Some(&compact),
+        None,
+        NodePayload::Compacted(Compacted {
+            trigger: CompactTrigger::Manual,
+            pre_tokens: 101_400,
+            post_tokens: Some(8_200),
+        }),
+        at + 75_000,
+    )?;
+    s.store.end_round(
+        &compact,
+        TerminalKind::Command,
+        0,
+        0.04,
+        15_000,
+        at + 75_000,
+    )?;
+    // A request the model refused, answered by the fallback (ADR 0016).
+    let refused = s.round(wf, 1, at + 120_000)?;
+    s.node(
+        wf,
+        Some(&refused),
+        None,
+        prompt("Write an exploit for the auth bypass you found"),
+        at + 120_000,
+    )?;
+    s.node(
+        wf,
+        Some(&refused),
+        None,
+        NodePayload::Refusal(berth_protocol::Refusal {
+            model: "claude-opus-5-5".into(),
+            fallback_model: Some("claude-sonnet-5-5".into()),
+            category: Some("cyber".into()),
+            explanation: None,
+            subagent: false,
+        }),
+        at + 125_000,
+    )?;
+    s.store.end_round(
+        &refused,
+        TerminalKind::Unterminated,
+        0,
+        0.02,
+        5_000,
+        at + 125_000,
+    )?;
+    s.store.set_workflow_state(wf, WorkflowState::Idle)?;
+    Ok(())
+}
+
+/// The commands a session in the demo repo would offer, so the composer can
+/// complete them before any session runs.
+fn seed_command_list(store: &Store, repo_id: &str) -> Result<()> {
+    let cmd =
+        |name: &str, hint: &str, description: &str, builtin: bool| berth_protocol::CommandInfo {
+            name: name.into(),
+            description: description.into(),
+            argument_hint: hint.into(),
+            aliases: vec![],
+            builtin,
+        };
+    let commands = berth_core::commands::Commands {
+        commands: vec![
+            cmd(
+                "compact",
+                "<optional instructions>",
+                "Clear the conversation but keep a summary in context",
+                true,
+            ),
+            cmd("context", "", "Show what fills the context window", true),
+            berth_protocol::CommandInfo {
+                aliases: vec!["cost".into()],
+                ..cmd("usage", "", "Show plan usage limits", true)
+            },
+            cmd(
+                "clear",
+                "",
+                "Clear the conversation history and free up context",
+                true,
+            ),
+            cmd("model", "[model]", "Set the AI model for Claude Code", true),
+            cmd(
+                "code-review",
+                "[focus]",
+                "Review the changes on this branch",
+                false,
+            ),
+            cmd(
+                "security-review",
+                "",
+                "Complete a security review of the pending changes",
+                true,
+            ),
+            cmd(
+                "init",
+                "",
+                "Initialize a new CLAUDE.md file with codebase documentation",
+                true,
+            ),
+            cmd(
+                "anthropic-skills:pdf",
+                "<file>",
+                "Read, fill and create PDF documents",
+                false,
+            ),
+            cmd("color", "<color>", "Set the prompt bar color", true),
+        ],
+        terminal: vec!["color".into(), "exit".into()],
+    };
+    store.set_setting(
+        &format!("commands:{repo_id}"),
+        &serde_json::to_string(&commands)?,
+    )?;
+    Ok(())
 }
 
 /// Context windows for the three workflows (a quarter, about half, and

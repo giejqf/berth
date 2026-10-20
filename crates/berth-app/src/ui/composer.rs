@@ -6,20 +6,24 @@ use std::path::{Path, PathBuf};
 
 use berth_core::files::{MAX_ATTACHMENT_BYTES, human_size, is_inline_image, mime_for};
 use berth_core::{SlotState, WorkflowState};
+use berth_protocol::CommandInfo;
 use gpui::{
-    AnimationExt as _, AppContext as _, ClipboardEntry, ClipboardItem, Context, DragMoveEvent,
+    AnimationExt as _, App, AppContext as _, ClipboardEntry, ClipboardItem, Context, DragMoveEvent,
     Entity, ExternalPaths, Focusable as _, ImageFormat, InteractiveElement as _, IntoElement,
-    ObjectFit, ParentElement as _, PathPromptOptions, Render, SharedString,
+    KeyContext, ObjectFit, ParentElement as _, PathPromptOptions, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, div, img,
     prelude::FluentBuilder as _, px,
 };
-use gpui_component::input::{InputEvent, TextareaState};
+use gpui_component::input::{InputEvent, Position, TextareaState};
 
 use super::RepoState;
 use super::kit::{Btn, Size, TypeExt as _, dot, field_frame, icon, kbd, plural, ring, spinner};
 use super::motion;
 use crate::backend::Command;
-use crate::keymap::{ChooseModel, FollowUpFromOutcome, NewWorkflow, NewWorkflowHere};
+use crate::keymap::{
+    AcceptCompletion, AcceptSuggestion, ChooseModel, DismissCompletion, FollowUpFromOutcome,
+    NewWorkflow, NewWorkflowHere, NextCompletion, PrevCompletion,
+};
 use crate::theme::{MONO, Tokens, ty};
 
 /// A file waiting to go out with the next prompt.
@@ -31,6 +35,9 @@ struct Pending {
     size: u64,
 }
 
+/// The most slash commands the list shows at once.
+const MAX_COMPLETIONS: usize = 8;
+
 pub struct Composer {
     state: Entity<RepoState>,
     /// The context and plan usage ring beside the model chip.
@@ -41,8 +48,13 @@ pub struct Composer {
     /// `drag_over` style is suppressed when the last input was the keyboard,
     /// and a drag from Finder never counts as mouse input.
     drag_hover: bool,
-    /// Why files were not attached (too large, a folder), until the next attach.
+    /// Why files were not attached (too large, a folder), or why a command
+    /// was not sent, until the next attach or send.
     notice: Option<String>,
+    /// The highlighted row of the slash command list.
+    completion: usize,
+    /// The text the list was closed at (esc): it stays closed until the text changes.
+    completion_dismissed: Option<String>,
 }
 
 impl Composer {
@@ -53,11 +65,28 @@ impl Composer {
                 .placeholder("Tell the agent what to do next…")
         });
         cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
-            if let InputEvent::PressEnter {
-                secondary: true, ..
-            } = event
-            {
-                this.submit(window, cx);
+            match event {
+                InputEvent::PressEnter {
+                    secondary: true, ..
+                } => this.submit(window, cx),
+                // A slash command list starts over at the top as you type; a
+                // dismissal or a refusal is about text that is gone now.
+                InputEvent::Change => {
+                    this.completion = 0;
+                    let text = this.input.read(cx).value();
+                    if this
+                        .completion_dismissed
+                        .as_deref()
+                        .is_some_and(|d| d != text.as_ref())
+                    {
+                        this.completion_dismissed = None;
+                    }
+                    if this.notice.as_deref().is_some_and(|n| n.starts_with('/')) {
+                        this.notice = None;
+                    }
+                    cx.notify();
+                }
+                _ => {}
             }
         })
         .detach();
@@ -69,7 +98,94 @@ impl Composer {
             attachments: Vec::new(),
             drag_hover: false,
             notice: None,
+            completion: 0,
+            completion_dismissed: None,
         }
+    }
+
+    /// The slash commands for what is typed, while it is a command's name
+    /// (`/comp`): no space yet, and not dismissed at this text.
+    fn completions(&self, cx: &App) -> Vec<CommandInfo> {
+        let text = self.input.read(cx).value();
+        let Some(typed) = text.strip_prefix('/') else {
+            return Vec::new();
+        };
+        if typed.contains(char::is_whitespace)
+            || self.completion_dismissed.as_deref() == Some(text.as_ref())
+        {
+            return Vec::new();
+        }
+        self.state
+            .read(cx)
+            .commands
+            .completions(typed)
+            .into_iter()
+            .take(MAX_COMPLETIONS)
+            .cloned()
+            .collect()
+    }
+
+    fn step_completion(&mut self, by: isize, cx: &mut Context<'_, Self>) {
+        let n = self.completions(cx).len();
+        if n > 0 {
+            #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
+            let next = (self.completion as isize + by).rem_euclid(n as isize) as usize;
+            self.completion = next;
+            cx.notify();
+        }
+    }
+
+    /// Put the highlighted command in the field, ready for its arguments.
+    fn accept_completion(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let list = self.completions(cx);
+        let Some(c) = list.get(self.completion.min(list.len().saturating_sub(1))) else {
+            return;
+        };
+        let text = format!("/{} ", c.name);
+        let end = u32::try_from(text.chars().count()).unwrap_or(0);
+        self.input.update(cx, |i, cx| {
+            i.set_value(text, window, cx);
+            i.set_cursor_position(
+                Position {
+                    line: 0,
+                    character: end,
+                },
+                window,
+                cx,
+            );
+        });
+        self.completion = 0;
+        cx.notify();
+    }
+
+    /// Put the suggested next prompt in the field, to send or edit.
+    fn accept_suggestion(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let state = self.state.read(cx);
+        let Some(text) = state
+            .selected_view()
+            .and_then(|v| state.suggestions.get(&v.workflow.id))
+            .cloned()
+        else {
+            return;
+        };
+        let end = u32::try_from(text.chars().count()).unwrap_or(0);
+        self.input.update(cx, |i, cx| {
+            i.set_value(text, window, cx);
+            i.set_cursor_position(
+                Position {
+                    line: 0,
+                    character: end,
+                },
+                window,
+                cx,
+            );
+        });
+        cx.notify();
+    }
+
+    fn dismiss_completion(&mut self, cx: &mut Context<'_, Self>) {
+        self.completion_dismissed = Some(self.input.read(cx).value().to_string());
+        cx.notify();
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut Context<'_, Self>) {
@@ -172,6 +288,14 @@ impl Composer {
         let Some(view) = state.selected_view() else {
             return;
         };
+        // A command Berth does itself stays in the field, with where to go.
+        if let Some(name) = berth_core::commands::slash_command(&text)
+            && let Some(why) = state.commands.blocked(name)
+        {
+            self.notice = Some(format!("/{name}: {why}"));
+            cx.notify();
+            return;
+        }
         let comments = state
             .comments
             .get(&view.workflow.id)
@@ -189,7 +313,12 @@ impl Composer {
             text,
             attachments: self.attachments.drain(..).map(|a| a.path).collect(),
         });
+        let wf = view.workflow.id.clone();
+        self.state.update(cx, |s, _| {
+            s.suggestions.remove(&wf);
+        });
         self.notice = None;
+        self.completion_dismissed = None;
         self.input
             .update(cx, |i, cx| i.set_value(String::new(), window, cx));
         cx.notify();
@@ -249,6 +378,12 @@ impl Render for Composer {
             .is_some_and(|n| matches!(n.payload, berth_protocol::NodePayload::Summary(_)));
 
         let reviewing = view.pending_review().is_some();
+        // A suggested next prompt, while the field is empty (ADR 0016).
+        let suggestion = state
+            .suggestions
+            .get(&wf.id)
+            .filter(|_| wf.state == WorkflowState::Idle && !has_text && !creating)
+            .cloned();
         let status: gpui::AnyElement = match wf.state {
             // Before the first round: the slot is being made, then the agent starts.
             WorkflowState::Starting => div()
@@ -310,6 +445,25 @@ impl Render for Composer {
                 .text_color(t.accent)
                 .child(icon("paperclip", 14., t.accent))
                 .child("Drop to attach to your next message")
+                .into_any_element(),
+            _ if suggestion.is_some() => div()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .min_w_0()
+                .child(div().flex_none().child("Suggested:"))
+                .child(
+                    div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .text_color(t.text)
+                        .child(format!("“{}”", suggestion.clone().unwrap_or_default())),
+                )
+                .child(div().flex_none().child("·"))
+                .child(kbd("Tab"))
+                .child(div().flex_none().child("to use it"))
                 .into_any_element(),
             _ if focused || has_text => div()
                 .child(format!("Your prompt starts section {}.", wf.section_no))
@@ -460,6 +614,19 @@ impl Render for Composer {
         }
 
         let disabled = !can_send;
+        let completions = if can_send && focused {
+            self.completions(cx)
+        } else {
+            Vec::new()
+        };
+        let list = (!completions.is_empty()).then(|| {
+            let blocked: Vec<_> = completions
+                .iter()
+                .map(|c| self.state.read(cx).commands.blocked(&c.name))
+                .collect();
+            let selected = self.completion.min(completions.len() - 1);
+            completion_list(&t, &completions, &blocked, selected, cx)
+        });
         let boxed = field_frame(&t, focused || self.drag_hover, false)
             .flex_col()
             .when(disabled, |d| d.border_color(t.border).opacity(0.6))
@@ -508,8 +675,30 @@ impl Render for Composer {
                     }),
             );
 
+        let completing = list.is_some();
+        let mut context = KeyContext::default();
+        context.add("Composer");
+        if completing {
+            context.add("Completing");
+        } else if suggestion.is_some() {
+            context.add("Suggesting");
+        }
+        // The command list floats over the flow, right above the box.
+        let boxed = div().relative().child(boxed).children(list);
         div()
             .id("composer")
+            .key_context(context)
+            .on_action(cx.listener(|this, _: &NextCompletion, _, cx| this.step_completion(1, cx)))
+            .on_action(cx.listener(|this, _: &PrevCompletion, _, cx| this.step_completion(-1, cx)))
+            .on_action(cx.listener(|this, _: &AcceptCompletion, window, cx| {
+                this.accept_completion(window, cx);
+            }))
+            .on_action(
+                cx.listener(|this, _: &DismissCompletion, _, cx| this.dismiss_completion(cx)),
+            )
+            .on_action(cx.listener(|this, _: &AcceptSuggestion, window, cx| {
+                this.accept_suggestion(window, cx);
+            }))
             .flex()
             .flex_col()
             .gap(px(8.))
@@ -551,12 +740,118 @@ impl Render for Composer {
                     )
                     .child(self.usage.clone()),
             )
-            .when_some(self.notice.clone(), |d, notice| {
+            // Under the open command list it would be hidden; the rows say the same.
+            .when_some(self.notice.clone().filter(|_| !completing), |d, notice| {
                 d.child(div().ty(ty::META).text_color(t.attention).child(notice))
             })
             .child(boxed)
             .into_any_element()
     }
+}
+
+/// The slash commands for what is typed: name, what it takes, and what it
+/// does (or, for one Berth does itself, where to go instead).
+fn completion_list(
+    t: &Tokens,
+    commands: &[CommandInfo],
+    blocked: &[Option<&'static str>],
+    selected: usize,
+    cx: &mut Context<'_, Composer>,
+) -> gpui::AnyElement {
+    let mut rows = div().flex().flex_col();
+    for (i, c) in commands.iter().enumerate() {
+        let why = blocked.get(i).copied().flatten();
+        rows = rows.child(
+            div()
+                .id(("completion", i))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .h(px(30.))
+                .px(px(10.))
+                .rounded(px(5.))
+                .overflow_hidden()
+                .cursor_pointer()
+                .when(i == selected, |d| d.bg(t.accent_soft))
+                .when(i != selected, |d| d.hover(|s| s.bg(t.raised)))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.completion = i;
+                    this.accept_completion(window, cx);
+                    this.focus(window, cx);
+                }))
+                .child(
+                    div()
+                        .flex_none()
+                        .font_family(MONO)
+                        .text_size(px(12.))
+                        .text_color(if why.is_some() { t.text3 } else { t.text })
+                        .child(format!("/{}", c.name)),
+                )
+                .when(!c.argument_hint.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .flex_shrink(1.)
+                            .min_w_0()
+                            .max_w(px(220.))
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .font_family(MONO)
+                            .text_size(px(12.))
+                            .text_color(t.text3)
+                            .child(c.argument_hint.clone()),
+                    )
+                })
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .ty(ty::META)
+                        .text_color(if why.is_some() { t.attention } else { t.text2 })
+                        .child(why.map_or_else(|| c.description.clone(), str::to_owned)),
+                ),
+        );
+    }
+    div()
+        .id("completions")
+        .absolute()
+        .left_0()
+        .right_0()
+        .bottom_full()
+        .mb(px(6.))
+        // Over the flow: clicks, hovers and the wheel stop here.
+        .occlude()
+        .flex()
+        .flex_col()
+        .gap(px(4.))
+        .p(px(4.))
+        .bg(t.card)
+        .border_1()
+        .border_color(t.border_strong)
+        .rounded(px(8.))
+        .shadow(super::kit::dialog_shadow())
+        .child(rows)
+        .child(
+            div()
+                .flex()
+                .gap(px(4.))
+                .px(px(10.))
+                .pb(px(4.))
+                .ty(ty::META)
+                .text_color(t.text3)
+                .child(kbd("↑↓"))
+                .child("to choose ·")
+                .child(kbd("↩"))
+                .child("or")
+                .child(kbd("Tab"))
+                .child("to complete ·")
+                .child(kbd("esc"))
+                .child("to close"),
+        )
+        .into_any_element()
 }
 
 /// A closed workflow: no composer, just the ways forward.

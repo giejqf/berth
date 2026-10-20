@@ -9,7 +9,9 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use berth_core::Slot;
-use berth_protocol::{AppToSidecar, Origin, OriginKind, PastSession, SessionsList, SidecarToApp};
+use berth_protocol::{
+    AppToSidecar, Origin, OriginKind, PastSession, SessionsList, SessionsRename, SidecarToApp,
+};
 use berth_sidecar_client::{Sidecar, SidecarEvent};
 use berth_slot::Placement;
 
@@ -64,6 +66,59 @@ impl Shared {
         .unwrap_or_else(|_| Err(anyhow!("listing sessions timed out")));
         sidecar.shutdown(Duration::from_secs(2)).await;
         reply
+    }
+
+    /// Give the slot's session the slot's name in Claude Code's history
+    /// (`renameSession`, ADR 0016), or its workflow's title when the name was
+    /// cleared. Best effort: only where the transcript is on this Mac (a host
+    /// slot), and a failure is only logged.
+    pub(super) async fn retitle_session(&self, slot: &Slot) {
+        if slot.placement == Placement::Inside.as_str() {
+            return;
+        }
+        let latest = self
+            .core()
+            .store
+            .workflows_for_slot(&slot.id)
+            .ok()
+            .and_then(|mut w| w.pop());
+        let (Some(wf), Some(dir)) = (latest, slot.checkout_path.clone()) else {
+            return;
+        };
+        let Some(session_id) = wf.claude_session_id.clone() else {
+            return;
+        };
+        let title = slot
+            .custom_name
+            .clone()
+            .unwrap_or_else(|| wf.origin.title.clone());
+        let renamed = async {
+            let mut cmd = tokio::process::Command::new(&self.launch.program);
+            cmd.args(&self.launch.args).current_dir(&dir);
+            let (sidecar, mut events) = Sidecar::spawn(cmd)?;
+            sidecar.send(AppToSidecar::SessionsRename(SessionsRename {
+                session_id,
+                title,
+                dir: dir.clone(),
+            }))?;
+            let reply = tokio::time::timeout(LIST_TIMEOUT, async {
+                while let Some(event) = events.recv().await {
+                    if let SidecarEvent::Message(m) = event
+                        && let SidecarToApp::SessionsRenamed(r) = m.body
+                    {
+                        return r.error.map_or(Ok(()), |e| Err(anyhow!(e)));
+                    }
+                }
+                Err(anyhow!("the sidecar exited without renaming"))
+            })
+            .await
+            .unwrap_or_else(|_| Err(anyhow!("renaming timed out")));
+            sidecar.shutdown(Duration::from_secs(2)).await;
+            reply
+        };
+        if let Err(e) = renamed.await {
+            tracing::warn!(error = %e, "renaming the Claude Code session");
+        }
     }
 
     /// Berth's workflows of the repo, each with Claude Code's record of its

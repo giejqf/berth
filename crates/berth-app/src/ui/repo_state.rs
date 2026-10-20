@@ -78,6 +78,12 @@ pub struct RepoState {
     pub review_preset: HashMap<String, (DiffPreset, Option<u32>)>,
     /// Loaded app settings (`None` until the backend answers `LoadSettings`).
     pub model_setting: Option<String>,
+    /// The slash commands the repo's sessions offer (ADR 0015).
+    pub commands: berth_core::commands::Commands,
+    /// A predicted next prompt per idle workflow (ADR 0016).
+    pub suggestions: HashMap<String, String>,
+    /// What runs in each workflow's session's background.
+    pub background: HashMap<String, Vec<berth_protocol::BackgroundTask>>,
     pub theme_setting: Option<String>,
     /// Whether the window shows the review pane (mirrored from the window).
     pub review_open: bool,
@@ -195,6 +201,9 @@ impl RepoState {
             connectors,
             review_preset: HashMap::new(),
             model_setting: None,
+            commands: berth_core::commands::Commands::default(),
+            suggestions: HashMap::new(),
+            background: HashMap::new(),
             theme_setting: None,
             terminals: HashMap::new(),
             terminal_pending: HashSet::new(),
@@ -534,6 +543,10 @@ impl RepoState {
                 entry.workflow = Some(view.workflow.clone());
             }
         }
+        // A suggestion is for the workflow's next prompt, while it waits for one.
+        if view.workflow.state != berth_core::WorkflowState::Idle {
+            self.suggestions.remove(&id);
+        }
         self.views.insert(id, view);
         cx.notify();
     }
@@ -598,6 +611,18 @@ impl RepoState {
             }
             UiEvent::AnswerFailed { workflow_id, id } if self.knows(&workflow_id) => {
                 cx.emit(RepoEvent::AnswerFailed(id));
+            }
+            UiEvent::Suggestion { workflow_id, text } if self.knows(&workflow_id) => {
+                self.suggestions.insert(workflow_id, text);
+                cx.notify();
+            }
+            UiEvent::BackgroundTasks { workflow_id, tasks } if self.knows(&workflow_id) => {
+                if tasks.is_empty() {
+                    self.background.remove(&workflow_id);
+                } else {
+                    self.background.insert(workflow_id, tasks);
+                }
+                cx.notify();
             }
             UiEvent::ShowFindings { workflow_id } if self.knows(&workflow_id) => {
                 if self.selected_workflow_id().as_deref() == Some(workflow_id.as_str()) {

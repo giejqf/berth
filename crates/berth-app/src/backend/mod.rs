@@ -143,6 +143,7 @@ impl Shared {
             | Command::AnswerReview { workflow_id, .. }
             | Command::Rewind { workflow_id, .. }
             | Command::Interrupt { workflow_id }
+            | Command::Background { workflow_id }
             | Command::ResolveSlotRequest { workflow_id, .. }
             | Command::LoadWorkflow { workflow_id }
             | Command::DeleteReviewComment { workflow_id, .. }
@@ -265,6 +266,15 @@ impl Shared {
                 }
                 Ok(())
             }
+            Command::Background { workflow_id } => {
+                let session = lock(&self.sessions).get(&workflow_id).cloned();
+                let Some(s) = session else {
+                    return Err(anyhow::anyhow!("The agent is not running."));
+                };
+                s.send(berth_protocol::AppToSidecar::SessionBackground(
+                    berth_protocol::SessionBackground { tool_use_id: None },
+                ))
+            }
             Command::ResolveSlotRequest {
                 workflow_id,
                 request,
@@ -283,6 +293,9 @@ impl Shared {
                 let name = name.as_deref().map(str::trim).filter(|n| !n.is_empty());
                 let slot = self.core().store.set_slot_custom_name(&slot_id, name)?;
                 self.emit_slots(&slot.repo_id);
+                // Claude Code's history shows the same name (ADR 0016).
+                let shared = self.clone();
+                tokio::spawn(async move { shared.retitle_session(&slot).await });
                 Ok(())
             }
             Command::LoadWorkflow { workflow_id } => {

@@ -94,6 +94,7 @@ impl Shared {
         let windows = self.core().store.repo_windows(&repo.id, &new_id())?;
         let slots = self.slot_entries(&repo.id)?;
         self.remember_repo(&root);
+        let repo_id = repo.id.clone();
         self.emit(UiEvent::RepoOpened(Box::new(RepoSnapshot {
             repo,
             slot_types: infos,
@@ -107,6 +108,11 @@ impl Shared {
         self.emit_settings()?;
         self.emit_models();
         self.emit_quota();
+        self.emit_account();
+        self.emit(UiEvent::Commands {
+            commands: self.commands(&repo_id),
+            repo_id,
+        });
         Ok(())
     }
 
@@ -481,6 +487,7 @@ impl Shared {
         session.send(AppToSidecar::SessionTurn(berth_protocol::SessionTurn {
             text,
             attachments: vec![],
+            uuid: None,
         }))?;
         self.emit_workflow(&wf.id);
         self.emit_slots(&slot.repo_id);

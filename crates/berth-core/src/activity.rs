@@ -6,6 +6,39 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
+/// The live card's line while Claude Code compacts the conversation.
+pub const COMPACTING: &str = "Compacting the conversation";
+
+/// "The API is overloaded; trying again (2 of 10) in 8s".
+fn retrying(json: &Value) -> String {
+    let why = match json.get("error").and_then(Value::as_str) {
+        Some("overloaded") => "The API is overloaded",
+        Some("rate_limit") => "Rate limited",
+        Some("server_error") => "The API had an error",
+        Some("authentication_failed" | "oauth_org_not_allowed") => "Sign-in failed",
+        _ => match json.get("error_status").and_then(Value::as_u64) {
+            Some(status) => return format!("The API answered {status}; trying again"),
+            None => "The request failed",
+        },
+    };
+    let attempt = json.get("attempt").and_then(Value::as_u64).unwrap_or(1);
+    let max = json.get("max_retries").and_then(Value::as_u64).unwrap_or(0);
+    let delay = json
+        .get("retry_delay_ms")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let wait = if delay >= 1_000 {
+        format!(" in {}s", (delay + 500) / 1_000)
+    } else {
+        String::new()
+    };
+    if max > 0 {
+        format!("{why}; trying again ({attempt} of {max}){wait}")
+    } else {
+        format!("{why}; trying again{wait}")
+    }
+}
+
 /// One tool call, phrased for people ("Reading `main.rs`").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Step {
@@ -25,6 +58,9 @@ pub struct RoundActivity {
     pub started_at: i64,
     /// The agent's latest prose on the main lane, first sentence.
     pub title: Option<String>,
+    /// What Claude Code itself is doing (compacting the conversation); shown
+    /// over the title while set, which stays for after.
+    pub status: Option<String>,
     /// Main-lane tool calls, oldest first.
     pub steps: Vec<Step>,
     /// Every tool call this round, branches included.
@@ -33,6 +69,9 @@ pub struct RoundActivity {
     pub subagents: usize,
     /// The latest step per branch (live lanes show it inline).
     pub branch_steps: HashMap<String, Step>,
+    /// Claude Code's one-line summary of what each subagent is doing, every
+    /// ~30s (`agentProgressSummaries`); shown over its latest step.
+    pub branch_summaries: HashMap<String, String>,
 }
 
 impl RoundActivity {
@@ -44,6 +83,20 @@ impl RoundActivity {
         }
     }
 
+    /// Claude Code's own status: compacting the conversation
+    /// (`system/status`), or retrying a failed API request (`api_retry`).
+    fn observe_status(&mut self, json: &Value) -> bool {
+        let status = match json.get("subtype").and_then(Value::as_str) {
+            Some("status") => (json.get("status").and_then(Value::as_str) == Some("compacting"))
+                .then(|| COMPACTING.to_owned()),
+            Some("api_retry") => Some(retrying(json)),
+            _ => return false,
+        };
+        let changed = status != self.status;
+        self.status = status;
+        changed
+    }
+
     /// The step running now on the main lane, if any.
     #[must_use]
     pub fn current(&self) -> Option<&Step> {
@@ -53,14 +106,32 @@ impl RoundActivity {
     /// One line for the slot rail: what is happening now, without markup.
     #[must_use]
     pub fn headline(&self) -> String {
-        self.current()
-            .map(|s| strip_ticks(&s.doing))
+        self.status
+            .clone()
+            .or_else(|| self.current().map(|s| strip_ticks(&s.doing)))
             .or_else(|| self.title.clone())
             .unwrap_or_else(|| "Working".to_owned())
     }
 
+    /// The live card's line: Claude Code's status while it has one, else the
+    /// agent's latest prose.
+    #[must_use]
+    pub fn line(&self) -> Option<&str> {
+        self.status.as_deref().or(self.title.as_deref())
+    }
+
     /// Feed one raw SDK event. Returns whether anything changed.
     pub fn observe(&mut self, kind: &str, json: &Value, branch_id: Option<&str>, now: i64) -> bool {
+        if kind == "system" {
+            return self.observe_status(json);
+        }
+        // The request went through after all: the retry line goes.
+        let retried = kind == "assistant"
+            && branch_id.is_none()
+            && self.status.as_deref().is_some_and(|s| s != COMPACTING);
+        if retried {
+            self.status = None;
+        }
         let Some(content) = json.pointer("/message/content").and_then(Value::as_array) else {
             return false;
         };
@@ -255,6 +326,40 @@ fn strip_ticks(s: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn api_retries_show_until_the_agent_answers() {
+        let mut a = RoundActivity::new(0);
+        a.title = Some("Reading the config".to_owned());
+        let retry = serde_json::json!({
+            "type": "system", "subtype": "api_retry", "attempt": 2, "max_retries": 10,
+            "retry_delay_ms": 8_000, "error_status": 529, "error": "overloaded"
+        });
+        assert!(a.observe("system", &retry, None, 1));
+        assert_eq!(
+            a.headline(),
+            "The API is overloaded; trying again (2 of 10) in 8s"
+        );
+        let answer =
+            serde_json::json!({"message": {"content": [{"type": "text", "text": "Done."}]}});
+        assert!(a.observe("assistant", &answer, None, 2));
+        assert_eq!(a.status, None);
+    }
+
+    #[test]
+    fn compaction_shows_while_it_runs() {
+        let mut a = RoundActivity::new(0);
+        let status =
+            |s: Value| serde_json::json!({"type": "system", "subtype": "status", "status": s});
+        a.title = Some("Reading the config".to_owned());
+        assert!(a.observe("system", &status(Value::from("compacting")), None, 1));
+        assert_eq!(a.headline(), COMPACTING);
+        assert_eq!(a.line(), Some(COMPACTING));
+        assert!(a.observe("system", &status(Value::Null), None, 2));
+        // The agent's line is still there once it is done.
+        assert_eq!(a.headline(), "Reading the config");
+        assert!(!a.observe("system", &serde_json::json!({"subtype": "init"}), None, 3));
+    }
 
     #[test]
     fn steps_follow_tool_calls() {

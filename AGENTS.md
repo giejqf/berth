@@ -182,6 +182,9 @@ The event flow is the primary UI. It is an ordered list of **nodes** per workflo
 | `Artifact` | Agent (`present_artifact`) | `{ artifact_id, title, description?, file: FileRef, error? }` — a file the agent made for the user (screenshot, recording, rendered page) |
 | `Reopened` | App (a session was opened from the history) | `{ slot, checkout, branch, from_checkout?, from_branch? }` — where the conversation goes on, and where it ran before when that was another checkout (ADR 0010) |
 | `Rewind` | App (the user rewound the conversation) | `{ dropped_rounds, from, to }` — marks where a rewind landed: what was dropped, when it ran |
+| `Refusal` | Sidecar (`model_refusal_fallback` / `_no_fallback`) | `{ model, fallback_model?, category?, explanation?, subagent }` — the model refused a request; Claude Code went on with its fallback model, or the round stopped (ADR 0016) |
+| `Command` | App (a round that was a slash command Claude Code ran by itself) | `{ command, output }` — what the command printed, markdown (`/context`, `/usage`); ADR 0015 |
+| `Compacted` | Sidecar (from a `compact_boundary`) | `{ trigger: manual \| auto, pre_tokens, post_tokens? }` — Claude Code compacted the conversation (`/compact`, or on its own as the window filled) |
 | `Review` | Agent (`present_review`) | `{ review_id, summary?, findings: [Finding], answered_at? }`, `Finding = { level: low \| mid \| high, title, detail, path?, line?, suggested: fix \| dismiss \| decide, choice?, note? }` — code review findings; `choice` (and `note`, for decide) once the user sent their decisions |
 
 `FollowUp = { id, title, description }`. Each follow-up renders a **"Create slot from
@@ -260,6 +263,13 @@ A round must end with **exactly one** terminal tool call.
   ("Earlier you presented code review findings. My decisions: …").
 - A turn Claude Code starts by itself (e.g. a background subagent finished) opens an
   implicit round with the same rules.
+- A slash command Claude Code runs without the model (`/compact`, `/context`; its
+  `result` has `num_turns: 0`, and the turn was a `/name`) ends the round as
+  `command`: no nudge, no stub Summary, no section end, and it is not section work
+  (`Round::is_work`: the default Section diff and the header skip it). What it printed
+  becomes a `Command` node (a `/compact` says it with its `Compacted` node instead).
+  Skills (`/code-review …`) run the model and follow the rule above. A compaction after
+  a rewind settles where later sessions resume (ADR 0015).
 - The stub Summary is a real Summary node: it ends the section and is snapshotted.
 
 ### 5.4 Subagent branches
@@ -297,7 +307,10 @@ the main lane.
   34s"); each subagent is one 28px row with its own 3px rail (purple → orange → aqua,
   cycling) and counts ("1 decision · 0 files · 18s"), collapsed by default. Expanding a
   row shows the subagent's Decision nodes and its collected result (clamped to two
-  lines, "Show more"). Live rows show their current step; a failed row opens itself.
+  lines, "Show more"). Live rows show Claude Code's one-line summary of what the
+  subagent is doing (`agentProgressSummaries`, every ~30s, `branch.progress`), else its
+  current step; a failed row opens itself. Subagents' own text is forwarded
+  (`forwardSubagentText`), so "Details" shows their reasoning, not only their tools.
   The CollectResults node is folded into its row. "Details" → that subagent's
   transcript slice. Cancel is session-wide in v1 (Claude Code has no per-subagent
   interrupt), so cancelling a branch interrupts the round.
@@ -325,6 +338,16 @@ Attached files:
 which is all the UI ever renders. Images Claude accepts (PNG/JPEG/GIF/WebP, ≤ 5 MB)
 are also sent as image blocks. Files move "where the agent runs": on the host for
 `host` placement, through `slot.sh exec` for `inside` (ADR 0002).
+
+A Prompt that starts with a slash command (`/name` that the session offers; before
+any session reported its list, any `/name` without a further slash) goes to Claude
+Code exactly as typed, its attachments listed after it: pending review comments and
+rewind/reopen notes wait for the next ordinary prompt ("/tmp is full" is prose once
+the list is known). Commands Berth does itself are refused before anything is sent,
+with where to go instead: `/model`, `/effort`, `/fast` → the model chip; `/rewind` →
+Rewind; `/resume`, `/continue` → Open from History; `/clear`, `/reset`, `/new` → New
+workflow here; `/exit`, `/quit`, `/login`, `/logout`; and the session's
+terminal-bound commands. `berth_core::commands` (ADR 0015).
 
 ---
 
@@ -563,8 +586,9 @@ repos            id, path, default_slot_type, created_at
 slots            id, repo_id, type, name, custom_name, state, state_detail, checkout_path, placement, branch,
                  base_ref, created_at, model, effort, window_id
 workflows        id, slot_id, origin_json, state, claude_session_id, section_no, total_cost_usd, last_error,
-                 created_at, closed_at, resume_at, opened_at, context_json
-rounds           id, workflow_id, section_no, started_at, ended_at, terminal_kind, nudges, cost_usd, duration_ms
+                 created_at, closed_at, resume_at, opened_at, context_json, resume_drops
+rounds           id, workflow_id, section_no, started_at, ended_at, terminal_kind, nudges, cost_usd, duration_ms,
+                 turn_uuid
 branches         id, workflow_id, spawn_round_id, collect_round_id, parent_branch_id, parent_tool_use_id,
                  agent_name, description, parallel_group, status, spawned_at, collected_at, cost_usd,
                  spawn_tree, collect_tree, result_json
@@ -576,7 +600,7 @@ review_comments  id, workflow_id, from_snapshot, to_snapshot, preset, path, side
 gh_entities      id, repo_id, kind, number_or_sha, json, synced_at
 workflow_links   workflow_id, entity_id, role(origin|outcome)
 connectors       name, path, enabled
-settings         key, value          # last_repo, recent_repos, model, models, quota
+settings         key, value          # last_repo, recent_repos, model, models, quota, commands:<repo_id>, account
 ```
 
 Timestamps are unix epoch milliseconds. `nodes.raw_first/raw_last` are `raw_events.id`
@@ -596,9 +620,11 @@ from `berth-protocol`; the list below is the contract, the Rust types are the tr
 
 **App → sidecar**
 ```
-session.start    { workflow_id, cwd, system_prompt, env, allowed_tools, connector_skills, model?, effort? }
-session.resume   { workflow_id, claude_session_id, resume_at?, cwd, … }   # resume_at: a rewind (ADR 0009)
-session.turn     { text, attachments?: [{ path, mime }] }   # a Prompt or nudge; images become image blocks
+session.start    { workflow_id, cwd, system_prompt, env, allowed_tools, connector_skills, model?, effort?, title? }
+session.resume   { workflow_id, claude_session_id, resume_at?, drops_turn?, cwd, … }   # resume_at: a rewind (ADR 0009); drops_turn: its one turn (ADR 0016)
+session.turn     { text, attachments?: [{ path, mime }], uuid? }   # a Prompt or nudge; images become image blocks; uuid: the turn's in the transcript
+session.background { tool_use_id? }   # move running foreground tool calls to the background (ADR 0016)
+sessions.rename  { session_id, title, dir }   # no session needed: retitle it in Claude Code's history
 session.interrupt
 session.stop
 question.answer  { question_id, text }
@@ -626,12 +652,20 @@ session.models   { models: [{ value, display_name, description, efforts }] }   #
 session.context  { categories: [{ name, tokens, kind: used|free|buffer|deferred }] }   # getContextUsage (ADR 0014)
 session.quota    { complete, available, plan?, windows: [{ key, label?, utilization?, resets_at?, status? }] }   # plan limits
 sessions.listed  { sessions: [{ session_id, title, first_prompt?, cwd?, git_branch?, last_modified }] }   # reply to sessions.list
+node.compacted   { trigger, pre_tokens, post_tokens? }   # compact_boundary (ADR 0015)
+node.refusal     { model, fallback_model?, category?, explanation?, subagent }   # ADR 0016
+branch.progress  { branch_id, summary }          # a subagent's task_progress summary
+session.suggestion { text }                      # prompt_suggestion: a predicted next prompt
+session.tasks    { tasks: [{ task_id, kind, description, agent? }] }   # background_tasks_changed, ambient ones left out
+session.account  { email?, organization?, plan?, provider? }   # accountInfo()
+sessions.renamed { ok, error? }                  # reply to sessions.rename
+session.commands { commands: [{ name, description, argument_hint, aliases, builtin }], terminal: [name] }   # supportedCommands()
 ```
 
 The sidecar is stateless across restarts: all state lives in SQLite on the app side.
 `system_prompt` is appended to `BERTH_SYSTEM_PROMPT`. `raw.event.seq` restarts with
 each sidecar process. `terminal_kind` ∈ `write_summary | record_outcome | unterminated |
-interrupted | error`. `round.ended.cost_usd` is the delta of the SDK's cumulative cost.
+interrupted | error | command`. `round.ended.cost_usd` is the delta of the SDK's cumulative cost.
 stdin EOF or `session.stop` stops the session and ends the process; stdout carries
 protocol lines only (logs go to `~/Library/Logs/Berth/sidecar.log`). A sidecar is
 tied to its workflow only while it is that workflow's live session: once replaced
@@ -669,8 +703,12 @@ settles nothing (ADR 0013).
   (its agent working, or the slot being created or destroyed) is the working spinner,
   in the rail and its collapsed strip alike. The second line says what is happening
   (the live round's current step from `berth_core::activity`, "Asked a question · 40s
-  ago", "Review: 5 findings to decide · 1m ago", "Committed · 1 follow-up"). The footer
-  shows Claude Code / GitHub CLI status (`backend/env.rs`).
+  ago", "Review: 5 findings to decide · 1m ago", "Committed · 1 follow-up"); while
+  Claude Code retries a failed API request it says so ("The API is overloaded; trying
+  again (2 of 10) in 8s", `api_retry`). The footer shows Claude Code / GitHub CLI status
+  (`backend/env.rs`); once signed in, Claude Code's line names the plan ("Max plan", or
+  "via Bedrock"), and hovering it says who it signs in as (`session.account`, kept in
+  `settings.account`).
 - A slot's first line is its workflow's title, or the name the user gave it: **Rename
   slot** (R with the rail focused, a double-click, the row's context menu, the flow's
   More menu, ⌘K) stores `slots.custom_name`; an empty name goes back to the title.
@@ -742,6 +780,27 @@ settles nothing (ADR 0013).
   **New workflow here** (⌥⌘N, the rail's context menu, More, ⌘K, the menu bar)
   opens it on the selected slot; a closed workflow's composer offers it too, and
   its follow-ups offer **Continue here** beside **Create slot**.
+- **Slash commands** (ADR 0015): typing `/` at the start of the composer lists the
+  commands and skills the repo's sessions offer (`session.commands`, the last one
+  reported, kept per repo in `settings.commands:<repo_id>`, so the list is there
+  before a session runs; a window made by dragging a slot out takes its source's): name,
+  argument hint, description; ones Berth does itself are dimmed with where to go.
+  ↑↓ choose, ↩ or Tab complete, esc closes (bound in `Completing > Input`, so the
+  field's own keys work otherwise); ⌘↩ sends. A command's output shows as a Command
+  row (its first lines, "Show more"); a compaction as a marker with the tokens before
+  and after, and the live card says "Compacting the conversation" while it runs.
+  `ui/rich.rs` renders the headings and tables commands print.
+- **SDK extras** (ADR 0016): a session's title in Claude Code's history is the slot's
+  name (else the workflow's title); renaming a slot renames it there too (host slots).
+  After a round Claude Code may suggest the next prompt: the composer's status line
+  shows it while the field is empty, and Tab takes it (bound in `Suggesting > Input`).
+  The flow header counts what runs in the background ("2 in background", the tasks on
+  hover); while a round runs, **Background** (⌘B, ⌘K) moves a long command or a
+  subagent there, and the round goes on. Each turn Berth sends carries a uuid
+  (`rounds.turn_uuid`): a rewind that drops exactly one clean turn declares it
+  (`resumeDropsTurn`, `workflows.resume_drops`), so Claude Code refuses to drop anything
+  else; on a refusal the sidecar resumes the whole conversation and sends the turn
+  again, and the rewind note tells the agent what was dropped.
 - **Usage ring** (`ui/usage.rs`, ADR 0014): at the end of the composer's status line,
   a ring of two arcs: the workflow's context window outside (`workflows.context_json`,
   reported by its session after each round, each compaction and on resume), the
@@ -812,7 +871,7 @@ settles nothing (ADR 0013).
   activity, `berth_core::activity`).
 - Feature `devtools` (dev only): `BERTH_DEV_SCRIPT` drives the live UI and
   `BERTH_DEV_SHOTS` receives window screenshots (see `src/devtools.rs`).
-  `BERTH_DEV_SEED=question|working|review|comments|done|findings|usage-api|empty|welcome` seeds the
+  `BERTH_DEV_SEED=question|working|review|comments|done|findings|usage-api|commands|empty|welcome` seeds the
   design's scenario into a fresh `BERTH_HOME` (`src/seed.rs`), so screenshots line up
   with the design artboards. Use it to check UI changes without a human.
   `BERTH_DEV_SLOW_MOTION=<factor>` stretches every animation so a shot can catch

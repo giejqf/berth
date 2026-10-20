@@ -1,6 +1,6 @@
 // Test doubles: a scriptable SDK query and a recording emitter.
 
-import type { ModelInfo, Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { AccountInfo, ModelInfo, Options, SDKMessage, SDKUserMessage, SlashCommand } from "@anthropic-ai/claude-agent-sdk";
 
 import type { Emitter } from "../src/ndjson.js";
 import type { SidecarToApp } from "../src/protocol.js";
@@ -39,6 +39,8 @@ export const USAGE_REPORT: UsageReport = {
 export class FakeQuery implements AgentQuery {
   readonly stream = new AsyncQueue<SDKMessage>();
   readonly prompts: string[] = [];
+  /** The user messages as sent, uuids included. */
+  readonly messages: SDKUserMessage[] = [];
   interrupts = 0;
   closed = false;
   options?: Options;
@@ -67,6 +69,7 @@ export class FakeQuery implements AgentQuery {
   constructor(prompt: AsyncIterable<SDKUserMessage>) {
     void (async () => {
       for await (const m of prompt) {
+        this.messages.push(m);
         const content = m.message.content;
         this.prompts.push(typeof content === "string" ? content : JSON.stringify(content));
       }
@@ -101,6 +104,16 @@ export class FakeQuery implements AgentQuery {
     return Promise.resolve(this.models);
   }
 
+  commands: SlashCommand[] = [
+    { name: "compact", description: "Compact the conversation", argumentHint: "<instructions>", builtin: true },
+    { name: "usage", description: "Plan usage", argumentHint: "", aliases: ["cost"], builtin: true },
+    { name: "code-review", description: "Review the diff", argumentHint: "[focus]" },
+  ];
+
+  supportedCommands(): Promise<SlashCommand[]> {
+    return Promise.resolve(this.commands);
+  }
+
   contextCalls = 0;
   context: ContextReport = {
     categories: [
@@ -118,6 +131,19 @@ export class FakeQuery implements AgentQuery {
   usageCalls = 0;
   usage: UsageReport = USAGE_REPORT;
 
+  account: AccountInfo = { email: "dev@example.com", subscriptionType: "Claude Max", apiProvider: "firstParty" };
+
+  accountInfo(): Promise<AccountInfo> {
+    return Promise.resolve(this.account);
+  }
+
+  backgrounded: Array<string | undefined> = [];
+
+  backgroundTasks(toolUseId?: string): Promise<boolean> {
+    this.backgrounded.push(toolUseId);
+    return Promise.resolve(true);
+  }
+
   usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(): Promise<UsageReport> {
     this.usageCalls += 1;
     return Promise.resolve(this.usage);
@@ -128,12 +154,15 @@ export class FakeQuery implements AgentQuery {
   }
 }
 
-export function fakeQueryFn(): { fn: QueryFn; last: () => FakeQuery } {
+export function fakeQueryFn(): { fn: QueryFn; last: () => FakeQuery; all: FakeQuery[] } {
   let last: FakeQuery | undefined;
+  const all: FakeQuery[] = [];
   return {
+    all,
     fn: ({ prompt, options }) => {
       last = new FakeQuery(prompt);
       last.options = options;
+      all.push(last);
       return last;
     },
     last: () => {
@@ -171,10 +200,12 @@ export const sdk = {
     tool_use_result: toolUseResult,
     message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolId, content, is_error: isError }] },
   }),
-  result: (totalCostUsd: number, subtype = "success") => ({
+  result: (totalCostUsd: number, subtype = "success", numTurns = 1) => ({
     type: "result",
     subtype,
     is_error: subtype !== "success",
+    ...(subtype !== "success" ? { errors: [] as string[] } : {}),
+    num_turns: numTurns,
     total_cost_usd: totalCostUsd,
     duration_ms: 1,
     session_id: "sess-1",

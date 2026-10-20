@@ -149,12 +149,25 @@ impl Shared {
                 .collect(),
             model,
             effort: slot.effort,
+            // What the rail shows; Claude Code's history shows it too (ADR 0016).
+            title: Some(
+                slot.custom_name
+                    .clone()
+                    .unwrap_or_else(|| wf.origin.title.clone()),
+            ),
         };
-        let resume_at = self.core().store.workflow_resume_at(&wf.id)?;
+        let (resume_at, drops_turn) = {
+            let core = self.core();
+            (
+                core.store.workflow_resume_at(&wf.id)?,
+                core.store.workflow_resume_drops(&wf.id)?,
+            )
+        };
         let msg = match wf.claude_session_id.clone() {
             Some(id) => AppToSidecar::SessionResume(SessionResume {
                 claude_session_id: id,
                 resume_at,
+                drops_turn,
                 start,
             }),
             None => AppToSidecar::SessionStart(start),
@@ -210,8 +223,16 @@ impl Shared {
         text: &str,
         attachments: &[std::path::PathBuf],
     ) -> Result<()> {
-        // Refused before an agent starts for it.
+        // Refused before an agent starts for it: a prompt the workflow can't
+        // take now, or a command Berth does itself (ADR 0015).
         Engine::check_prompt(&self.core().store, workflow_id)?;
+        let commands = self.commands(&self.repo_of_workflow(workflow_id)?);
+        if let Some(name) = berth_core::commands::slash_command(text)
+            && let Some(why) = commands.blocked(name)
+        {
+            return Err(anyhow::anyhow!("/{name}: {why}"));
+        }
+        let command = commands.is_command(text);
         let session = self.ensure_session(workflow_id).await?;
         let slot = {
             let core = self.core();
@@ -235,11 +256,12 @@ impl Shared {
         let submission = {
             let mut core = self.core();
             let super::Core { store, engine } = &mut *core;
-            engine.submit_prompt(store, workflow_id, text, files)?
+            engine.submit_prompt(store, workflow_id, text, files, command)?
         };
         session.send(AppToSidecar::SessionTurn(SessionTurn {
             text: submission.turn_text,
             attachments: images,
+            uuid: Some(submission.turn_uuid),
         }))?;
         self.settle_if_gone(workflow_id, &session);
         self.emit_workflow(workflow_id);
@@ -366,6 +388,7 @@ impl Shared {
                 session.send(AppToSidecar::SessionTurn(SessionTurn {
                     text,
                     attachments: vec![],
+                    uuid: None,
                 }))?;
             }
         }
@@ -396,6 +419,24 @@ impl Shared {
                             self.remember_models(&m.models);
                         }
                         berth_protocol::SidecarToApp::SessionQuota(q) => self.remember_quota(q),
+                        berth_protocol::SidecarToApp::SessionCommands(c) => {
+                            self.remember_commands(&workflow_id, c);
+                        }
+                        berth_protocol::SidecarToApp::SessionSuggestion(s) => {
+                            self.emit(UiEvent::Suggestion {
+                                workflow_id: workflow_id.clone(),
+                                text: s.text.clone(),
+                            });
+                        }
+                        berth_protocol::SidecarToApp::SessionTasks(t) => {
+                            self.emit(UiEvent::BackgroundTasks {
+                                workflow_id: workflow_id.clone(),
+                                tasks: t.tasks.clone(),
+                            });
+                        }
+                        berth_protocol::SidecarToApp::SessionAccount(a) => {
+                            self.remember_account(&a.account);
+                        }
                         _ => {}
                     }
                     let round_ended =
@@ -440,6 +481,11 @@ impl Shared {
                     if !current {
                         break;
                     }
+                    // Background tasks die with the session.
+                    self.emit(UiEvent::BackgroundTasks {
+                        workflow_id: workflow_id.clone(),
+                        tasks: Vec::new(),
+                    });
                     let error = (code != Some(0)).then(|| {
                         let tail: String = stderr_tail
                             .lines()
@@ -647,6 +693,55 @@ impl Shared {
             quota
         };
         self.emit(UiEvent::Quota(quota));
+    }
+
+    /// Keep the commands a session offers, per repo: the last session to
+    /// report decides (an `inside` slot's may differ from a host one's; the
+    /// backend still checks each send), and show them to the repo's windows.
+    fn remember_commands(&self, workflow_id: &str, report: &berth_protocol::SessionCommands) {
+        let Ok(repo_id) = self.repo_of_workflow(workflow_id) else {
+            return;
+        };
+        let commands = berth_core::commands::Commands {
+            commands: report.commands.clone(),
+            terminal: report.terminal.clone(),
+        };
+        if let Ok(json) = serde_json::to_string(&commands) {
+            let _ = self
+                .core()
+                .store
+                .set_setting(&format!("commands:{repo_id}"), &json);
+        }
+        self.emit(UiEvent::Commands { repo_id, commands });
+    }
+
+    /// Keep who Claude Code works as, for the rail's footer after a restart.
+    fn remember_account(&self, account: &berth_protocol::Account) {
+        if let Ok(json) = serde_json::to_string(account) {
+            let _ = self.core().store.set_setting("account", &json);
+        }
+        self.emit(UiEvent::Account(account.clone()));
+    }
+
+    /// The account as last reported, before a session of this run reports.
+    pub(super) fn emit_account(&self) {
+        let saved = self.core().store.setting("account").ok().flatten();
+        if let Some(account) =
+            saved.and_then(|json| serde_json::from_str::<berth_protocol::Account>(&json).ok())
+        {
+            self.emit(UiEvent::Account(account));
+        }
+    }
+
+    /// The repo's commands as a session last reported them.
+    pub(super) fn commands(&self, repo_id: &str) -> berth_core::commands::Commands {
+        self.core()
+            .store
+            .setting(&format!("commands:{repo_id}"))
+            .ok()
+            .flatten()
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default()
     }
 
     /// The plan's limits as last known, before a session of this run reports.

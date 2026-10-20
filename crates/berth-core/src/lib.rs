@@ -4,6 +4,7 @@
 //! [`engine::Effect`]s it returns.
 
 pub mod activity;
+pub mod commands;
 pub mod engine;
 pub mod error;
 pub mod files;

@@ -101,6 +101,8 @@ pub enum AnswerDelivery {
 pub struct Submission {
     pub node: Node,
     pub turn_text: String,
+    /// The user message's uuid in Claude Code's transcript (ADR 0016).
+    pub turn_uuid: String,
 }
 
 /// What a rewind leaves for the user: the message that was rewound, to edit
@@ -235,7 +237,7 @@ impl Engine {
         let used = store
             .rounds(workflow_id)?
             .iter()
-            .any(|r| r.section_no == wf.section_no);
+            .any(|r| r.section_no == wf.section_no && r.is_work());
         let section = if used {
             wf.section_no + 1
         } else {
@@ -349,6 +351,8 @@ impl Engine {
                 NodePayload::Reopened(r) if n.seq > node.seq => Some(r),
                 _ => None,
             });
+        // Read before the round goes.
+        let turn = store.round_turn(&round.id)?;
         let dropped = store.drop_from(workflow_id, node.seq, &round.id, round.section_no)?;
         if let Some(r) = &moved {
             store.insert_node(
@@ -373,6 +377,13 @@ impl Engine {
         store.set_section_no(workflow_id, round.section_no)?;
         store.set_workflow_error(workflow_id, None)?;
         store.set_workflow_resume_at(workflow_id, Some(&at))?;
+        // Dropping exactly that one clean turn (no nudges, which are turns of
+        // their own): the next session declares it, so Claude Code refuses a
+        // resume that would drop anything else, such as a queued notification.
+        let one_turn = (dropped.rounds == 1 && round.nudges == 0)
+            .then_some(turn)
+            .flatten();
+        store.set_workflow_resume_drops(workflow_id, one_turn.as_deref())?;
         let reopened = wf.state == WorkflowState::Closed;
         let mut fx = vec![Effect::Activity {
             workflow_id: workflow_id.to_owned(),
@@ -510,10 +521,18 @@ impl Engine {
         workflow_id: &str,
         text: &str,
         attachments: Vec<berth_protocol::FileRef>,
+        command: bool,
     ) -> Result<Submission> {
         Self::check_prompt(store, workflow_id)?;
         let wf = store.workflow(workflow_id)?;
-        let pending = store.pending_review_comments(workflow_id)?;
+        // A slash command (the caller knows the session's: see
+        // `Commands::is_command`) goes to Claude Code as typed (ADR 0015):
+        // review comments wait for the next prompt, and so do the notes below.
+        let pending = if command {
+            Vec::new()
+        } else {
+            store.pending_review_comments(workflow_id)?
+        };
         let review_comments: Vec<ReviewComment> = pending
             .iter()
             .map(crate::model::ReviewCommentRow::to_protocol)
@@ -525,12 +544,21 @@ impl Engine {
         };
         let mut turn_text = serialize_prompt(&prompt);
         // The first prompt after a rewind or a reopen tells the agent where
-        // its files stand: every rewind and reopen since the last prompt, in
-        // order.
+        // its files stand: every rewind and reopen since the last prompt
+        // (one that ran a command doesn't count), in order.
         let nodes = store.nodes(workflow_id)?;
+        let commands: std::collections::HashSet<String> = store
+            .rounds(workflow_id)?
+            .into_iter()
+            .filter(|r| !r.is_work())
+            .map(|r| r.id)
+            .collect();
         let since = nodes
             .iter()
-            .rposition(|n| matches!(n.payload, NodePayload::Prompt(_)))
+            .rposition(|n| {
+                matches!(n.payload, NodePayload::Prompt(_))
+                    && !n.round_id.as_ref().is_some_and(|r| commands.contains(r))
+            })
             .map_or(0, |i| i + 1);
         let notes: Vec<String> = nodes[since..]
             .iter()
@@ -540,10 +568,12 @@ impl Engine {
                 _ => None,
             })
             .collect();
-        if !notes.is_empty() {
+        if !notes.is_empty() && !command {
             turn_text = format!("{}\n\n{turn_text}", notes.join("\n\n"));
         }
         let round = store.insert_round(workflow_id, wf.section_no, now_ms())?;
+        let turn_uuid = uuid::Uuid::new_v4().to_string();
+        store.set_round_turn(&round.id, &turn_uuid)?;
         let node = store.insert_node(
             workflow_id,
             Some(&round.id),
@@ -559,7 +589,11 @@ impl Engine {
         if let Some(latest) = live.latest_raw {
             live.lane_cursor.insert(None, latest);
         }
-        Ok(Submission { node, turn_text })
+        Ok(Submission {
+            node,
+            turn_text,
+            turn_uuid,
+        })
     }
 
     /// Open the workflow's first round, driven by its Origin (no Prompt node:
@@ -915,6 +949,10 @@ impl Engine {
                     Some(round) => round,
                     None => store.insert_round(workflow_id, wf.section_no, now_ms())?,
                 };
+                // While the round is open, so the node joins it with its span.
+                if r.terminal_kind == TerminalKind::Command {
+                    self.command_ran(store, workflow_id, &round.id, r.last_text.as_deref())?;
+                }
                 let duration = i64::try_from(r.duration_ms).unwrap_or(i64::MAX);
                 store.end_round(
                     &round.id,
@@ -983,8 +1021,45 @@ impl Engine {
             // The models on offer and the plan's limits are the app's, not the
             // workflow's: the backend keeps them. The history comes from a
             // listing sidecar.
+            SidecarToApp::NodeCompacted(c) => {
+                // Compaction writes to the transcript: after a rewind, later
+                // sessions resume from it, not from the rewind point (ADR 0015).
+                let live = self.live(workflow_id);
+                if live.fresh {
+                    live.fresh = false;
+                    store.set_workflow_resume_at(workflow_id, None)?;
+                }
+                let payload = NodePayload::Compacted(c.compacted.clone());
+                self.insert_lane_node(store, workflow_id, None, payload)?;
+                fx.push(Effect::FlowChanged { workflow_id: wf_id });
+            }
+            SidecarToApp::BranchProgress(p) => {
+                let activity = self.live(workflow_id).activity.as_mut();
+                if let Some(activity) = activity {
+                    activity
+                        .branch_summaries
+                        .insert(p.branch_id.clone(), p.summary.clone());
+                    fx.push(Effect::Activity {
+                        workflow_id: wf_id,
+                        activity: Some(activity.clone()),
+                    });
+                }
+            }
+            SidecarToApp::NodeRefusal(r) => {
+                let payload = NodePayload::Refusal(r.refusal.clone());
+                self.insert_lane_node(store, workflow_id, None, payload)?;
+                fx.push(Effect::FlowChanged { workflow_id: wf_id });
+            }
+            // The backend keeps what is the app's or the moment's: models,
+            // plan limits, commands, the account, a suggestion, background
+            // tasks; renames and the history answer short-lived sidecars.
             SidecarToApp::SessionModels(_)
             | SidecarToApp::SessionQuota(_)
+            | SidecarToApp::SessionCommands(_)
+            | SidecarToApp::SessionSuggestion(_)
+            | SidecarToApp::SessionTasks(_)
+            | SidecarToApp::SessionAccount(_)
+            | SidecarToApp::SessionsRenamed(_)
             | SidecarToApp::SessionsListed(_) => {}
         }
         Ok(fx)
@@ -1050,6 +1125,39 @@ impl Engine {
                 state,
             });
         }
+        Ok(())
+    }
+
+    /// A round Claude Code spent on a slash command without the model: show
+    /// what the command printed. A `/compact` says it with its Compacted node.
+    fn command_ran(
+        &mut self,
+        store: &Store,
+        workflow_id: &str,
+        round_id: &str,
+        output: Option<&str>,
+    ) -> Result<()> {
+        let nodes = store.nodes(workflow_id)?;
+        let in_round = || {
+            nodes
+                .iter()
+                .filter(|n| n.round_id.as_deref() == Some(round_id))
+        };
+        if in_round().any(|n| matches!(n.payload, NodePayload::Compacted(_))) {
+            return Ok(());
+        }
+        let command = in_round()
+            .find_map(|n| match &n.payload {
+                NodePayload::Prompt(p) => Some(p.text.trim().to_owned()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let payload = NodePayload::Command(berth_protocol::Command {
+            command,
+            output: output.map(str::trim).unwrap_or_default().to_owned(),
+        });
+        // Its raw span is what Claude Code streamed for it ("show details").
+        self.insert_lane_node(store, workflow_id, None, payload)?;
         Ok(())
     }
 

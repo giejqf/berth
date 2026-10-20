@@ -16,7 +16,7 @@ use gpui::{
 };
 
 use super::RepoState;
-use super::kit::{TypeExt as _, ago, clock, dialog_shadow, dur, now_ms};
+use super::kit::{TypeExt as _, ago, clock, dialog_shadow, dur, now_ms, tokens};
 use super::motion;
 use crate::theme::{Tokens, ty};
 
@@ -431,18 +431,6 @@ fn when(at: i64, now: i64) -> String {
         .timestamp_millis_opt(at)
         .single()
         .map_or_else(String::new, |d| d.format("%a %H:%M").to_string())
-}
-
-/// "840", "8.4k", "84k", "1.2M".
-fn tokens(n: u64) -> String {
-    #[allow(clippy::cast_precision_loss)]
-    let f = n as f64;
-    match n {
-        0..1_000 => n.to_string(),
-        1_000..10_000 => format!("{:.1}k", f / 1_000.),
-        10_000..1_000_000 => format!("{:.0}k", f / 1_000.),
-        _ => format!("{:.1}M", f / 1_000_000.),
-    }
 }
 
 fn capitalized(s: &str) -> String {

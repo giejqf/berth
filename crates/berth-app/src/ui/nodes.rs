@@ -10,8 +10,8 @@ use berth_core::activity::RoundActivity;
 use berth_core::flow::{FlowItem, Lane, SubagentGroup};
 use berth_core::{BranchState, Node, SlotState, WorkflowState, WorkflowView};
 use berth_protocol::{
-    Artifact, Decision, FollowUp, NodePayload, Origin, OriginKind, Outcome, OutcomeKind, Prompt,
-    Question, Reopened, Review, Rewind, Summary,
+    Artifact, CompactTrigger, Compacted, Decision, FollowUp, NodePayload, Origin, OriginKind,
+    Outcome, OutcomeKind, Prompt, Question, Refusal, Reopened, Review, Rewind, Summary,
 };
 use std::f32::consts::FRAC_PI_2;
 
@@ -26,6 +26,7 @@ use super::answer_card::AnswerCard;
 use super::flow_view::FlowView;
 use super::kit::{
     Btn, Tone, TypeExt as _, caption, clock, dot, dur, file_chip, icon, link, plural, spinner, tag,
+    tokens,
 };
 use super::motion;
 use super::rich::{self, clamped, overflows, rich};
@@ -229,6 +230,9 @@ fn node_row(t: &Tokens, node: &Node, ctx: &RowCtx, line: bool, cx: &mut App) -> 
         NodePayload::Review(r) => review(t, node, r, ctx, line),
         NodePayload::Rewind(r) => rewound(t, node, r, line),
         NodePayload::Reopened(r) => reopened(t, node, r, line),
+        NodePayload::Command(c) => command(t, node, c, ctx, line),
+        NodePayload::Compacted(c) => compacted(t, node, c, line),
+        NodePayload::Refusal(r) => refusal(t, node, r, line),
         // Spawn/Collect are folded into their group; never laid out alone.
         NodePayload::SubagentSpawn(_) | NodePayload::CollectResults(_) => div(),
     }
@@ -595,7 +599,7 @@ fn setup_row(t: &Tokens, ctx: &RowCtx) -> Div {
 fn live_row(t: &Tokens, ctx: &RowCtx, window: &Window, cx: &App) -> Div {
     let a = ctx.activity.clone().unwrap_or_default();
     let now = super::kit::now_ms();
-    let title = a.title.clone().unwrap_or_else(|| "Working".to_owned());
+    let title = a.line().unwrap_or("Working").to_owned();
     let elapsed = if a.started_at > 0 {
         dur(now - a.started_at)
     } else {
@@ -819,7 +823,14 @@ fn lane_view(t: &Tokens, lane: &Lane, ctx: &RowCtx, window: &mut Window, cx: &mu
     let decisions = lane.decisions.len();
     let right: AnyElement = match lane.status {
         BranchState::Running => {
-            let label = live.map_or_else(|| "Working".to_owned(), |s| s.doing.replace('`', ""));
+            // Claude Code's summary of what it is doing, else its latest step.
+            let summary = ctx
+                .activity
+                .as_ref()
+                .and_then(|a| a.branch_summaries.get(&lane.branch_id));
+            let label = summary.cloned().unwrap_or_else(|| {
+                live.map_or_else(|| "Working".to_owned(), |s| s.doing.replace('`', ""))
+            });
             let since = live.map(|s| dur(super::kit::now_ms() - s.started_at));
             div()
                 .flex()
@@ -1280,7 +1291,7 @@ fn summary(t: &Tokens, node: &Node, s: &Summary, ctx: &RowCtx, line: bool) -> Di
         .view
         .rounds
         .iter()
-        .filter(|r| r.section_no == section)
+        .filter(|r| r.section_no == section && r.is_work())
         .count()
         .max(1);
     let reviewing = ctx.review_open && ctx.review_section == Some(section);
@@ -1708,6 +1719,169 @@ fn rewound(t: &Tokens, node: &Node, r: &Rewind, line: bool) -> Div {
             .child(div().ty(ty::META).text_color(t.text2).child(format!(
                 "{} dropped{span}. The agent goes on from here; files changed since are still in the checkout.",
                 plural(r.dropped_rounds as usize, "round", "rounds")
+            ))),
+    )
+}
+
+/// How many lines of a command's output show before "Show more".
+const COMMAND_LINES: usize = 10;
+
+/// The text up to its `n`th non-empty line (blank lines don't count).
+fn first_lines(text: &str, n: usize) -> String {
+    let mut out = Vec::new();
+    let mut seen = 0;
+    for line in text.trim_end().lines() {
+        if seen == n {
+            break;
+        }
+        if !line.trim().is_empty() {
+            seen += 1;
+        }
+        out.push(line);
+    }
+    out.join("\n")
+}
+
+/// A slash command Claude Code ran by itself, and what it printed (ADR 0015).
+fn command(t: &Tokens, node: &Node, c: &berth_protocol::Command, ctx: &RowCtx, line: bool) -> Div {
+    let key = format!("more-{}", node.id);
+    let long = c.output.lines().filter(|l| !l.trim().is_empty()).count() > COMMAND_LINES;
+    let open = ctx.more.contains(&key);
+    let name = c
+        .command
+        .split_whitespace()
+        .next()
+        .unwrap_or("/")
+        .to_owned();
+    let mut body = div()
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .pt(px(3.))
+        .pb(px(if line { 20. } else { 12. }))
+        .child(
+            div()
+                .flex()
+                .items_baseline()
+                .gap(px(8.))
+                .child(div().semibold().font_family(MONO).child(name))
+                .child(
+                    div()
+                        .ty(ty::META)
+                        .text_color(t.text3)
+                        .child(format!("Claude Code · {}", clock(node.created_at))),
+                ),
+        );
+    body = if c.output.trim().is_empty() {
+        body.child(
+            div()
+                .ty(ty::META)
+                .text_color(t.text2)
+                .child("Ran, with nothing to show."),
+        )
+    } else if long && !open {
+        // Its first lines as they are: a table stays a table.
+        body.child(rich(t, &first_lines(&c.output, COMMAND_LINES), t.text2))
+    } else {
+        body.child(rich(t, &c.output, t.text2))
+    };
+    if long {
+        let flow = ctx.flow.clone();
+        body = body.child(link(
+            SharedString::from(key.clone()),
+            if open { "Show less" } else { "Show more" },
+            t,
+            move |_, _, cx| {
+                let _ = flow.update(cx, |f, cx| f.toggle(key.clone(), true, cx));
+            },
+        ));
+    }
+    row(t, glyph(t.card, icon("terminal", 14., t.text2)), line, body)
+}
+
+/// The model refused a request (ADR 0016): what went on instead.
+fn refusal(t: &Tokens, node: &Node, r: &Refusal, line: bool) -> Div {
+    let model = |id: &str| super::agent_dialog::model_label(id).unwrap_or_else(|| id.to_owned());
+    let who = if r.subagent {
+        "A subagent's request"
+    } else {
+        "The request"
+    };
+    let title = format!("{} refused", model(&r.model));
+    let what = match &r.fallback_model {
+        Some(fallback) => format!("{who} went to {} instead.", model(fallback)),
+        None => format!("{who} stopped there: no model took it over."),
+    };
+    let why = match (&r.category, &r.explanation) {
+        (_, Some(e)) if !e.trim().is_empty() => Some(e.trim().to_owned()),
+        (Some(c), _) => Some(format!("Category: {c}.")),
+        _ => None,
+    };
+    row(
+        t,
+        glyph(t.card, icon("alert", 14., t.attention)),
+        line,
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .pt(px(3.))
+            .pb(px(if line { 20. } else { 12. }))
+            .child(
+                div()
+                    .flex()
+                    .items_baseline()
+                    .gap(px(8.))
+                    .child(div().semibold().child(title))
+                    .child(
+                        div()
+                            .ty(ty::META)
+                            .text_color(t.text3)
+                            .child(clock(node.created_at)),
+                    ),
+            )
+            .child(div().ty(ty::META).text_color(t.text2).child(what))
+            .when_some(why, |d, why| {
+                d.child(div().ty(ty::META).text_color(t.text3).child(why))
+            }),
+    )
+}
+
+/// Claude Code compacted the conversation: earlier turns are a summary now.
+fn compacted(t: &Tokens, node: &Node, c: &Compacted, line: bool) -> Div {
+    let title = match c.trigger {
+        CompactTrigger::Manual => "Conversation compacted",
+        CompactTrigger::Auto => "Claude Code compacted the conversation",
+    };
+    let size = match c.post_tokens {
+        Some(after) => format!("{} → {} tokens", tokens(c.pre_tokens), tokens(after)),
+        None => format!("{} tokens before", tokens(c.pre_tokens)),
+    };
+    row(
+        t,
+        glyph(t.card, icon("minimize", 14., t.text2)),
+        line,
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .pt(px(3.))
+            .pb(px(if line { 20. } else { 12. }))
+            .child(
+                div()
+                    .flex()
+                    .items_baseline()
+                    .gap(px(8.))
+                    .child(div().semibold().child(title))
+                    .child(
+                        div()
+                            .ty(ty::META)
+                            .text_color(t.text3)
+                            .child(clock(node.created_at)),
+                    ),
+            )
+            .child(div().ty(ty::META).text_color(t.text2).child(format!(
+                "{size}. The agent goes on from a summary of what came before; the flow above stays."
             ))),
     )
 }

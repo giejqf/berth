@@ -79,6 +79,8 @@ pub struct Berth {
     pub models: Vec<berth_protocol::ModelChoice>,
     /// The plan's limits, as a session last reported them (ADR 0014).
     pub quota: Option<berth_core::Quota>,
+    /// Who Claude Code works as, as a session last reported it (ADR 0016).
+    pub account: Option<berth_protocol::Account>,
 }
 
 impl Global for Berth {}
@@ -97,6 +99,7 @@ pub fn init(backend: BackendHandle, events: UnboundedReceiver<UiEvent>, cx: &mut
         welcome: None,
         models: Vec::new(),
         quota: None,
+        account: None,
     });
     cx.spawn(async move |cx| {
         let mut events = events;
@@ -224,6 +227,10 @@ fn route(event: UiEvent, cx: &mut App) {
             cx.global_mut::<Berth>().quota = Some(quota);
             cx.refresh_windows();
         }
+        UiEvent::Account(account) => {
+            cx.global_mut::<Berth>().account = Some(account);
+            cx.refresh_windows();
+        }
         UiEvent::Settings { model, theme } => {
             crate::theme::set_appearance(crate::theme::Appearance::parse(&theme), cx);
             for handle in cx.windows() {
@@ -304,6 +311,15 @@ fn route(event: UiEvent, cx: &mut App) {
             for state in repo_states(&repo_id, cx) {
                 let (entries, unlisted) = (entries.clone(), unlisted.clone());
                 state.update(cx, |s, cx| s.set_history(entries, unlisted, cx));
+            }
+        }
+        UiEvent::Commands { repo_id, commands } => {
+            for state in repo_states(&repo_id, cx) {
+                let commands = commands.clone();
+                state.update(cx, |s, cx| {
+                    s.commands = commands;
+                    cx.notify();
+                });
             }
         }
         UiEvent::Slots { repo_id, slots } => {

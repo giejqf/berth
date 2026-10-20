@@ -26,6 +26,7 @@ fn start() -> AppToSidecar {
         connector_skills: vec![],
         model: None,
         effort: None,
+        title: None,
     })
 }
 
@@ -51,6 +52,7 @@ async fn request_reply_events_and_exit() {
         .send(AppToSidecar::SessionTurn(SessionTurn {
             text: "hi".into(),
             attachments: vec![],
+            uuid: None,
         }))
         .unwrap();
     let Some(SidecarEvent::ProtocolError { line, .. }) = events.recv().await else {

@@ -222,6 +222,15 @@ pub struct Round {
     pub duration_ms: Option<i64>,
 }
 
+impl Round {
+    /// Whether the agent worked in it: anything but a slash command Claude
+    /// Code ran by itself (ADR 0015), which opens no section's work.
+    #[must_use]
+    pub fn is_work(&self) -> bool {
+        self.terminal_kind != Some(TerminalKind::Command)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BranchState {
     Running,

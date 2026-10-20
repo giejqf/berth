@@ -228,6 +228,30 @@ pub fn start(cx: &mut App) {
                 // the design's Working state without spending tokens.
                 "fake_live" => cx.update(|cx| fake_live(arg, cx)),
                 "fake_node" => cx.update(|cx| fake_node(arg, cx)),
+                // A suggested next prompt / a background task for the selected
+                // workflow, as if its session had reported them (view only).
+                "suggest" | "background" => cx.update(|cx| {
+                    let Some(state) = ui::first_repo_state(cx) else {
+                        return;
+                    };
+                    let Some(wf) = state.read(cx).selected_workflow_id() else {
+                        return;
+                    };
+                    state.update(cx, |s, cx| {
+                        if cmd == "suggest" {
+                            s.suggestions.insert(wf, arg.to_owned());
+                        } else {
+                            let tasks = s.background.entry(wf).or_default();
+                            tasks.push(berth_protocol::BackgroundTask {
+                                task_id: format!("t{}", tasks.len()),
+                                kind: "local_bash".into(),
+                                description: arg.to_owned(),
+                                agent: None,
+                            });
+                        }
+                        cx.notify();
+                    });
+                }),
                 "fake_artifact" => cx.update(|cx| {
                     let (path, title) = arg.split_once('|').unwrap_or((arg, "Artifact"));
                     fake_artifact(path.trim(), title.trim(), cx);
@@ -389,6 +413,7 @@ fn fake_live(preset: &str, cx: &mut App) {
                 RoundActivity {
                     started_at: now - 72_000,
                     title: Some("Running both checks in parallel".into()),
+                    status: None,
                     steps: vec![
                         step(
                             "1",
@@ -415,6 +440,7 @@ fn fake_live(preset: &str, cx: &mut App) {
                     tool_calls: 3,
                     subagents: 2,
                     branch_steps: Default::default(),
+                    branch_summaries: Default::default(),
                 },
             ),
             (
@@ -422,6 +448,8 @@ fn fake_live(preset: &str, cx: &mut App) {
                 RoundActivity {
                     started_at: now - 20_000,
                     title: Some("Reading crate layout".into()),
+                    // An API retry in progress (ADR 0016).
+                    status: Some("The API is overloaded; trying again (2 of 10) in 8s".into()),
                     steps: vec![step(
                         "c1",
                         "Reading crate layout",
@@ -432,6 +460,7 @@ fn fake_live(preset: &str, cx: &mut App) {
                     tool_calls: 1,
                     subagents: 0,
                     branch_steps: Default::default(),
+                    branch_summaries: Default::default(),
                 },
             ),
         ],
@@ -440,6 +469,7 @@ fn fake_live(preset: &str, cx: &mut App) {
             RoundActivity {
                 started_at: now - 160_000,
                 title: Some("Editing config.rs".into()),
+                status: None,
                 steps: vec![step(
                     "c1",
                     "Editing `config.rs`",
@@ -450,6 +480,7 @@ fn fake_live(preset: &str, cx: &mut App) {
                 tool_calls: 4,
                 subagents: 0,
                 branch_steps: Default::default(),
+                branch_summaries: Default::default(),
             },
         )],
     };
@@ -471,6 +502,23 @@ fn fake_live(preset: &str, cx: &mut App) {
                 let mut v = (**v).clone();
                 v.workflow.state = berth_core::WorkflowState::Running;
                 s.views.insert(id.clone(), std::sync::Arc::new(v));
+            }
+            // Running subagents say what they are doing (ADR 0016).
+            let mut activity = activity;
+            if let Some(v) = s.views.get(&id) {
+                for (b, summary) in v
+                    .branches
+                    .iter()
+                    .filter(|b| b.status == berth_core::BranchState::Running)
+                    .zip([
+                        "Comparing test layouts in main.rs",
+                        "Checking how tests would run",
+                    ])
+                {
+                    activity
+                        .branch_summaries
+                        .insert(b.id.clone(), summary.to_owned());
+                }
             }
             s.activity.insert(id, activity);
         }

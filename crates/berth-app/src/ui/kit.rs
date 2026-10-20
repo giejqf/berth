@@ -666,6 +666,18 @@ pub fn minutes(ms: i64) -> String {
     }
 }
 
+/// Token counts: "840", "8.4k", "84k", "1.2M".
+pub fn tokens(n: u64) -> String {
+    #[allow(clippy::cast_precision_loss)]
+    let f = n as f64;
+    match n {
+        0..1_000 => n.to_string(),
+        1_000..10_000 => format!("{:.1}k", f / 1_000.),
+        10_000..1_000_000 => format!("{:.0}k", f / 1_000.),
+        _ => format!("{:.1}M", f / 1_000_000.),
+    }
+}
+
 /// `n thing` / `n things`.
 pub fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })

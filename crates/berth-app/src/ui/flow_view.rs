@@ -27,7 +27,7 @@ use super::nodes::{Row, RowCtx, origin_label, render_row};
 use crate::backend::Command;
 use crate::keymap::{
     CollapseNode, DestroySlot, ExpandAll, ExpandNode, Interrupt, NextNode, NodeDetails, PrevNode,
-    RewindConversation, RewindTo, ScrollToNewest, ToggleReview,
+    RewindConversation, RewindTo, RunInBackground, ScrollToNewest, ToggleReview,
 };
 use crate::theme::{MONO, Tokens, ty};
 
@@ -130,7 +130,7 @@ impl FlowView {
             let s = self.state.read(cx);
             let next = s.selected_view();
             let live = next.as_ref().and_then(|v| s.activity.get(&v.workflow.id));
-            let key = live.map(|a| (a.steps.len(), a.tool_calls, a.title.clone()));
+            let key = live.map(|a| (a.steps.len(), a.tool_calls, a.line().map(str::to_owned)));
             (next, key)
         };
         let same = match (&self.view, &next) {
@@ -431,7 +431,7 @@ impl FlowView {
             let open_rounds = view
                 .rounds
                 .iter()
-                .filter(|r| r.section_no == wf.section_no)
+                .filter(|r| r.section_no == wf.section_no && r.is_work())
                 .count();
             let shown = if open_rounds == 0 {
                 wf.section_no.saturating_sub(1).max(1)
@@ -470,9 +470,20 @@ impl FlowView {
                             .child(wf.origin.title.clone()),
                     )
                     .child(state_chip)
+                    .children(background_chip(t, state.background.get(&wf.id)))
                     .child(vrule(t))
                     .when(running, |d| {
                         d.child(
+                            Btn::new("run-in-background")
+                                .ghost()
+                                .label("Background")
+                                .hint("⌘B")
+                                .tooltip("Move the running command or subagent to the background; the round goes on")
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(Box::new(RunInBackground), cx);
+                                }),
+                        )
+                        .child(
                             Btn::new("interrupt")
                                 .icon("stop", 12.)
                                 .label("Interrupt")
@@ -495,6 +506,43 @@ impl FlowView {
             )
             .child(meta)
     }
+}
+
+/// "2 in background", with the tasks on hover; nothing when none run.
+fn background_chip(
+    t: &Tokens,
+    tasks: Option<&Vec<berth_protocol::BackgroundTask>>,
+) -> Option<gpui::AnyElement> {
+    let tasks = tasks.filter(|t| !t.is_empty())?;
+    let lines: Vec<String> = tasks
+        .iter()
+        .map(|task| {
+            let kind = match (task.kind.as_str(), &task.agent) {
+                (_, Some(agent)) => format!("subagent, {agent}"),
+                ("local_bash", _) => "command".to_owned(),
+                ("local_agent", _) => "subagent".to_owned(),
+                (other, None) => other.replace('_', " "),
+            };
+            format!("{} ({kind})", task.description)
+        })
+        .collect();
+    let tip: gpui::SharedString = lines.join("\n").into();
+    Some(
+        div()
+            .id("background-tasks")
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .child(spinner("background-spin", 10, t.text2))
+            .child(
+                div()
+                    .ty(ty::META)
+                    .text_color(t.text2)
+                    .child(format!("{} in background", tasks.len())),
+            )
+            .tooltip(move |w, cx| gpui_component::tooltip::Tooltip::new(tip.clone()).build(w, cx))
+            .into_any_element(),
+    )
 }
 
 fn origin_glyph(kind: berth_protocol::OriginKind) -> &'static str {

@@ -53,6 +53,10 @@ pub fn typescript() -> String {
         Review,
         Rewind,
         Reopened,
+        Command,
+        CompactTrigger,
+        Compacted,
+        Refusal,
         Decision,
         Summary,
         OutcomeKind,
@@ -112,6 +116,19 @@ pub fn typescript() -> String {
         QuotaStatus,
         QuotaWindow,
         SessionQuota,
+        NodeCompacted,
+        CommandInfo,
+        SessionCommands,
+        SessionBackground,
+        SessionsRename,
+        SessionsRenamed,
+        BranchProgress,
+        NodeRefusal,
+        SessionSuggestion,
+        BackgroundTask,
+        SessionTasks,
+        Account,
+        SessionAccount,
         SessionError,
         SidecarToApp,
         AppMessage,
@@ -161,6 +178,7 @@ mod tests {
             body: AppToSidecar::SessionTurn(SessionTurn {
                 text: "hi".into(),
                 attachments: vec![],
+                uuid: None,
             }),
         };
         let v: serde_json::Value = serde_json::to_value(&msg).unwrap();
@@ -185,12 +203,14 @@ mod tests {
             }],
             model: None,
             effort: Some(Effort::Xhigh),
+            title: Some("Fix login".into()),
         };
         roundtrip_app(&AppMessage {
             id: "3".into(),
             body: AppToSidecar::SessionResume(SessionResume {
                 claude_session_id: "s".into(),
                 resume_at: Some("u-41".into()),
+                drops_turn: Some("u-42".into()),
                 start,
             }),
         });
@@ -295,6 +315,7 @@ mod tests {
                     path: "/w/a.png".into(),
                     mime: "image/png".into(),
                 }],
+                uuid: None,
             }),
         });
         // `attachments` is optional on the wire.
@@ -304,7 +325,8 @@ mod tests {
             parsed.body,
             AppToSidecar::SessionTurn(SessionTurn {
                 text: "hi".into(),
-                attachments: vec![]
+                attachments: vec![],
+                uuid: None,
             })
         );
         roundtrip_sidecar(&SidecarMessage {
@@ -439,6 +461,81 @@ mod tests {
         assert_eq!(q.windows[0].status, Some(QuotaStatus::Warning));
         assert_eq!(q.windows[0].resets_at, None);
         roundtrip_sidecar(&quota);
+    }
+
+    #[test]
+    fn commands_on_the_wire() {
+        let compacted: SidecarMessage = serde_json::from_value(serde_json::json!({
+            "id": "c",
+            "type": "node.compacted",
+            "trigger": "manual",
+            "pre_tokens": 17_895,
+            "post_tokens": 1_961
+        }))
+        .unwrap();
+        let SidecarToApp::NodeCompacted(c) = &compacted.body else {
+            panic!("not node.compacted");
+        };
+        assert_eq!(c.compacted.trigger, CompactTrigger::Manual);
+        roundtrip_sidecar(&compacted);
+        let commands: SidecarMessage = serde_json::from_value(serde_json::json!({
+            "id": "l",
+            "type": "session.commands",
+            "commands": [{"name": "compact", "description": "Compact", "argument_hint": "<instructions>", "builtin": true}],
+            "terminal": ["exit"]
+        }))
+        .unwrap();
+        roundtrip_sidecar(&commands);
+        assert_eq!(TerminalKind::parse("command"), Some(TerminalKind::Command));
+        let node = NodePayload::Command(Command {
+            command: "/context".into(),
+            output: "## Context Usage".into(),
+        });
+        let json = node.payload_json().unwrap();
+        assert_eq!(NodePayload::from_parts(node.kind(), &json).unwrap(), node);
+    }
+
+    #[test]
+    fn sdk_extras_on_the_wire() {
+        roundtrip_app(&AppMessage {
+            id: "t".into(),
+            body: AppToSidecar::SessionTurn(SessionTurn {
+                text: "go".into(),
+                attachments: vec![],
+                uuid: Some("u-1".into()),
+            }),
+        });
+        roundtrip_app(&AppMessage {
+            id: "b".into(),
+            body: AppToSidecar::SessionBackground(SessionBackground { tool_use_id: None }),
+        });
+        let refusal: SidecarMessage = serde_json::from_value(serde_json::json!({
+            "id": "r",
+            "type": "node.refusal",
+            "model": "claude-opus-5-5",
+            "fallback_model": "claude-sonnet-5-5",
+            "subagent": false
+        }))
+        .unwrap();
+        let SidecarToApp::NodeRefusal(r) = &refusal.body else {
+            panic!("not node.refusal");
+        };
+        assert_eq!(
+            r.refusal.fallback_model.as_deref(),
+            Some("claude-sonnet-5-5")
+        );
+        roundtrip_sidecar(&refusal);
+        let account: SidecarMessage = serde_json::from_value(serde_json::json!({
+            "id": "a",
+            "type": "session.account",
+            "plan": "Claude Max",
+            "provider": "firstParty"
+        }))
+        .unwrap();
+        roundtrip_sidecar(&account);
+        let node = NodePayload::Refusal(r.refusal.clone());
+        let json = node.payload_json().unwrap();
+        assert_eq!(NodePayload::from_parts(node.kind(), &json).unwrap(), node);
     }
 
     #[test]

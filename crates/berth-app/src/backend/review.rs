@@ -26,7 +26,9 @@ impl Shared {
             .filter(|s| s.kind == SnapshotKind::Start)
             .map(|s| s.section_no)
             .filter(|n| {
-                view.rounds.iter().any(|r| r.section_no == *n)
+                view.rounds
+                    .iter()
+                    .any(|r| r.section_no == *n && r.is_work())
                     || view.snapshot(*n, SnapshotKind::Summary).is_some()
             })
             .collect();
@@ -38,7 +40,10 @@ impl Shared {
             DiffPreset::Section => {
                 // Default: the open section if work happened in it, else the last summarized one.
                 let open = view.workflow.section_no;
-                let open_has_rounds = view.rounds.iter().any(|r| r.section_no == open);
+                let open_has_rounds = view
+                    .rounds
+                    .iter()
+                    .any(|r| r.section_no == open && r.is_work());
                 let n = req.section.unwrap_or(if open_has_rounds || open == 1 {
                     open
                 } else {

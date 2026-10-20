@@ -117,6 +117,50 @@ slot: string, checkout: string, branch: string,
  */
 from_checkout?: string, from_branch?: string, };
 
+export type Command = { 
+/**
+ * As the user typed it: `/context`.
+ */
+command: string, 
+/**
+ * What it printed, markdown; empty when it printed nothing.
+ */
+output: string, };
+
+export type CompactTrigger = "manual" | "auto";
+
+export type Compacted = { trigger: CompactTrigger, 
+/**
+ * The context before, in tokens.
+ */
+pre_tokens: number, 
+/**
+ * The context after, when Claude Code says.
+ */
+post_tokens?: number, };
+
+export type Refusal = { 
+/**
+ * The model that refused.
+ */
+model: string, 
+/**
+ * The model that answered instead, if one did.
+ */
+fallback_model?: string, 
+/**
+ * The refusal's category (`cyber`, `bio`, …), when the API gave one.
+ */
+category?: string, 
+/**
+ * The API's explanation, for display only.
+ */
+explanation?: string, 
+/**
+ * A subagent's request, not the main conversation's.
+ */
+subagent: boolean, };
+
 export type Decision = { title: string, rationale: string, affects: Array<string>, reversible: boolean, };
 
 export type Summary = { done: Array<string>, remaining: Array<string>, follow_ups: Array<FollowUp>, notes?: string, };
@@ -145,9 +189,9 @@ export type Artifact = { artifact_id: string, title: string, description?: strin
  */
 error?: string, };
 
-export type NodeKind = "origin" | "prompt" | "question" | "decision" | "summary" | "outcome" | "subagent_spawn" | "collect_results" | "artifact" | "review" | "rewind" | "reopened";
+export type NodeKind = "origin" | "prompt" | "question" | "decision" | "summary" | "outcome" | "subagent_spawn" | "collect_results" | "artifact" | "review" | "rewind" | "reopened" | "command" | "compacted" | "refusal";
 
-export type NodePayload = { "kind": "origin", "payload": Origin } | { "kind": "prompt", "payload": Prompt } | { "kind": "question", "payload": Question } | { "kind": "decision", "payload": Decision } | { "kind": "summary", "payload": Summary } | { "kind": "outcome", "payload": Outcome } | { "kind": "subagent_spawn", "payload": SubagentSpawn } | { "kind": "collect_results", "payload": CollectResults } | { "kind": "artifact", "payload": Artifact } | { "kind": "review", "payload": Review } | { "kind": "rewind", "payload": Rewind } | { "kind": "reopened", "payload": Reopened };
+export type NodePayload = { "kind": "origin", "payload": Origin } | { "kind": "prompt", "payload": Prompt } | { "kind": "question", "payload": Question } | { "kind": "decision", "payload": Decision } | { "kind": "summary", "payload": Summary } | { "kind": "outcome", "payload": Outcome } | { "kind": "subagent_spawn", "payload": SubagentSpawn } | { "kind": "collect_results", "payload": CollectResults } | { "kind": "artifact", "payload": Artifact } | { "kind": "review", "payload": Review } | { "kind": "rewind", "payload": Rewind } | { "kind": "reopened", "payload": Reopened } | { "kind": "command", "payload": Command } | { "kind": "compacted", "payload": Compacted } | { "kind": "refusal", "payload": Refusal };
 
 export type ToolName = "record_decision" | "ask_user" | "write_summary" | "record_outcome" | "request_slot" | "present_artifact" | "present_review";
 
@@ -190,7 +234,12 @@ system_prompt: string, env: { [key in string]: string },
  * Extra tools to allow in addition to the defaults. Permissions are always
  * pre-approved (§1.6); this only widens the tool set.
  */
-allowed_tools: Array<string>, connector_skills: Array<ConnectorSkill>, model?: string, effort?: Effort, };
+allowed_tools: Array<string>, connector_skills: Array<ConnectorSkill>, model?: string, effort?: Effort, 
+/**
+ * The session's title in Claude Code's history (a new session's; a
+ * resumed one keeps its own, see `sessions.rename`). ADR 0016.
+ */
+title?: string, };
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -231,7 +280,12 @@ export type SessionResume = { claude_session_id: string,
  * Resume at this transcript entry (its `uuid`), dropping what came after
  * it: the conversation was rewound (ADR 0009).
  */
-resume_at?: string, workflow_id: string, 
+resume_at?: string, 
+/**
+ * With `resume_at`: the uuid of the one turn the rewind drops. Claude
+ * Code then refuses a resume that would drop anything else (ADR 0016).
+ */
+drops_turn?: string, workflow_id: string, 
 /**
  * Checkout path as seen by the agent.
  */
@@ -244,14 +298,24 @@ system_prompt: string, env: { [key in string]: string },
  * Extra tools to allow in addition to the defaults. Permissions are always
  * pre-approved (§1.6); this only widens the tool set.
  */
-allowed_tools: Array<string>, connector_skills: Array<ConnectorSkill>, model?: string, effort?: Effort, };
+allowed_tools: Array<string>, connector_skills: Array<ConnectorSkill>, model?: string, effort?: Effort, 
+/**
+ * The session's title in Claude Code's history (a new session's; a
+ * resumed one keeps its own, see `sessions.rename`). ADR 0016.
+ */
+title?: string, };
 
 export type SessionTurn = { text: string, 
 /**
  * Images among the user's attachments: the sidecar sends them to Claude as
  * image blocks (all attachments are also listed, with paths, in `text`).
  */
-attachments?: Array<TurnAttachment>, };
+attachments?: Array<TurnAttachment>, 
+/**
+ * The turn's uuid in Claude Code's transcript, so a rewind can name the
+ * turn it drops (ADR 0016).
+ */
+uuid?: string, };
 
 export type TurnAttachment = { 
 /**
@@ -265,7 +329,7 @@ export type ReviewAnswer = { review_id: string, text: string, };
 
 export type SlotRequestResolved = { request_id: string, approved: boolean, slot_id?: string, };
 
-export type AppToSidecar = { "type": "session.start" } & SessionStart | { "type": "session.resume" } & SessionResume | { "type": "session.turn" } & SessionTurn | { "type": "session.interrupt" } | { "type": "session.stop" } | { "type": "question.answer" } & QuestionAnswer | { "type": "review.answer" } & ReviewAnswer | { "type": "slot_request.resolved" } & SlotRequestResolved | { "type": "session.configure" } & SessionConfigure | { "type": "sessions.list" } & SessionsList;
+export type AppToSidecar = { "type": "session.start" } & SessionStart | { "type": "session.resume" } & SessionResume | { "type": "session.turn" } & SessionTurn | { "type": "session.interrupt" } | { "type": "session.stop" } | { "type": "question.answer" } & QuestionAnswer | { "type": "review.answer" } & ReviewAnswer | { "type": "slot_request.resolved" } & SlotRequestResolved | { "type": "session.configure" } & SessionConfigure | { "type": "sessions.list" } & SessionsList | { "type": "session.background" } & SessionBackground | { "type": "sessions.rename" } & SessionsRename;
 
 export type SessionStarted = { claude_session_id: string, };
 
@@ -313,7 +377,7 @@ export type BranchCollected = { branch_id: string, result_text: string, status: 
 
 export type SlotRequest = { request_id: string, name: string, purpose: string, from_follow_up?: string, };
 
-export type TerminalKind = "write_summary" | "record_outcome" | "unterminated" | "interrupted" | "error";
+export type TerminalKind = "write_summary" | "record_outcome" | "unterminated" | "interrupted" | "error" | "command";
 
 export type RoundEnded = { terminal_kind: TerminalKind, cost_usd: number, duration_ms: number, nudges: number, 
 /**
@@ -367,13 +431,107 @@ available: boolean,
  */
 plan?: string, windows: Array<QuotaWindow>, };
 
+export type NodeCompacted = { trigger: CompactTrigger, 
+/**
+ * The context before, in tokens.
+ */
+pre_tokens: number, 
+/**
+ * The context after, when Claude Code says.
+ */
+post_tokens?: number, };
+
+export type CommandInfo = { 
+/**
+ * Without the slash: `compact`, `code-review`, `plugin:skill`.
+ */
+name: string, description: string, 
+/**
+ * What it takes after the name (`<file>`); empty when nothing.
+ */
+argument_hint: string, aliases: Array<string>, 
+/**
+ * Claude Code's own command, not a skill.
+ */
+builtin: boolean, };
+
+export type SessionCommands = { commands: Array<CommandInfo>, terminal: Array<string>, };
+
+export type SessionBackground = { tool_use_id?: string, };
+
+export type SessionsRename = { session_id: string, title: string, 
+/**
+ * The project the session belongs to (its checkout).
+ */
+dir: string, };
+
+export type SessionsRenamed = { ok: boolean, error?: string, };
+
+export type BranchProgress = { branch_id: string, summary: string, };
+
+export type NodeRefusal = { 
+/**
+ * The model that refused.
+ */
+model: string, 
+/**
+ * The model that answered instead, if one did.
+ */
+fallback_model?: string, 
+/**
+ * The refusal's category (`cyber`, `bio`, …), when the API gave one.
+ */
+category?: string, 
+/**
+ * The API's explanation, for display only.
+ */
+explanation?: string, 
+/**
+ * A subagent's request, not the main conversation's.
+ */
+subagent: boolean, };
+
+export type SessionSuggestion = { text: string, };
+
+export type BackgroundTask = { task_id: string, 
+/**
+ * Claude Code's task type: `local_agent`, `local_bash`, …
+ */
+kind: string, description: string, 
+/**
+ * The subagent's type, for a subagent.
+ */
+agent?: string, };
+
+export type SessionTasks = { tasks: Array<BackgroundTask>, };
+
+export type Account = { email?: string, organization?: string, 
+/**
+ * The subscription, as Claude Code names it ("Claude Max").
+ */
+plan?: string, 
+/**
+ * `firstParty`, `bedrock`, `vertex`, … (where API requests go).
+ */
+provider?: string, };
+
+export type SessionAccount = { email?: string, organization?: string, 
+/**
+ * The subscription, as Claude Code names it ("Claude Max").
+ */
+plan?: string, 
+/**
+ * `firstParty`, `bedrock`, `vertex`, … (where API requests go).
+ */
+provider?: string, };
+
 export type SessionError = { message: string, fatal: boolean, };
 
-export type SidecarToApp = { "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.artifact" } & NodeArtifact | { "type": "node.review" } & NodeReview | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels | { "type": "sessions.listed" } & SessionsListed | { "type": "session.context" } & SessionContext | { "type": "session.quota" } & SessionQuota;
+export type SidecarToApp = { "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.artifact" } & NodeArtifact | { "type": "node.review" } & NodeReview | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels | { "type": "sessions.listed" } & SessionsListed | { "type": "session.context" } & SessionContext | { "type": "session.quota" } & SessionQuota | { "type": "node.compacted" } & NodeCompacted | { "type": "session.commands" } & SessionCommands | { "type": "branch.progress" } & BranchProgress | { "type": "node.refusal" } & NodeRefusal | { "type": "session.suggestion" } & SessionSuggestion | { "type": "session.tasks" } & SessionTasks | { "type": "session.account" } & SessionAccount | { "type": "sessions.renamed" } & SessionsRenamed;
 
-export type AppMessage = { id: string, } & ({ "type": "session.start" } & SessionStart | { "type": "session.resume" } & SessionResume | { "type": "session.turn" } & SessionTurn | { "type": "session.interrupt" } | { "type": "session.stop" } | { "type": "question.answer" } & QuestionAnswer | { "type": "review.answer" } & ReviewAnswer | { "type": "slot_request.resolved" } & SlotRequestResolved | { "type": "session.configure" } & SessionConfigure | { "type": "sessions.list" } & SessionsList);
+export type AppMessage = { id: string, } & ({ "type": "session.start" } & SessionStart | { "type": "session.resume" } & SessionResume | { "type": "session.turn" } & SessionTurn | { "type": "session.interrupt" } | { "type": "session.stop" } | { "type": "question.answer" } & QuestionAnswer | { "type": "review.answer" } & ReviewAnswer | { "type": "slot_request.resolved" } & SlotRequestResolved | { "type": "session.configure" } & SessionConfigure | { "type": "sessions.list" } & SessionsList | { "type": "session.background" } & SessionBackground | { "type": "sessions.rename" } & SessionsRename);
 
-export type SidecarMessage = { id: string, reply_to?: string, } & ({ "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.artifact" } & NodeArtifact | { "type": "node.review" } & NodeReview | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels | { "type": "sessions.listed" } & SessionsListed | { "type": "session.context" } & SessionContext | { "type": "session.quota" } & SessionQuota);
+export type SidecarMessage = { id: string, reply_to?: string, } & ({ "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.artifact" } & NodeArtifact | { "type": "node.review" } & NodeReview | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels | { "type": "sessions.listed" } & SessionsListed | { "type": "session.context" } & SessionContext | { "type": "session.quota" } & SessionQuota | { "type": "node.compacted" } & NodeCompacted | { "type": "session.commands" } & SessionCommands | { "type": "branch.progress" } & BranchProgress | { "type": "node.refusal" } & NodeRefusal | { "type": "session.suggestion" } & SessionSuggestion | { "type": "session.tasks" } & SessionTasks | { "type": "session.account" } & SessionAccount | { "type": "sessions.renamed" } & SessionsRenamed);
 
 export const MCP_SERVER_NAME = "berth" as const;
 

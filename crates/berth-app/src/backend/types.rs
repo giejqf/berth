@@ -75,6 +75,10 @@ pub enum Command {
     Interrupt {
         workflow_id: String,
     },
+    /// Move the agent's running foreground tool calls to the background.
+    Background {
+        workflow_id: String,
+    },
     ResolveSlotRequest {
         workflow_id: String,
         request: SlotRequest,
@@ -513,6 +517,23 @@ pub enum UiEvent {
     Models(Vec<ModelChoice>),
     /// The plan's limits as any session last reported them (ADR 0014).
     Quota(berth_core::Quota),
+    /// A predicted next prompt for an idle workflow (ADR 0016).
+    Suggestion {
+        workflow_id: String,
+        text: String,
+    },
+    /// What runs in the workflow's session's background, replacing the last list.
+    BackgroundTasks {
+        workflow_id: String,
+        tasks: Vec<berth_protocol::BackgroundTask>,
+    },
+    /// Who Claude Code works as, as a session last reported it.
+    Account(berth_protocol::Account),
+    /// The slash commands the repo's sessions offer (ADR 0015).
+    Commands {
+        repo_id: String,
+        commands: berth_core::commands::Commands,
+    },
     Toast {
         repo_id: Option<String>,
         level: ToastLevel,

@@ -26,6 +26,7 @@ actions!(
         FocusComposer,
         AttachFiles,
         Interrupt,
+        RunInBackground,
         ScrollToNewest,
         FocusAnswer,
         CloseWindow,
@@ -83,6 +84,12 @@ actions!(
         WriteDecision,
         FocusFindings,
         SendDecisions,
+        // composer: slash command completion
+        NextCompletion,
+        PrevCompletion,
+        AcceptCompletion,
+        DismissCompletion,
+        AcceptSuggestion,
         // dialogs
         Confirm,
         // terminal
@@ -310,6 +317,11 @@ pub const SHORTCUTS: &[Shortcut] = &[
         group: "Event flow",
     },
     Shortcut {
+        keys: "⌘B",
+        label: "Move the agent's running command or subagent to the background",
+        group: "Event flow",
+    },
+    Shortcut {
         keys: "⌘↩",
         label: "Send the prompt",
         group: "Event flow",
@@ -525,6 +537,11 @@ pub fn palette_actions() -> Vec<(&'static str, &'static str, Box<dyn Action>)> {
         ("Attach files…", "⌘⇧O", Box::new(AttachFiles)),
         ("Focus the answer card", "A", Box::new(FocusAnswer)),
         ("Interrupt the agent", "⌘.", Box::new(Interrupt)),
+        (
+            "Move the running command or subagent to the background",
+            "⌘B",
+            Box::new(RunInBackground),
+        ),
         ("Rewind conversation…", "R", Box::new(RewindConversation)),
         ("Next slot", "⌘⇧]", Box::new(NextSlot)),
         ("Previous slot", "⌘⇧[", Box::new(PrevSlot)),
@@ -581,6 +598,7 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-l", FocusComposer, None),
         KeyBinding::new("cmd-shift-o", AttachFiles, None),
         KeyBinding::new("cmd-.", Interrupt, None),
+        KeyBinding::new("cmd-b", RunInBackground, None),
         KeyBinding::new("cmd-up", ScrollToNewest, Some("EventFlow")),
         KeyBinding::new("cmd-w", CloseWindow, None),
         KeyBinding::new("cmd-q", Quit, None),
@@ -647,6 +665,14 @@ pub fn bindings() -> Vec<KeyBinding> {
         // A decision field passes esc on: back to the findings.
         KeyBinding::new("escape", FocusFindings, Some("ReviewFindings")),
         KeyBinding::new("cmd-enter", SendDecisions, Some("ReviewFindings")),
+        // While the composer lists slash commands, its field passes these on.
+        KeyBinding::new("down", NextCompletion, Some("Completing > Input")),
+        KeyBinding::new("up", PrevCompletion, Some("Completing > Input")),
+        KeyBinding::new("tab", AcceptCompletion, Some("Completing > Input")),
+        KeyBinding::new("enter", AcceptCompletion, Some("Completing > Input")),
+        KeyBinding::new("escape", DismissCompletion, Some("Completing > Input")),
+        // An empty field with a suggested next prompt: Tab takes it.
+        KeyBinding::new("tab", AcceptSuggestion, Some("Suggesting > Input")),
         // dialogs
         KeyBinding::new("cmd-enter", Confirm, Some("Dialog")),
     ];
@@ -742,6 +768,30 @@ mod tests {
         assert!(resolve("a", &["RepoWindow", "Terminal"]).is_empty());
         assert!(resolve("c", &["RepoWindow", "ReviewPane", "Input"]).is_empty());
         assert!(resolve("tab", &["Root", "RepoWindow", "Terminal"]).is_empty());
+    }
+
+    #[test]
+    fn tab_takes_a_suggestion_only_when_there_is_one() {
+        assert_eq!(
+            resolve("tab", &["RepoWindow", "Composer Suggesting", "Input"]),
+            ["berth::AcceptSuggestion"]
+        );
+        assert!(resolve("tab", &["RepoWindow", "Composer", "Input"]).is_empty());
+        assert_eq!(
+            resolve("cmd-b", &["RepoWindow"]),
+            ["berth::RunInBackground"]
+        );
+    }
+
+    #[test]
+    fn completion_keys_only_while_completing() {
+        let open = ["RepoWindow", "Composer Completing", "Input"];
+        assert_eq!(resolve("down", &open), ["berth::NextCompletion"]);
+        assert_eq!(resolve("enter", &open), ["berth::AcceptCompletion"]);
+        assert_eq!(resolve("escape", &open), ["berth::DismissCompletion"]);
+        assert!(resolve("down", &["RepoWindow", "Composer", "Input"]).is_empty());
+        // ⌘↩ still sends.
+        assert!(resolve("cmd-enter", &open).is_empty());
     }
 
     #[test]

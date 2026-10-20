@@ -268,6 +268,8 @@ pub fn detach_slot(
     };
     let mut snapshot = state.read(cx).snapshot.clone();
     snapshot.slots = state.read(cx).repo_slots.clone();
+    // What the repo's sessions reported, which a new window hears only later.
+    let commands = state.read(cx).commands.clone();
     let bounds = Bounds::new(origin, size(px(1280.), px(800.)));
     super::open_repo_window(
         snapshot,
@@ -276,6 +278,9 @@ pub fn detach_slot(
         terminals,
         cx,
     );
+    if let Some(new) = find(&window_id, cx).and_then(|w| w.state.upgrade()) {
+        new.update(cx, |s, _| s.commands = commands);
+    }
     Berth::backend(cx).send(Command::MoveSlotToWindow {
         slot_id: slot_id.to_owned(),
         window_id,
