@@ -424,6 +424,8 @@ fn prompt(t: &Tokens, node: &Node, p: &Prompt, ctx: &RowCtx, line: bool) -> Div 
     let clamp = long && !open;
     let n_comments = p.review_comments.len();
     let flow = ctx.flow.clone();
+    // Sent while the agent worked: it joined that round (ADR 0018).
+    let joined = ctx.view.sent_while_working(node);
     let mut header = div()
         .flex()
         .items_baseline()
@@ -434,23 +436,33 @@ fn prompt(t: &Tokens, node: &Node, p: &Prompt, ctx: &RowCtx, line: bool) -> Div 
                 .ty(ty::META)
                 .text_color(t.text3)
                 .child(clock(node.created_at)),
-        );
-    // Hovering your message offers to go back to it (not while the agent works).
-    let rewind = (node.round_id.is_some() && !ctx.view.workflow.state.is_busy()).then(|| {
-        let id = node.id.clone();
-        let mut l = link(
-            SharedString::from(format!("rewind-{}", node.id)),
-            "Rewind",
-            t,
-            move |_, window, cx| window.dispatch_action(Box::new(RewindTo(id.clone())), cx),
         )
-        .group_hover(PROMPT_GROUP, |mut s| {
-            s.visibility = Some(gpui::Visibility::Visible);
-            s
+        .when(joined, |d| {
+            d.child(
+                div()
+                    .ty(ty::META)
+                    .text_color(t.text3)
+                    .child("· while the agent worked"),
+            )
         });
-        l.style().visibility = Some(gpui::Visibility::Hidden);
-        l
-    });
+    // Hovering your message offers to go back to it (not while the agent
+    // works, nor to one that joined a round mid-way).
+    let rewind =
+        (node.round_id.is_some() && !joined && !ctx.view.workflow.state.is_busy()).then(|| {
+            let id = node.id.clone();
+            let mut l = link(
+                SharedString::from(format!("rewind-{}", node.id)),
+                "Rewind",
+                t,
+                move |_, window, cx| window.dispatch_action(Box::new(RewindTo(id.clone())), cx),
+            )
+            .group_hover(PROMPT_GROUP, |mut s| {
+                s.visibility = Some(gpui::Visibility::Visible);
+                s
+            });
+            l.style().visibility = Some(gpui::Visibility::Hidden);
+            l
+        });
     if n_comments > 0 {
         header = header.child(
             div()

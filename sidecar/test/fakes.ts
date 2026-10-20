@@ -200,9 +200,10 @@ export const sdk = {
     tool_use_result: toolUseResult,
     message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolId, content, is_error: isError }] },
   }),
-  result: (totalCostUsd: number, subtype = "success", numTurns = 1) => ({
+  result: (totalCostUsd: number, subtype = "success", numTurns = 1, queuedTurnCount = 0) => ({
     type: "result",
     subtype,
+    queued_turn_count: queuedTurnCount,
     is_error: subtype !== "success",
     ...(subtype !== "success" ? { errors: [] as string[] } : {}),
     num_turns: numTurns,

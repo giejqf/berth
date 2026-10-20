@@ -182,6 +182,13 @@ impl WorkflowState {
         matches!(self, WorkflowState::Idle | WorkflowState::Starting)
     }
 
+    /// Whether a Prompt sent now goes to the agent while it works: it joins
+    /// the running round, and the agent reads it at its next step (ADR 0018).
+    #[must_use]
+    pub fn queues_prompt(self) -> bool {
+        self == WorkflowState::Running
+    }
+
     #[must_use]
     pub fn is_open(self) -> bool {
         self != WorkflowState::Closed
@@ -409,6 +416,23 @@ pub struct WorkflowView {
 }
 
 impl WorkflowView {
+    /// A message the user sent while the agent worked (ADR 0018): a Prompt in
+    /// a round that another Prompt opened. Not a rewind point.
+    #[must_use]
+    pub fn sent_while_working(&self, node: &Node) -> bool {
+        let NodePayload::Prompt(_) = node.payload else {
+            return false;
+        };
+        let Some(round) = &node.round_id else {
+            return false;
+        };
+        self.nodes.iter().any(|n| {
+            n.seq < node.seq
+                && n.round_id.as_ref() == Some(round)
+                && matches!(n.payload, NodePayload::Prompt(_))
+        })
+    }
+
     #[must_use]
     pub fn branch(&self, id: &str) -> Option<&Branch> {
         self.branches.iter().find(|b| b.id == id)

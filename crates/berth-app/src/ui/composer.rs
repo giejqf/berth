@@ -311,6 +311,13 @@ impl Composer {
         {
             return;
         }
+        // While the agent works, a message joins its round; a command would
+        // be a round of its own (ADR 0018).
+        if view.workflow.state.queues_prompt() && state.commands.is_command(&text) {
+            self.notice = Some("A slash command waits until the agent is done.".to_owned());
+            cx.notify();
+            return;
+        }
         state.backend.send(Command::SendPrompt {
             workflow_id: view.workflow.id.clone(),
             text,
@@ -413,9 +420,9 @@ impl Render for Composer {
                 .child(
                     div()
                         .flex()
-                        .child("The agent is working. Interrupt ")
+                        .child("The agent is working. What you send goes to it at its next step; ")
                         .child(kbd("⌘."))
-                        .child(" to steer it now, or wait for the round to end."),
+                        .child(" interrupts it."),
                 )
                 .into_any_element(),
             WorkflowState::AwaitingAnswer if reviewing => div()
@@ -516,7 +523,10 @@ impl Render for Composer {
             WorkflowState::Starting if creating => div()
                 .child("Unlocks when the slot is ready")
                 .into_any_element(),
-            WorkflowState::Running | WorkflowState::Starting => div()
+            WorkflowState::Running => div()
+                .child("Joins the round the agent is working on")
+                .into_any_element(),
+            WorkflowState::Starting => div()
                 .child("Unlocks when the agent asks or summarizes")
                 .into_any_element(),
             WorkflowState::AwaitingAnswer if reviewing => div()
@@ -894,10 +904,12 @@ fn completion_list(
         .into_any_element()
 }
 
-/// Whether the composer sends `wf` a prompt now: it takes one, or it is
-/// closed in a slot that still shows it (the prompt continues it there).
+/// Whether the composer sends `wf` a prompt now: it takes one, the agent is
+/// working (the prompt joins its round, ADR 0018), or it is closed in a slot
+/// that still shows it (the prompt continues it there).
 fn takes_prompt(state: &super::RepoState, wf: &berth_core::Workflow) -> bool {
     wf.state.accepts_prompt()
+        || wf.state.queues_prompt()
         || wf.state == WorkflowState::Closed
             && state.selected().is_some_and(|e| {
                 matches!(e.slot.state, SlotState::Ready | SlotState::Running)

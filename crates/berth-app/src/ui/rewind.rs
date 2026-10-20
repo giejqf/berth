@@ -121,6 +121,10 @@ impl RewindDialog {
                 let NodePayload::Prompt(p) = &n.payload else {
                     return None;
                 };
+                // One that joined a round mid-way is no rewind point (ADR 0018).
+                if view.sent_while_working(n) {
+                    return None;
+                }
                 let round_id = n.round_id.as_ref()?;
                 let round = view.rounds.iter().position(|r| &r.id == round_id)? + 1;
                 let text = rich::plain(&p.text);

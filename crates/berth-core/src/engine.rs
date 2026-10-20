@@ -373,6 +373,19 @@ impl Engine {
                 id: node_id.to_owned(),
             });
         }
+        // One sent while the agent worked is mid-round (ADR 0018): the
+        // message that opened the round is where the transcript can go back to.
+        let mid_round = store.nodes(workflow_id)?.iter().any(|n| {
+            n.seq < node.seq
+                && n.round_id.as_deref() == Some(round_id.as_str())
+                && matches!(n.payload, NodePayload::Prompt(_))
+        });
+        if mid_round {
+            return Err(CoreError::InvalidTransition(
+                "this message was sent while the agent worked; rewind to the one that started that round"
+                    .to_owned(),
+            ));
+        }
         let round = store.round(round_id)?;
         let at = store.resume_point(workflow_id, &round.id)?.ok_or_else(|| {
             CoreError::InvalidTransition(
@@ -468,7 +481,7 @@ impl Engine {
     /// check, so the app can ask before it starts an agent for one.
     pub fn check_prompt(store: &Store, workflow_id: &str) -> Result<()> {
         let wf = store.workflow(workflow_id)?;
-        if wf.state.accepts_prompt() {
+        if wf.state.accepts_prompt() || wf.state.queues_prompt() {
             Ok(())
         } else {
             Err(CoreError::InvalidTransition(format!(
@@ -563,6 +576,18 @@ impl Engine {
     ) -> Result<Submission> {
         Self::check_prompt(store, workflow_id)?;
         let wf = store.workflow(workflow_id)?;
+        // While the agent works, a message joins the running round (ADR 0018);
+        // a command would be a round of its own, so it waits.
+        let open = if wf.state.queues_prompt() {
+            store.open_round(workflow_id)?
+        } else {
+            None
+        };
+        if open.is_some() && command {
+            return Err(CoreError::InvalidTransition(
+                "a slash command waits until the agent is done; send it then".to_owned(),
+            ));
+        }
         // A slash command (the caller knows the session's: see
         // `Commands::is_command`) goes to Claude Code as typed (ADR 0015):
         // review comments wait for the next prompt, and so do the notes below.
@@ -609,9 +634,16 @@ impl Engine {
         if !notes.is_empty() && !command {
             turn_text = format!("{}\n\n{turn_text}", notes.join("\n\n"));
         }
-        let round = store.insert_round(workflow_id, wf.section_no, now_ms())?;
         let turn_uuid = uuid::Uuid::new_v4().to_string();
-        store.set_round_turn(&round.id, &turn_uuid)?;
+        // The round's own turn is the one that opened it (rewinds go to it).
+        let round = match open {
+            Some(round) => round,
+            None => {
+                let round = store.insert_round(workflow_id, wf.section_no, now_ms())?;
+                store.set_round_turn(&round.id, &turn_uuid)?;
+                round
+            }
+        };
         let node = store.insert_node(
             workflow_id,
             Some(&round.id),

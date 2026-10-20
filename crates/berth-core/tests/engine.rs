@@ -110,9 +110,9 @@ fn prompt_decision_summary_round() {
     assert_eq!(store.workflow(&wf).unwrap().state, WorkflowState::Running);
     assert!(
         engine
-            .submit_prompt(&store, &wf, "again", vec![], false)
+            .submit_prompt(&store, &wf, "/context", vec![], true)
             .is_err(),
-        "running workflows reject prompts"
+        "a running workflow takes no command (a message joins its round: ADR 0018)"
     );
 
     let fx = engine
@@ -1128,6 +1128,45 @@ fn writing_to_a_closed_workflow_continues_it_in_its_slot() {
         .unwrap();
     Engine::create_workflow(&store, &home, origin("Next")).unwrap();
     assert!(engine.continue_closed(&store, &wf).is_err());
+}
+
+#[test]
+fn a_message_sent_while_the_agent_works_joins_its_round() {
+    let (store, mut engine, wf) = setup();
+    engine.session_started(&wf);
+    let first = engine
+        .submit_prompt(&store, &wf, "add a greeting", vec![], false)
+        .unwrap();
+    engine
+        .apply(&store, &wf, &entry(1, "assistant", "u1"))
+        .unwrap();
+    assert_eq!(store.workflow(&wf).unwrap().state, WorkflowState::Running);
+
+    // A command would be a round of its own: it waits.
+    assert!(
+        engine
+            .submit_prompt(&store, &wf, "/compact", vec![], true)
+            .is_err()
+    );
+    let queued = engine
+        .submit_prompt(&store, &wf, "also say goodbye", vec![], false)
+        .unwrap();
+    assert_eq!(queued.turn_text, "also say goodbye");
+    assert_eq!(queued.node.round_id, first.node.round_id);
+    let rounds = store.rounds(&wf).unwrap();
+    assert_eq!(rounds.len(), 1);
+    let view = store.workflow_view(&wf).unwrap();
+    assert!(!view.sent_while_working(&first.node));
+    assert!(view.sent_while_working(&queued.node));
+
+    engine.apply(&store, &wf, &summary("both")).unwrap();
+    engine
+        .apply(&store, &wf, &ended(TerminalKind::WriteSummary, None))
+        .unwrap();
+    assert_eq!(store.workflow(&wf).unwrap().state, WorkflowState::Idle);
+    // Mid-round, it is no rewind point; the round's own message is.
+    let refused = engine.rewind(&store, &wf, &queued.node.id).err();
+    assert!(refused.is_some_and(|e| e.to_string().contains("while the agent worked")));
 }
 
 fn second_slot(store: &Store, of: &str) -> Slot {

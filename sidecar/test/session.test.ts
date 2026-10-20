@@ -132,6 +132,24 @@ describe("round termination (§5.3)", () => {
     });
   });
 
+  it("a message sent while the agent works carries the round on, unnudged", async () => {
+    const { emitter, session, q } = setup();
+    session.turn("go");
+    q.send(sdk.text("working"));
+    await flush();
+    session.turn("also this");
+    // The turn ended before the message could fold in: it runs next.
+    q.send(sdk.result(0.1, "success", 1, 1));
+    await flush();
+    expect(q.prompts).toEqual(["go", "also this"]);
+    expect(emitter.ofType("round.ended")).toHaveLength(0);
+    await session.writeSummary({ done: ["both"], remaining: [] }, {});
+    q.send(sdk.result(0.2));
+    await flush();
+    expect(emitter.ofType("round.ended")).toHaveLength(1);
+    expect(emitter.ofType("round.ended")[0]).toMatchObject({ terminal_kind: "write_summary", nudges: 0 });
+  });
+
   it("a nudge that produces a terminal call ends the round normally", async () => {
     const { emitter, session, q } = setup();
     session.turn("go");

@@ -254,7 +254,8 @@ export class Session implements ToolHost {
       this.error("session.turn before session.start", false);
       return;
     }
-    // A turn sent while a round runs is folded into it by the SDK.
+    // A turn sent while a round runs joins it (ADR 0018): Claude Code folds
+    // it into the running turn between tool rounds, or runs it right after.
     if (!this.round) {
       this.round = this.newRound();
       this.round.command = SLASH_COMMAND.test(text.trimStart());
@@ -446,7 +447,12 @@ export class Session implements ToolHost {
           break;
         }
         this.replay = undefined;
-        this.onResult(msg.total_cost_usd, msg.subtype !== "success" || msg.is_error, msg.num_turns);
+        this.onResult(
+          msg.total_cost_usd,
+          msg.subtype !== "success" || msg.is_error,
+          msg.num_turns,
+          msg.queued_turn_count ?? 0,
+        );
         break;
       default:
         break;
@@ -718,7 +724,7 @@ export class Session implements ToolHost {
     });
   }
 
-  private onResult(totalUsd: number, isError: boolean, numTurns: number): void {
+  private onResult(totalUsd: number, isError: boolean, numTurns: number, queued: number): void {
     if (Number.isFinite(totalUsd)) this.totalUsd = totalUsd;
     this.emitter.emit({ type: "session.cost", total_usd: this.totalUsd });
     void this.reportContext();
@@ -730,6 +736,9 @@ export class Session implements ToolHost {
       return this.endRound(round.terminal);
     }
     if (isError) return this.endRound("error");
+    // A message the user sent while it worked runs next, and carries the
+    // round on: no nudge ahead of it (ADR 0018).
+    if (queued > 0) return;
     // No model turn for a slash command: Claude Code ran it by itself
     // (/compact, /context). Nothing to nudge (ADR 0015).
     if (numTurns === 0 && round.nudges === 0 && round.command) return this.endRound("command");

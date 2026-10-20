@@ -263,6 +263,12 @@ A round must end with **exactly one** terminal tool call.
   ("Earlier you presented code review findings. My decisions: …").
 - A turn Claude Code starts by itself (e.g. a background subagent finished) opens an
   implicit round with the same rules.
+- A Prompt sent while a round runs joins that round (ADR 0018): Claude Code folds it
+  into the running turn between tool rounds, or runs it right after the turn. A
+  `result` without a terminal call while a message still waits (`queued_turn_count >
+  0`) is no reason to nudge: the message carries the round on. A round that already
+  ended with its terminal call is done; the waiting message opens an implicit round.
+  A slash command sent while a round runs is refused (it would be a round of its own).
 - A slash command Claude Code runs without the model (`/compact`, `/context`; its
   `result` has `num_turns: 0`, and the turn was a `/name`) ends the round as
   `command`: no nudge, no stub Summary, no section end, and it is not section work
@@ -640,7 +646,7 @@ from `berth-protocol`; the list below is the contract, the Rust types are the tr
 ```
 session.start    { workflow_id, cwd, system_prompt, env, allowed_tools, connector_skills, model?, effort?, title? }
 session.resume   { workflow_id, claude_session_id, resume_at?, drops_turn?, cwd, … }   # resume_at: a rewind (ADR 0009); drops_turn: its one turn (ADR 0016)
-session.turn     { text, attachments?: [{ path, mime }], uuid? }   # a Prompt or nudge; images become image blocks; uuid: the turn's in the transcript
+session.turn     { text, attachments?: [{ path, mime }], uuid? }   # a Prompt or nudge; images become image blocks; uuid: the turn's in the transcript; during a round it joins it (ADR 0018)
 session.background { tool_use_id? }   # move running foreground tool calls to the background (ADR 0016)
 sessions.rename  { session_id, title, dir }   # no session needed: retitle it in Claude Code's history
 session.interrupt
@@ -755,6 +761,9 @@ settles nothing (ADR 0013).
   it; A focuses the card from anywhere. The composer is disabled while a question is
   pending, so there is one place to answer. An answered question stays in the flow,
   read-only.
+- While the agent works, the composer still takes a message (ADR 0018): it joins the
+  running round, the agent reads it at its next step, and the flow marks it "while the
+  agent worked" (not a rewind point). Slash commands wait until the round ends.
 - The composer takes **attachments**: drop files on it, paste files or images, or
   pick them (⌘⇧O). They show as chips until sent. Attachments and **artifacts**
   show in the flow as small tiles: a 56px thumbnail (the image itself, or Quick
