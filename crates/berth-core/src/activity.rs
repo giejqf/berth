@@ -61,6 +61,8 @@ pub struct RoundActivity {
     /// What Claude Code itself is doing (compacting the conversation); shown
     /// over the title while set, which stays for after.
     pub status: Option<String>,
+    /// When `status` began (unix ms).
+    pub status_since: i64,
     /// Main-lane tool calls, oldest first.
     pub steps: Vec<Step>,
     /// Every tool call this round, branches included.
@@ -85,7 +87,7 @@ impl RoundActivity {
 
     /// Claude Code's own status: compacting the conversation
     /// (`system/status`), or retrying a failed API request (`api_retry`).
-    fn observe_status(&mut self, json: &Value) -> bool {
+    fn observe_status(&mut self, json: &Value, now: i64) -> bool {
         let status = match json.get("subtype").and_then(Value::as_str) {
             Some("status") => (json.get("status").and_then(Value::as_str) == Some("compacting"))
                 .then(|| COMPACTING.to_owned()),
@@ -93,6 +95,9 @@ impl RoundActivity {
             _ => return false,
         };
         let changed = status != self.status;
+        if changed {
+            self.status_since = now;
+        }
         self.status = status;
         changed
     }
@@ -113,6 +118,12 @@ impl RoundActivity {
             .unwrap_or_else(|| "Working".to_owned())
     }
 
+    /// Whether Claude Code is compacting the conversation now.
+    #[must_use]
+    pub fn compacting(&self) -> bool {
+        self.status.as_deref() == Some(COMPACTING)
+    }
+
     /// The live card's line: Claude Code's status while it has one, else the
     /// agent's latest prose.
     #[must_use]
@@ -123,7 +134,7 @@ impl RoundActivity {
     /// Feed one raw SDK event. Returns whether anything changed.
     pub fn observe(&mut self, kind: &str, json: &Value, branch_id: Option<&str>, now: i64) -> bool {
         if kind == "system" {
-            return self.observe_status(json);
+            return self.observe_status(json, now);
         }
         // The request went through after all: the retry line goes.
         let retried = kind == "assistant"
@@ -355,7 +366,9 @@ mod tests {
         assert!(a.observe("system", &status(Value::from("compacting")), None, 1));
         assert_eq!(a.headline(), COMPACTING);
         assert_eq!(a.line(), Some(COMPACTING));
+        assert!(a.compacting() && a.status_since == 1);
         assert!(a.observe("system", &status(Value::Null), None, 2));
+        assert!(!a.compacting());
         // The agent's line is still there once it is done.
         assert_eq!(a.headline(), "Reading the config");
         assert!(!a.observe("system", &serde_json::json!({"subtype": "init"}), None, 3));

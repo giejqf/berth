@@ -432,6 +432,7 @@ fn fake_live(preset: &str, cx: &mut App) {
                     started_at: now - 72_000,
                     title: Some("Running both checks in parallel".into()),
                     status: None,
+                    status_since: now - 8_000,
                     steps: vec![
                         step(
                             "1",
@@ -468,6 +469,7 @@ fn fake_live(preset: &str, cx: &mut App) {
                     title: Some("Reading crate layout".into()),
                     // An API retry in progress (ADR 0016).
                     status: Some("The API is overloaded; trying again (2 of 10) in 8s".into()),
+                    status_since: now - 8_000,
                     steps: vec![step(
                         "c1",
                         "Reading crate layout",
@@ -482,12 +484,34 @@ fn fake_live(preset: &str, cx: &mut App) {
                 },
             ),
         ],
+        // Claude Code compacting the conversation mid-round.
+        "compacting" => vec![(
+            "Migrate config to TOML",
+            RoundActivity {
+                started_at: now - 240_000,
+                title: Some("Editing config.rs".into()),
+                status: Some(berth_core::activity::COMPACTING.into()),
+                status_since: now - 14_000,
+                steps: vec![step(
+                    "c1",
+                    "Editing `config.rs`",
+                    "Edited `config.rs`",
+                    240,
+                    Some(200),
+                )],
+                tool_calls: 9,
+                subagents: 0,
+                branch_steps: Default::default(),
+                branch_summaries: Default::default(),
+            },
+        )],
         _ => vec![(
             "Migrate config to TOML",
             RoundActivity {
                 started_at: now - 160_000,
                 title: Some("Editing config.rs".into()),
                 status: None,
+                status_since: now - 8_000,
                 steps: vec![step(
                     "c1",
                     "Editing `config.rs`",

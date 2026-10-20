@@ -412,6 +412,20 @@ impl Render for Composer {
                     "Starting the agent…"
                 })
                 .into_any_element(),
+            WorkflowState::Running
+                if state
+                    .activity
+                    .get(&wf.id)
+                    .is_some_and(berth_core::activity::RoundActivity::compacting) =>
+            {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(spinner("composer-spin", 10, t.accent))
+                    .child("Claude Code is compacting the conversation. What you send goes to the agent once it's done.")
+                    .into_any_element()
+            }
             WorkflowState::Running => div()
                 .flex()
                 .items_center()

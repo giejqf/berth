@@ -231,7 +231,7 @@ fn node_row(t: &Tokens, node: &Node, ctx: &RowCtx, line: bool, cx: &mut App) -> 
         NodePayload::Rewind(r) => rewound(t, node, r, line),
         NodePayload::Reopened(r) => reopened(t, node, r, line),
         NodePayload::Command(c) => command(t, node, c, ctx, line),
-        NodePayload::Compacted(c) => compacted(t, node, c, line),
+        NodePayload::Compacted(c) => compacted(t, node, c, ctx, line),
         NodePayload::Refusal(r) => refusal(t, node, r, line),
         // Spawn/Collect are folded into their group; never laid out alone.
         NodePayload::SubagentSpawn(_) | NodePayload::CollectResults(_) => div(),
@@ -611,6 +611,9 @@ fn setup_row(t: &Tokens, ctx: &RowCtx) -> Div {
 fn live_row(t: &Tokens, ctx: &RowCtx, window: &Window, cx: &App) -> Div {
     let a = ctx.activity.clone().unwrap_or_default();
     let now = super::kit::now_ms();
+    if a.compacting() {
+        return compacting_row(t, ctx, &a, now);
+    }
     let title = a.line().unwrap_or("Working").to_owned();
     let elapsed = if a.started_at > 0 {
         dur(now - a.started_at)
@@ -707,6 +710,75 @@ fn live_row(t: &Tokens, ctx: &RowCtx, window: &Window, cx: &App) -> Div {
                             },
                         ))),
                 ),
+        ),
+    )
+}
+
+/// The live card while Claude Code compacts the conversation: what is
+/// happening and why, not the round's steps.
+fn compacting_row(
+    t: &Tokens,
+    ctx: &RowCtx,
+    a: &berth_core::activity::RoundActivity,
+    now: i64,
+) -> Div {
+    let full = ctx
+        .view
+        .context
+        .as_ref()
+        .filter(|c| c.window() > 0)
+        .map(|c| format!(" Its context window is {:.0}% full.", c.fraction() * 100.))
+        .unwrap_or_default();
+    let backend = ctx.backend.clone();
+    let wf = ctx.view.workflow.id.clone();
+    row(
+        t,
+        glyph(t.accent_soft, spinner("compact-spin", 14, t.accent)),
+        false,
+        div().pb(px(16.)).child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .bg(t.accent_soft)
+                .border_1()
+                .border_color(t.accent)
+                .rounded(px(6.))
+                .px(px(14.))
+                .py(px(12.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(icon("minimize", 14., t.accent))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .semibold()
+                                .child(berth_core::activity::COMPACTING),
+                        )
+                        .child(
+                            div()
+                                .ty(ty::META)
+                                .text_color(t.text2)
+                                .child(dur(now - a.status_since)),
+                        ),
+                )
+                .child(div().ty(ty::META).text_color(t.text2).child(format!(
+                    "Claude Code is summarizing the conversation so far, to make room.{full} The agent goes on from the summary once it's done."
+                )))
+                .child(div().flex().ty(ty::META).child(div().ml_auto().child(link(
+                    "compact-transcript",
+                    "Show transcript",
+                    t,
+                    move |_, _, _| {
+                        backend.send(Command::LoadRoundDetails {
+                            workflow_id: wf.clone(),
+                        });
+                    },
+                )))),
         ),
     )
 }
@@ -1865,42 +1937,75 @@ fn refusal(t: &Tokens, node: &Node, r: &Refusal, line: bool) -> Div {
 }
 
 /// Claude Code compacted the conversation: earlier turns are a summary now.
-fn compacted(t: &Tokens, node: &Node, c: &Compacted, line: bool) -> Div {
+fn compacted(t: &Tokens, node: &Node, c: &Compacted, ctx: &RowCtx, line: bool) -> Div {
+    // A boundary, not an event: across the flow, where the agent's memory of
+    // what came before turns into a summary.
     let title = match c.trigger {
         CompactTrigger::Manual => "Conversation compacted",
-        CompactTrigger::Auto => "Claude Code compacted the conversation",
+        CompactTrigger::Auto => "Context window full: conversation compacted",
     };
     let size = match c.post_tokens {
+        Some(after) if c.pre_tokens > 0 => {
+            #[allow(clippy::cast_precision_loss)]
+            let cut = 100. - after as f64 * 100. / c.pre_tokens as f64;
+            format!(
+                "{} → {} tokens (−{cut:.0}%)",
+                tokens(c.pre_tokens),
+                tokens(after)
+            )
+        }
         Some(after) => format!("{} → {} tokens", tokens(c.pre_tokens), tokens(after)),
         None => format!("{} tokens before", tokens(c.pre_tokens)),
     };
-    row(
-        t,
-        glyph(t.card, icon("minimize", 14., t.text2)),
-        line,
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(2.))
-            .pt(px(3.))
-            .pb(px(if line { 20. } else { 12. }))
-            .child(
-                div()
-                    .flex()
-                    .items_baseline()
-                    .gap(px(8.))
-                    .child(div().semibold().child(title))
-                    .child(
-                        div()
-                            .ty(ty::META)
-                            .text_color(t.text3)
-                            .child(clock(node.created_at)),
-                    ),
-            )
-            .child(div().ty(ty::META).text_color(t.text2).child(format!(
-                "{size}. The agent goes on from a summary of what came before; the flow above stays."
-            ))),
-    )
+    let rule = || div().flex_1().h(px(1.)).bg(t.accent);
+    div()
+        .px(px(20.))
+        .pt(px(6.))
+        .pb(px(if line { 22. } else { 14. }))
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .child(rule())
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .h(px(28.))
+                        .px(px(12.))
+                        .rounded(px(14.))
+                        .bg(t.accent_soft)
+                        .border_1()
+                        .border_color(t.accent)
+                        .child(icon("minimize", 14., t.accent))
+                        .child(div().semibold().child(title))
+                        .child(
+                            div()
+                                .ty(ty::META)
+                                .text_color(t.text3)
+                                .child(clock(node.created_at)),
+                        ),
+                )
+                .child(rule()),
+        )
+        .child(
+            div()
+                .flex()
+                .justify_center()
+                .items_baseline()
+                .gap(px(10.))
+                .ty(ty::META)
+                .text_color(t.text2)
+                .child(format!(
+                    "{size}. The agent goes on from a summary; the detail above is no longer in its memory."
+                ))
+                .children(details_link(t, node, ctx)),
+        )
 }
 
 /// Where a session from the history was opened: this slot's checkout, and

@@ -825,8 +825,11 @@ settles nothing (ADR 0013).
   argument hint, description; ones Berth does itself are dimmed with where to go.
   ↑↓ choose, ↩ or Tab complete, esc closes (bound in `Completing > Input`, so the
   field's own keys work otherwise); ⌘↩ sends. A command's output shows as a Command
-  row (its first lines, "Show more"); a compaction as a marker with the tokens before
-  and after, and the live card says "Compacting the conversation" while it runs.
+  row (its first lines, "Show more"). A compaction is a boundary across the flow: a
+  band with the tokens before and after, and that the agent goes on from a summary,
+  the detail above no longer in its memory (Details: its transcript). While it runs,
+  the live card turns into a compacting card (what is happening, how full the window
+  is, for how long), and the composer's status and the rail say so too.
   `ui/rich.rs` renders the headings and tables commands print.
 - **SDK extras** (ADR 0016): a session's title in Claude Code's history is the slot's
   name (else the workflow's title); renaming a slot renames it there too (host slots).
