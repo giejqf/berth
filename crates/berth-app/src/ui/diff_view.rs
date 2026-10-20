@@ -120,8 +120,9 @@ impl DiffView {
         }
     }
 
-    pub fn diff(&self) -> &Diff {
-        &self.diff
+    /// The shown diff, shared (a view draws from it without copying it).
+    pub fn shared_diff(&self) -> Arc<Diff> {
+        self.diff.clone()
     }
 
     /// Show `diff` (parsed by the backend; highlighted off the UI thread, or
@@ -882,6 +883,7 @@ fn row_content(ix: usize, c: &Ctx, cx: &mut App) -> AnyElement {
                 .text_color(t.text3)
                 .whitespace_nowrap()
                 .overflow_hidden()
+                .text_ellipsis()
                 .child(format!(
                     "@@ -{},{} +{},{} @@{section}",
                     h.old_start, h.old_lines, h.new_start, h.new_lines
@@ -963,7 +965,8 @@ fn line_row(c: &Ctx, fi: usize, hi: usize, li: usize, _cx: &mut App) -> AnyEleme
         .relative()
         .flex()
         .flex_row()
-        .h(px(LINE_H))
+        // Long lines wrap; the gutters grow with them.
+        .min_h(px(LINE_H))
         .on_hover(move |over, _, cx| {
             let _ = this.update(cx, |v, cx| {
                 if *over {
@@ -989,8 +992,6 @@ fn line_row(c: &Ctx, fi: usize, hi: usize, li: usize, _cx: &mut App) -> AnyEleme
                 .flex_1()
                 .min_w_0()
                 .pr(px(12.))
-                .whitespace_nowrap()
-                .overflow_hidden()
                 .when_some(bg, gpui::Styled::bg)
                 .text_color(t.text)
                 .child(code_text(&l.text, &runs, t.text)),
@@ -1040,7 +1041,7 @@ fn pair_row(c: &Ctx, fi: usize, hi: usize, old: Option<usize>, new: Option<usize
             .flex_row()
             .flex_1()
             .min_w_0()
-            .h(px(LINE_H))
+            .min_h(px(LINE_H))
             .when(l.is_none(), |d| d.bg(t.rail))
             .when_some(bg, gpui::Styled::bg)
             .child(
@@ -1062,8 +1063,6 @@ fn pair_row(c: &Ctx, fi: usize, hi: usize, old: Option<usize>, new: Option<usize
                     .min_w_0()
                     .pl(px(6.))
                     .pr(px(8.))
-                    .whitespace_nowrap()
-                    .overflow_hidden()
                     .children(l.map(|l| code_text(&l.text, &runs, t.text))),
             )
     };

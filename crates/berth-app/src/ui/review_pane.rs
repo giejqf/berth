@@ -13,6 +13,7 @@ use gpui::{
     AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
     KeyContext, ParentElement as _, Render, ScrollHandle, SharedString,
     StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
+    relative,
 };
 use gpui_component::input::{InputEvent, InputState};
 
@@ -47,6 +48,9 @@ pub struct ReviewPane {
     /// Files: the image shown at full size, the only one kept decoded at it.
     full_image: Option<std::path::PathBuf>,
     strip: ScrollHandle,
+    /// The diff's file list, and the file it last scrolled into view.
+    file_rows: ScrollHandle,
+    file_row_shown: Option<usize>,
     findings: Entity<FindingsView>,
 }
 
@@ -90,6 +94,8 @@ impl ReviewPane {
             actual_size: false,
             full_image: None,
             strip: ScrollHandle::new(),
+            file_rows: ScrollHandle::new(),
+            file_row_shown: None,
             findings,
         };
         this.sync(cx);
@@ -286,7 +292,8 @@ impl Render for ReviewPane {
         let shown = self.shown.clone();
         let split = self.diff.read(cx).split;
         let current_file = self.diff.read(cx).current_file();
-        let files = self.diff.read(cx).diff().files.clone();
+        let diff = self.diff.read(cx).shared_diff();
+        let files = &diff.files;
 
         // ---- header ----
         let seg = |id: &'static str,
@@ -546,14 +553,33 @@ impl Render for ReviewPane {
             .when(!off_diff, |d| d.child(row2).children(custom));
 
         // ---- files ----
+        // A long list keeps to a third of the pane and scrolls, so the diff
+        // stays in view; its header folds it away (⌘⇧F) and back.
         let filter_focused = self.filter.read(cx).focus_handle(cx).is_focused(window);
-        let mut file_list = div()
+        let open = self.files_open;
+        if current_file != self.file_row_shown {
+            self.file_row_shown = current_file;
+            if let Some(i) = current_file {
+                self.file_rows.scroll_to_item(i);
+            }
+        }
+        let mut file_rows = div()
+            .id("file-rows")
             .flex()
             .flex_col()
             .gap(px(1.))
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .track_scroll(&self.file_rows);
+        let file_list = div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .max_h(relative(0.35))
             .px(px(8.))
             .pt(px(8.))
-            .pb(px(6.))
+            .pb(px(if open { 6. } else { 2. }))
             .border_b_1()
             .border_color(t.border)
             .child(
@@ -561,22 +587,56 @@ impl Render for ReviewPane {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .px(px(8.))
-                    .pt(px(2.))
-                    .pb(px(6.))
-                    .child(caption("Files", t.text3))
+                    .h(px(30.))
+                    .pl(px(4.))
+                    .pr(px(8.))
+                    .pb(px(if open { 4. } else { 0. }))
                     .child(
-                        div().ml_auto().w(px(158.)).child(
-                            field_frame(&t, filter_focused, false)
-                                .border_color(if filter_focused { t.accent } else { t.border })
-                                .rounded(px(4.))
-                                .h(px(24.))
-                                .px(px(8.))
-                                .items_center()
-                                .text_size(px(12.))
-                                .child(super::kit::bare_input(&self.filter).text_size(px(12.))),
-                        ),
-                    ),
+                        div()
+                            .id("file-list-toggle")
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .h_full()
+                            .px(px(4.))
+                            .rounded(px(4.))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(t.raised))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.files_open = !this.files_open;
+                                cx.notify();
+                            }))
+                            .child(icon(
+                                if open {
+                                    "chevron-down"
+                                } else {
+                                    "chevron-right"
+                                },
+                                12.,
+                                t.text3,
+                            ))
+                            .child(caption("Files", t.text3))
+                            .child(
+                                div()
+                                    .ty(ty::META)
+                                    .text_color(t.text3)
+                                    .child(files.len().to_string()),
+                            ),
+                    )
+                    .when(open, |d| {
+                        d.child(
+                            div().ml_auto().w(px(158.)).child(
+                                field_frame(&t, filter_focused, false)
+                                    .border_color(if filter_focused { t.accent } else { t.border })
+                                    .rounded(px(4.))
+                                    .h(px(24.))
+                                    .px(px(8.))
+                                    .items_center()
+                                    .text_size(px(12.))
+                                    .child(super::kit::bare_input(&self.filter).text_size(px(12.))),
+                            ),
+                        )
+                    }),
             );
         for (i, f) in files.iter().enumerate() {
             let path = f.display_path().to_owned();
@@ -586,7 +646,7 @@ impl Render for ReviewPane {
                 .count();
             let active = current_file == Some(i);
             let hover = t.raised;
-            file_list = file_list.child(
+            file_rows = file_rows.child(
                 div()
                     .id(SharedString::from(format!("file-row-{i}")))
                     .flex()
@@ -802,8 +862,8 @@ impl Render for ReviewPane {
             .border_l_1()
             .border_color(t.border)
             .child(header)
-            .when(!off_diff && self.files_open && !files.is_empty(), |d| {
-                d.child(file_list)
+            .when(!off_diff && !files.is_empty(), |d| {
+                d.child(file_list.when(open, |d| d.child(file_rows)))
             })
             .child(body)
             // The Findings tab has its own footer (Send).

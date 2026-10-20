@@ -694,6 +694,7 @@ fn dispatch(name: &str, cx: &mut App) {
         "ReviewWorkflow" => Box::new(keymap::ReviewWorkflow),
         "ReviewBranch" => Box::new(keymap::ReviewBranch),
         "ToggleDiffMode" => Box::new(keymap::ToggleDiffMode),
+        "ToggleFileList" => Box::new(keymap::ToggleFileList),
         "OpenSettings" => Box::new(keymap::OpenSettings),
         "ClaudeAccount" => Box::new(keymap::ClaudeAccount),
         "DestroySlot" => Box::new(keymap::DestroySlot),

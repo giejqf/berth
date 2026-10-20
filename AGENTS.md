@@ -512,6 +512,10 @@ syntax highlighting, file filter, jump to next hunk, line comments, "ask agent a
 this hunk" (which creates a Prompt pre-filled with the hunk context). Comments anchor
 to the end line of the selected range. "Post to PR" posts one review with inline
 comments (`gh api …/pulls/N/reviews`) and falls back to a single `gh pr comment`.
+Long lines wrap (both modes; the gutters grow with them), so no code is cut off at the
+pane's edge. Above the diff, the file list (path, comments, +/−; a click jumps there)
+keeps to a third of the pane and scrolls, following the file in view; its header (the
+file count) folds it away and back, as ⌘⇧F does.
 
 ---
 
