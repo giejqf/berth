@@ -431,7 +431,8 @@ Reference implementations in `slots/examples/`: `worktree` (git worktree, host),
 Creating lasts through `create` and, for scripts with `status`, until it says
 ready; the rail shows its detail ("Creating slot… · Booting the VM").
 A closed workflow releases its slot (`Running → Ready`) and its sidecar is stopped
-once the round that closed it ends. Destroying a slot with an open workflow closes
+once the round that closed it ends. A Claude Code account change restarts host sessions the same
+way, once their round ends (ADR 0017). Destroying a slot with an open workflow closes
 that workflow as reuse does (open round ended, running subagents cancelled) and
 stops every sidecar the slot's workflows had. A slot cannot be destroyed while it is
 Creating. If the agent fails to start in a ready slot, the workflow shows the error
@@ -600,7 +601,8 @@ review_comments  id, workflow_id, from_snapshot, to_snapshot, preset, path, side
 gh_entities      id, repo_id, kind, number_or_sha, json, synced_at
 workflow_links   workflow_id, entity_id, role(origin|outcome)
 connectors       name, path, enabled
-settings         key, value          # last_repo, recent_repos, model, models, quota, commands:<repo_id>, account
+settings         key, value          # last_repo, recent_repos, model, models, quota, commands:<repo_id>, account,
+                                     # claude_identity
 ```
 
 Timestamps are unix epoch milliseconds. `nodes.raw_first/raw_last` are `raw_events.id`
@@ -706,9 +708,9 @@ settles nothing (ADR 0013).
   ago", "Review: 5 findings to decide · 1m ago", "Committed · 1 follow-up"); while
   Claude Code retries a failed API request it says so ("The API is overloaded; trying
   again (2 of 10) in 8s", `api_retry`). The footer shows Claude Code / GitHub CLI status
-  (`backend/env.rs`); once signed in, Claude Code's line names the plan ("Max plan", or
-  "via Bedrock"), and hovering it says who it signs in as (`session.account`, kept in
-  `settings.account`).
+  (`backend/env.rs`); once signed in, Claude Code's line names the plan ("Max plan",
+  "API key", or "via Bedrock"), and hovering it says who it signs in as (`claude auth
+  status`, else `session.account`, kept in `settings.account`).
 - A slot's first line is its workflow's title, or the name the user gave it: **Rename
   slot** (R with the rail focused, a double-click, the row's context menu, the flow's
   More menu, ⌘K) stores `slots.custom_name`; an empty name goes back to the title.
@@ -801,6 +803,18 @@ settles nothing (ADR 0013).
   (`resumeDropsTurn`, `workflows.resume_drops`), so Claude Code refuses to drop anything
   else; on a refusal the sidecar resumes the whole conversation and sends the turn
   again, and the rewind note tells the agent what was dropped.
+- **Signing in** (ADR 0017): Berth's agents on this Mac run as the `claude` CLI's
+  account. **Sign in to Claude Code** / **Switch Claude account** (`ui/sign_in.rs`;
+  Settings › Claude Code, ⌘K, and wherever signing in is needed) picks a Claude
+  subscription, the Anthropic Console or SSO and finishes in Terminal (`claude auth
+  login`); a switch needs no sign-out first. Windows coming to the front check again
+  (at most every 5 s). While signed out, the composer and New workflow say so with
+  Sign in… and send nothing for a host slot (`inside` slots sign in themselves), and
+  the backend refuses to start a host session. When the account changes
+  (`settings.claude_identity`), the saved account and plan limits are dropped and
+  host sessions restart on it: idle ones at once, others when their round ends.
+  API keys and cloud providers from the environment show as ready, with no sign in
+  or out.
 - **Usage ring** (`ui/usage.rs`, ADR 0014): at the end of the composer's status line,
   a ring of two arcs: the workflow's context window outside (`workflows.context_json`,
   reported by its session after each round, each compaction and on resume), the

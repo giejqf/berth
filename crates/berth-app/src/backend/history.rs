@@ -15,7 +15,7 @@ use berth_protocol::{
 use berth_sidecar_client::{Sidecar, SidecarEvent};
 use berth_slot::Placement;
 
-use super::{HistoryEntry, HistoryOpen, HistoryWorkflow, Shared, UiEvent, lock};
+use super::{HistoryEntry, HistoryOpen, HistoryWorkflow, Shared, UiEvent};
 
 /// How long the listing may take before the history shows Berth's side only.
 const LIST_TIMEOUT: Duration = Duration::from_secs(20);
@@ -244,7 +244,7 @@ impl Shared {
             .reuse(latest.as_ref())
             .map_err(|blocked| anyhow!(blocked.reason()))?;
         if let Some(old) = latest.filter(|_| closes) {
-            let session = lock(&self.sessions).remove(&old.id);
+            let session = self.take_session(&old.id);
             if let Some(s) = session {
                 s.shutdown().await;
             }
@@ -259,7 +259,7 @@ impl Shared {
         // A workflow moving in brings no agent along: its next session starts
         // in this slot's checkout.
         if let HistoryOpen::Workflow(id) = &open {
-            let session = lock(&self.sessions).remove(id);
+            let session = self.take_session(id);
             if let Some(s) = session {
                 s.shutdown().await;
             }

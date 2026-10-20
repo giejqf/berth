@@ -341,7 +341,7 @@ impl Shared {
             .map_err(|blocked| anyhow!(blocked.reason()))?;
         if let Some(old) = latest.filter(|_| closes) {
             // Its sidecar goes first, so nothing it still sends lands after the close.
-            let session = lock(&self.sessions).remove(&old.id);
+            let session = self.take_session(&old.id);
             if let Some(s) = session {
                 s.shutdown().await;
             }
@@ -512,7 +512,7 @@ impl Shared {
         }
         // No agent outlives its slot, whichever of its workflows it served.
         for wf in &all {
-            let session = lock(&self.sessions).remove(&wf.id);
+            let session = self.take_session(&wf.id);
             if let Some(s) = session {
                 s.shutdown().await;
             }

@@ -23,6 +23,7 @@ mod review_pane;
 mod rewind;
 pub mod rich;
 mod settings;
+mod sign_in;
 mod slot_rail;
 mod terminal;
 mod usage;
@@ -224,11 +225,11 @@ fn route(event: UiEvent, cx: &mut App) {
             cx.refresh_windows();
         }
         UiEvent::Quota(quota) => {
-            cx.global_mut::<Berth>().quota = Some(quota);
+            cx.global_mut::<Berth>().quota = quota;
             cx.refresh_windows();
         }
         UiEvent::Account(account) => {
-            cx.global_mut::<Berth>().account = Some(account);
+            cx.global_mut::<Berth>().account = account;
             cx.refresh_windows();
         }
         UiEvent::Settings { model, theme } => {
@@ -446,7 +447,7 @@ fn show_welcome(recent: Vec<RecentRepo>, error: Option<String>, cx: &mut App) {
     let options = window_options(size(px(1280.), px(800.)), size(px(900.), px(560.)), cx);
     let handle = cx.open_window(options, |window, cx| {
         crate::theme::apply(window, cx);
-        let view = cx.new(|_| welcome::Welcome::new(recent, error));
+        let view = cx.new(|cx| welcome::Welcome::new(recent, error, window, cx));
         cx.new(|cx| Root::new(view, window, cx))
     });
     match handle {

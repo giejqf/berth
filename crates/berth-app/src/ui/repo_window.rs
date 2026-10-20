@@ -38,8 +38,8 @@ use super::windows::{Dragged, SlotDrag, WindowDrag};
 use super::{RepoState, details};
 use crate::backend::{Command, ToastLevel};
 use crate::keymap::{
-    AttachFiles, AttachPaths, ChooseModel, CloseWindow, CommandPalette, DestroySlot, FocusAnswer,
-    FocusComposer, FollowUpFromOutcome, Interrupt, JumpToNeeding, MergeAllWindows,
+    AttachFiles, AttachPaths, ChooseModel, ClaudeAccount, CloseWindow, CommandPalette, DestroySlot,
+    FocusAnswer, FocusComposer, FollowUpFromOutcome, Interrupt, JumpToNeeding, MergeAllWindows,
     MoveSlotToNewWindow, NewWorkflow, NewWorkflowHere, NewWorkflowTab, NextChange, NextSlot,
     OpenHistory, OpenSettings, PrevChange, PrevSlot, RefreshReview, RenameSlot, ReviewBranch,
     ReviewSection, ReviewWorkflow, RewindConversation, RewindTo, RunInBackground, SelectSlot,
@@ -145,6 +145,8 @@ impl RepoWindow {
                 s.backend.send(Command::RefreshRepo {
                     repo_id: s.repo_id().to_owned(),
                 });
+                // Coming back from a sign-in in Terminal, among other things.
+                s.backend.send(Command::RefreshEnvironment);
             }
         })
         .detach();
@@ -663,6 +665,17 @@ impl RepoWindow {
         self.open_modal(form, window, cx);
     }
 
+    fn claude_account(
+        &mut self,
+        _: &ClaudeAccount,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let backend = self.state.read(cx).backend.clone();
+        let dialog = cx.new(|cx| super::sign_in::SignInDialog::new(backend, cx));
+        self.open_modal(dialog, window, cx);
+    }
+
     fn palette(&mut self, _: &CommandPalette, window: &mut Window, cx: &mut Context<'_, Self>) {
         let p = cx.new(|cx| Palette::new(window, cx));
         self.open_modal(p, window, cx);
@@ -919,6 +932,7 @@ impl Render for RepoWindow {
             .on_action(cx.listener(Self::new_workflow_here))
             .on_action(cx.listener(Self::choose_model))
             .on_action(cx.listener(Self::settings))
+            .on_action(cx.listener(Self::claude_account))
             .on_action(cx.listener(Self::palette))
             .on_action(cx.listener(|this, a: &crate::keymap::ExpandLane, _, cx| {
                 let n = a.0;

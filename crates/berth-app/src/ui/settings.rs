@@ -13,6 +13,7 @@ use gpui_component::input::{InputEvent, InputState};
 
 use super::kit::{Btn, Size, TypeExt as _, caption, dot, field_frame, icon, radio};
 use super::modal::{self, ConfirmDialog};
+use super::sign_in::SignInDialog;
 use super::{EnvGlobal, RepoState};
 use crate::backend::{Command, ToolState, ToolStatus};
 use crate::keymap::Confirm;
@@ -26,6 +27,7 @@ pub struct SettingsForm {
     editing: HashSet<String>,
     focus: FocusHandle,
     confirm: Option<Entity<ConfirmDialog>>,
+    sign_in: Option<Entity<SignInDialog>>,
 }
 
 impl EventEmitter<DismissEvent> for SettingsForm {}
@@ -66,6 +68,7 @@ impl SettingsForm {
             editing: HashSet::new(),
             focus: cx.focus_handle(),
             confirm: None,
+            sign_in: None,
         };
         this.ensure_secret_inputs(window, cx);
         this
@@ -127,11 +130,20 @@ impl SettingsForm {
         cx: &mut Context<'_, Self>,
     ) -> Div {
         let color = state_color(t, s);
+        // Claude Code signs in the chosen way, and switches accounts; one set
+        // up in the environment (an API key, a cloud provider) is only checked.
         let (label, sign_in) = match (tool, s.state) {
             ("docker", _) | (_, ToolState::Missing) => ("Check again", None),
+            ("claude", _) if !s.switchable => ("Check again", None),
             (_, ToolState::Ok) => ("Sign out", Some(false)),
             _ => ("Sign in…", Some(true)),
         };
+        let switch = (tool == "claude" && s.state == ToolState::Ok && s.switchable).then(|| {
+            Btn::new("tool-claude-switch")
+                .size(Size::S26)
+                .label("Switch account…")
+                .on_click(cx.listener(|this, _, window, cx| this.open_sign_in(window, cx)))
+        });
         row(t, last)
             .child(dot(8., color))
             .child(
@@ -149,12 +161,14 @@ impl SettingsForm {
                         },
                     )),
             )
+            .children(switch)
             .child(
                 Btn::new(SharedString::from(format!("tool-{tool}")))
                     .size(Size::S26)
                     .label(label)
                     .on_click(cx.listener(move |this, _, window, cx| match sign_in {
                         None => this.state.read(cx).backend.send(Command::CheckEnvironment),
+                        Some(true) if tool == "claude" => this.open_sign_in(window, cx),
                         Some(true) => this.state.read(cx).backend.send(Command::ToolAuth {
                             tool: tool.to_owned(),
                             sign_in: true,
@@ -162,6 +176,20 @@ impl SettingsForm {
                         Some(false) => this.confirm_sign_out(tool, window, cx),
                     })),
             )
+    }
+
+    fn open_sign_in(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let backend = self.state.read(cx).backend.clone();
+        let dialog = cx.new(|cx| SignInDialog::new(backend, cx));
+        cx.subscribe_in(&dialog, window, |this, _, _: &DismissEvent, window, cx| {
+            this.sign_in = None;
+            window.focus(&this.focus, cx);
+            cx.notify();
+        })
+        .detach();
+        window.focus(&dialog.read(cx).focus_handle(cx), cx);
+        self.sign_in = Some(dialog);
+        cx.notify();
     }
 
     fn confirm_sign_out(
@@ -174,7 +202,7 @@ impl SettingsForm {
         let (title, body) = match tool {
             "claude" => (
                 "Sign out of Claude Code?",
-                "This signs the claude CLI out everywhere on this Mac. Agents can't run until you sign in again.",
+                "This signs the claude CLI out everywhere on this Mac. Agents can't run until you sign in again. To use another account, Switch account replaces this one without signing out first.",
             ),
             _ => (
                 "Sign out of GitHub CLI?",
@@ -246,6 +274,9 @@ impl Render for SettingsForm {
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         if let Some(c) = &self.confirm {
             return c.clone().into_any_element();
+        }
+        if let Some(d) = &self.sign_in {
+            return d.clone().into_any_element();
         }
         let t = Tokens::get(cx);
         let env = cx

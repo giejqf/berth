@@ -64,6 +64,15 @@ impl Shared {
         if !wf.state.is_open() {
             return Err(anyhow!("this workflow is closed"));
         }
+        // Up front, not as an authentication error from the first request.
+        // An `inside` slot signs its own agent in (§6.1).
+        if slot.placement != Placement::Inside.as_str()
+            && let Some(why) = self.claude_unavailable().await
+        {
+            return Err(anyhow!(
+                "{why} Sign in from Settings › Claude Code, then send your message again."
+            ));
+        }
         let checkout = slot
             .checkout_path
             .clone()
@@ -189,10 +198,67 @@ impl Shared {
 
     /// The workflow is done with its sidecar (closed, or moved): stop it.
     pub(super) fn retire_session(self: &Arc<Self>, workflow_id: &str) {
-        let session = lock(&self.sessions).remove(workflow_id);
-        if let Some(s) = session {
+        if let Some(s) = self.take_session(workflow_id) {
             tokio::spawn(async move { s.shutdown().await });
         }
+    }
+
+    /// The workflow's live session, no longer its: what waited on it goes too.
+    pub(super) fn take_session(&self, workflow_id: &str) -> Option<Arc<Session>> {
+        lock(&self.restart_after_round).remove(workflow_id);
+        lock(&self.background).remove(workflow_id);
+        lock(&self.sessions).remove(workflow_id)
+    }
+
+    /// Claude Code signs in as another account: stop every session on this
+    /// Mac, so the next prompt resumes it on the new one. One that is
+    /// working, waiting on an answer or running something in the background
+    /// finishes that first (ADR 0017). `inside` slots sign in by themselves.
+    pub(super) fn restart_host_sessions(self: &Arc<Self>) {
+        let live: Vec<String> = lock(&self.sessions).keys().cloned().collect();
+        for workflow_id in live {
+            let host = {
+                let core = self.core();
+                core.store
+                    .workflow(&workflow_id)
+                    .and_then(|wf| core.store.slot(&wf.slot_id))
+                    .is_ok_and(|slot| slot.placement != Placement::Inside.as_str())
+            };
+            if host {
+                lock(&self.restart_after_round).insert(workflow_id.clone());
+                self.restart_if_due(&workflow_id);
+            }
+        }
+    }
+
+    /// Restart the workflow's session if it waits for that and is quiet now:
+    /// idle, nothing in the background.
+    fn restart_if_due(self: &Arc<Self>, workflow_id: &str) {
+        let quiet = !lock(&self.background).contains(workflow_id)
+            && self
+                .core()
+                .store
+                .workflow(workflow_id)
+                .is_ok_and(|wf| wf.state == WorkflowState::Idle);
+        if !quiet || !lock(&self.restart_after_round).remove(workflow_id) {
+            return;
+        }
+        tracing::info!(workflow_id, "restarting the session for the new account");
+        self.retire_session(workflow_id);
+        let fx = {
+            let mut core = self.core();
+            let super::Core { store, engine } = &mut *core;
+            engine.sidecar_exited(store, workflow_id, None)
+        };
+        match fx {
+            Ok(fx) => self.run_effects(workflow_id, fx),
+            Err(e) => tracing::error!(error = %e, "settling a restarted session failed"),
+        }
+        self.emit(UiEvent::BackgroundTasks {
+            workflow_id: workflow_id.to_owned(),
+            tasks: Vec::new(),
+        });
+        self.emit_workflow(workflow_id);
     }
 
     /// After handing `session` a turn or an answer: if it died meanwhile (its
@@ -340,7 +406,7 @@ impl Shared {
             slot
         };
         // Its sidecar goes first, so nothing it still sends lands after the rewind.
-        let session = lock(&self.sessions).remove(workflow_id);
+        let session = self.take_session(workflow_id);
         if let Some(s) = session {
             s.shutdown().await;
         }
@@ -429,10 +495,19 @@ impl Shared {
                             });
                         }
                         berth_protocol::SidecarToApp::SessionTasks(t) => {
+                            {
+                                let mut background = lock(&self.background);
+                                if t.tasks.is_empty() {
+                                    background.remove(&workflow_id);
+                                } else {
+                                    background.insert(workflow_id.clone());
+                                }
+                            }
                             self.emit(UiEvent::BackgroundTasks {
                                 workflow_id: workflow_id.clone(),
                                 tasks: t.tasks.clone(),
                             });
+                            self.restart_if_due(&workflow_id);
                         }
                         berth_protocol::SidecarToApp::SessionAccount(a) => {
                             self.remember_account(&a.account);
@@ -462,6 +537,8 @@ impl Shared {
                             .is_ok_and(|w| w.state == WorkflowState::Closed);
                     if closed {
                         self.retire_session(&workflow_id);
+                    } else if round_ended {
+                        self.restart_if_due(&workflow_id);
                     }
                 }
                 SidecarEvent::ProtocolError { line, error } => {
@@ -478,6 +555,10 @@ impl Shared {
                         }
                         current
                     };
+                    if current {
+                        lock(&self.restart_after_round).remove(&workflow_id);
+                        lock(&self.background).remove(&workflow_id);
+                    }
                     if !current {
                         break;
                     }
@@ -692,7 +773,7 @@ impl Shared {
             }
             quota
         };
-        self.emit(UiEvent::Quota(quota));
+        self.emit(UiEvent::Quota(Some(quota)));
     }
 
     /// Keep the commands a session offers, per repo: the last session to
@@ -720,7 +801,7 @@ impl Shared {
         if let Ok(json) = serde_json::to_string(account) {
             let _ = self.core().store.set_setting("account", &json);
         }
-        self.emit(UiEvent::Account(account.clone()));
+        self.emit(UiEvent::Account(Some(account.clone())));
     }
 
     /// The account as last reported, before a session of this run reports.
@@ -729,7 +810,7 @@ impl Shared {
         if let Some(account) =
             saved.and_then(|json| serde_json::from_str::<berth_protocol::Account>(&json).ok())
         {
-            self.emit(UiEvent::Account(account));
+            self.emit(UiEvent::Account(Some(account)));
         }
     }
 
@@ -748,7 +829,7 @@ impl Shared {
     pub(super) fn emit_quota(&self) {
         let saved = saved_quota(&self.core().store);
         if let Some(quota) = saved {
-            self.emit(UiEvent::Quota(quota));
+            self.emit(UiEvent::Quota(Some(quota)));
         }
     }
 

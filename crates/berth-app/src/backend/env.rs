@@ -2,32 +2,56 @@
 //! Docker. Shown in the rail footer, Settings › Connections and Welcome.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use super::Shared;
+use anyhow::Result;
+
 use super::launch::which;
-use super::types::{EnvStatus, ToolState, ToolStatus, UiEvent};
+use super::types::{EnvStatus, LoginMethod, ToolState, ToolStatus, UiEvent};
+use super::{Shared, lock};
 
 const CHECK_TIMEOUT: Duration = Duration::from_secs(8);
 
 impl Shared {
-    /// Check every tool and broadcast the result.
-    pub(super) async fn check_environment(&self) {
+    /// Check every tool and broadcast the result. A change of the account
+    /// Claude Code signs in as also forgets the old one's plan and limits and
+    /// restarts the agent sessions on this Mac (ADR 0017).
+    pub(super) async fn check_environment(self: &Arc<Self>) {
+        *lock(&self.env_checked) = Some(Instant::now());
         let claude = claude_binary(&self.launch.bundle_dir);
-        let (claude, gh, docker) = tokio::join!(check_claude(claude), check_gh(), check_docker());
+        let ((claude, auth), gh, docker) =
+            tokio::join!(check_claude(claude), check_gh(), check_docker());
+        *lock(&self.claude_blocked) = claude.blocks_agents;
+        if let Some(auth) = auth {
+            self.saw_claude_auth(&auth);
+        }
         self.emit(UiEvent::Environment(EnvStatus { claude, gh, docker }));
     }
 
+    /// [`Self::check_environment`], unless one ran in the last few seconds
+    /// (a window coming to the front, again and again).
+    pub(super) async fn refresh_environment(self: &Arc<Self>) {
+        let recent = lock(&self.env_checked).is_some_and(|t| t.elapsed() < REFRESH_AFTER);
+        if !recent {
+            self.check_environment().await;
+        }
+    }
+
+    /// Why an agent on this Mac can't start, checking again first when the
+    /// last check said so (the user may have signed in since).
+    pub(super) async fn claude_unavailable(self: &Arc<Self>) -> Option<&'static str> {
+        lock(&self.claude_blocked).as_ref()?;
+        self.check_environment().await;
+        *lock(&self.claude_blocked)
+    }
+
     /// Run a sign-in or sign-out command for a tool.
-    pub(super) async fn tool_auth(&self, tool: &str, sign_in: bool) -> anyhow::Result<()> {
+    pub(super) async fn tool_auth(self: &Arc<Self>, tool: &str, sign_in: bool) -> Result<()> {
         match (tool, sign_in) {
             // Interactive logins run in Terminal: a `.command` file opens there.
             ("gh", true) => open_in_terminal("gh auth login")?,
-            ("claude", true) => {
-                let bin = claude_binary(&self.launch.bundle_dir)
-                    .map_or_else(|| "claude".to_owned(), |p| shell_quote(&p));
-                open_in_terminal(&format!("{bin} auth login"))?;
-            }
+            ("claude", true) => return self.claude_sign_in(LoginMethod::Subscription).await,
             ("gh", false) => {
                 run(
                     Path::new("gh"),
@@ -45,6 +69,54 @@ impl Shared {
         self.check_environment().await;
         Ok(())
     }
+
+    /// `claude auth login` in Terminal. Signed in already, it replaces the
+    /// account, so a switch needs no sign-out first (and abandoning it leaves
+    /// the old one). Berth sees the result when one of its windows comes back
+    /// to the front.
+    pub(super) async fn claude_sign_in(self: &Arc<Self>, method: LoginMethod) -> Result<()> {
+        let bin = claude_binary(&self.launch.bundle_dir)
+            .map_or_else(|| "claude".to_owned(), |p| shell_quote(&p));
+        open_in_terminal(&format!("{bin} auth login {}", method.flag()))?;
+        self.check_environment().await;
+        Ok(())
+    }
+
+    /// Compare who Claude Code signs in as with the last check (kept across
+    /// launches; the first one only records it).
+    fn saw_claude_auth(self: &Arc<Self>, auth: &AuthSeen) {
+        let changed = {
+            let core = self.core();
+            let last = core.store.setting(IDENTITY_KEY).ok().flatten();
+            let _ = core.store.set_setting(IDENTITY_KEY, &auth.identity);
+            last.is_some_and(|last| last != auth.identity)
+        };
+        if !changed {
+            return;
+        }
+        tracing::info!("Claude Code signs in as another account now");
+        {
+            let core = self.core();
+            let _ = core.store.delete_setting("account");
+            let _ = core.store.delete_setting("quota");
+        }
+        self.emit(UiEvent::Account(None));
+        self.emit(UiEvent::Quota(None));
+        self.restart_host_sessions();
+    }
+}
+
+/// The setting that keeps who Claude Code signed in as at the last check.
+const IDENTITY_KEY: &str = "claude_identity";
+
+/// How soon a window coming to the front checks the tools again.
+const REFRESH_AFTER: Duration = Duration::from_secs(5);
+
+/// Who `claude auth status` said Claude Code signs in as.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AuthSeen {
+    /// The method, provider, account and organization; empty when signed out.
+    identity: String,
 }
 
 /// The `claude` the sidecar would use: `$BERTH_CLAUDE_PATH`, the one next to
@@ -92,13 +164,15 @@ async fn run(bin: &Path, args: &[&str]) -> Option<(bool, String, String)> {
     ))
 }
 
-async fn check_claude(bin: Option<PathBuf>) -> ToolStatus {
+async fn check_claude(bin: Option<PathBuf>) -> (ToolStatus, Option<AuthSeen>) {
     let Some(bin) = bin else {
-        return ToolStatus::new(
+        let mut s = ToolStatus::new(
             ToolState::Missing,
             "not found",
             "Not found · install Claude Code to run agents",
         );
+        s.blocks_agents = Some("Claude Code wasn't found on this Mac, so agents can't run.");
+        return (s, None);
     };
     let version = run(&bin, &["--version"])
         .await
@@ -107,33 +181,134 @@ async fn check_claude(bin: Option<PathBuf>) -> ToolStatus {
     let auth = run(&bin, &["auth", "status", "--json"])
         .await
         .and_then(|(_, out, _)| serde_json::from_str::<serde_json::Value>(&out).ok());
-    let logged_in = auth
-        .as_ref()
-        .and_then(|a| a.get("loggedIn").and_then(serde_json::Value::as_bool))
-        .unwrap_or(false);
-    let who = auth.as_ref().and_then(|a| {
-        a.get("email")
-            .and_then(serde_json::Value::as_str)
-            .map(|e| e.split('@').next().unwrap_or(e).to_owned())
-            .or_else(|| {
-                a.get("authMethod")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned)
-            })
-    });
+    claude_status(version.as_deref(), auth.as_ref())
+}
+
+/// What `claude auth status --json` says, as Settings, Welcome and the
+/// footer show it. `auth` is `None` when it did not answer.
+fn claude_status(
+    version: Option<&str>,
+    auth: Option<&serde_json::Value>,
+) -> (ToolStatus, Option<AuthSeen>) {
     let v = version.map(|v| format!(" · v{v}")).unwrap_or_default();
-    if logged_in {
-        let detail = match &who {
-            Some(w) => format!("Signed in as {w}{v}"),
-            None => format!("Signed in{v}"),
-        };
-        ToolStatus::new(ToolState::Ok, "signed in", &detail).with_user(who)
-    } else {
-        ToolStatus::new(
+    let Some(auth) = auth else {
+        return (
+            ToolStatus::new(
+                ToolState::Warn,
+                "not responding",
+                &format!("`claude auth status` did not answer{v}"),
+            ),
+            None,
+        );
+    };
+    let field = |k: &str| {
+        auth.get(k)
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.is_empty())
+    };
+    let logged_in = auth
+        .get("loggedIn")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if !logged_in {
+        let mut s = ToolStatus::new(
             ToolState::Warn,
             "not signed in",
             &format!("Not signed in{v} · agents can't run until you sign in"),
+        );
+        s.switchable = true;
+        s.blocks_agents = Some("Claude Code isn't signed in, so the agent can't run.");
+        return (
+            s,
+            Some(AuthSeen {
+                identity: String::new(),
+            }),
+        );
+    }
+    let method = field("authMethod").unwrap_or("");
+    let provider = field("apiProvider").unwrap_or("firstParty");
+    let email = field("email").map(str::to_owned);
+    let org = field("orgName");
+    let who = email
+        .as_deref()
+        .map(|e| e.split('@').next().unwrap_or(e).to_owned());
+    let plan = field("subscriptionType").map(plan_name);
+    let seen = AuthSeen {
+        identity: [
+            method,
+            provider,
+            email.as_deref().unwrap_or(""),
+            field("orgId").unwrap_or(""),
+        ]
+        .join("|"),
+    };
+    // Set in the environment or settings, not by `claude auth login`: Berth
+    // can't sign it in or out.
+    let source = field("apiKeySource");
+    let external = provider != "firstParty"
+        || method == "oauth_token"
+        || matches!(source, Some("ANTHROPIC_API_KEY" | "apiKeyHelper"));
+    let (summary, detail) = if provider != "firstParty" {
+        let via = format!("via {}", provider_name(provider));
+        let detail = format!("Requests go {via}{v}");
+        (via, detail)
+    } else if method == "oauth_token" {
+        (
+            "token".to_owned(),
+            format!("Uses a token from the environment{v}"),
         )
+    } else if external {
+        let from = source.unwrap_or("the environment");
+        (
+            "API key".to_owned(),
+            format!("Uses an API key from {from}{v}"),
+        )
+    } else if method == "api_key" {
+        let detail = match &who {
+            Some(w) => format!("Signed in to the Anthropic Console as {w} · API billing{v}"),
+            None => format!("Signed in to the Anthropic Console · API billing{v}"),
+        };
+        ("Console".to_owned(), detail)
+    } else {
+        let mut detail = who
+            .as_ref()
+            .map_or_else(|| "Signed in".to_owned(), |w| format!("Signed in as {w}"));
+        if let Some(p) = &plan {
+            detail.push_str(&format!(" · {p}"));
+        }
+        detail.push_str(&v);
+        (
+            plan.clone().unwrap_or_else(|| "signed in".to_owned()),
+            detail,
+        )
+    };
+    let tip_parts: Vec<&str> = [email.as_deref(), org, plan.as_deref()]
+        .into_iter()
+        .flatten()
+        .collect();
+    let mut s = ToolStatus::new(ToolState::Ok, &summary, &detail).with_user(who);
+    s.tip = (!tip_parts.is_empty()).then(|| format!("Signed in as {}", tip_parts.join(" · ")));
+    s.switchable = !external;
+    (s, Some(seen))
+}
+
+/// "Max plan" for `subscriptionType` "max".
+fn plan_name(kind: &str) -> String {
+    let mut c = kind.chars();
+    let name: String = c
+        .next()
+        .map(|f| f.to_uppercase().chain(c).collect())
+        .unwrap_or_default();
+    format!("{name} plan")
+}
+
+fn provider_name(provider: &str) -> &str {
+    match provider {
+        "bedrock" => "Bedrock",
+        "vertex" => "Vertex AI",
+        "foundry" => "Foundry",
+        "gateway" => "a gateway",
+        other => other,
     }
 }
 
@@ -215,4 +390,67 @@ fn open_in_terminal(command: &str) -> anyhow::Result<()> {
         .arg(&file)
         .spawn()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status(json: &str) -> (ToolStatus, Option<AuthSeen>) {
+        let v: Option<serde_json::Value> = serde_json::from_str(json).ok();
+        assert!(v.is_some(), "bad fixture");
+        claude_status(Some("2.1.0"), v.as_ref())
+    }
+
+    #[test]
+    fn a_subscription_names_its_plan() {
+        let (s, seen) = status(
+            r#"{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty",
+                "email":"ada@example.com","orgId":"o1","orgName":"Ada's Org","subscriptionType":"max"}"#,
+        );
+        assert_eq!(s.state, ToolState::Ok);
+        assert_eq!(s.summary, "Max plan");
+        assert_eq!(s.detail, "Signed in as ada · Max plan · v2.1.0");
+        assert_eq!(
+            s.tip.as_deref(),
+            Some("Signed in as ada@example.com · Ada's Org · Max plan")
+        );
+        assert!(s.switchable && s.blocks_agents.is_none());
+        assert_eq!(
+            seen.map(|s| s.identity).as_deref(),
+            Some("claude.ai|firstParty|ada@example.com|o1")
+        );
+    }
+
+    #[test]
+    fn keys_and_providers_from_the_environment_are_ready_but_not_switchable() {
+        let (key, _) = status(
+            r#"{"loggedIn":true,"authMethod":"api_key","apiProvider":"firstParty","apiKeySource":"ANTHROPIC_API_KEY"}"#,
+        );
+        assert_eq!(
+            (key.state, key.summary.as_str()),
+            (ToolState::Ok, "API key")
+        );
+        assert!(!key.switchable && key.blocks_agents.is_none());
+        let (bedrock, _) =
+            status(r#"{"loggedIn":true,"authMethod":"third_party","apiProvider":"bedrock"}"#);
+        assert_eq!(bedrock.summary, "via Bedrock");
+        assert!(!bedrock.switchable);
+        let (console, _) = status(
+            r#"{"loggedIn":true,"authMethod":"api_key","apiProvider":"firstParty","apiKeySource":"/login managed key","email":"ada@example.com"}"#,
+        );
+        assert_eq!(console.summary, "Console");
+        assert!(console.switchable);
+    }
+
+    #[test]
+    fn signed_out_blocks_agents_and_silence_does_not() {
+        let (out, seen) =
+            status(r#"{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}"#);
+        assert_eq!(out.state, ToolState::Warn);
+        assert!(out.blocks_agents.is_some() && out.switchable);
+        assert_eq!(seen.map(|s| s.identity).as_deref(), Some(""));
+        let (silent, seen) = claude_status(None, None);
+        assert!(silent.blocks_agents.is_none() && seen.is_none());
+    }
 }

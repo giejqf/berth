@@ -233,18 +233,25 @@ fn footer(t: &Tokens, cx: &App, collapsed: bool) -> Div {
         .try_global::<EnvGlobal>()
         .map(|e| e.0.clone())
         .unwrap_or_default();
-    // Once signed in: the plan Claude Code works on, from its last session;
-    // who it signs in as on hover (ADR 0016).
+    // Once signed in: the plan Claude Code works on and who it signs in as
+    // on hover, from `claude auth status` (ADR 0017), else as its last
+    // session reported them (ADR 0016).
     let mut claude = env.claude.clone();
     let account = cx
         .try_global::<super::Berth>()
         .and_then(|b| b.account.clone())
         .filter(|_| claude.state == ToolState::Ok);
-    if let Some(plan) = account.as_ref().and_then(plan_summary) {
+    if claude.summary == "signed in"
+        && let Some(plan) = account.as_ref().and_then(plan_summary)
+    {
         claude.summary = plan;
     }
-    let account_tip: Option<SharedString> =
-        account.as_ref().and_then(account_detail).map(Into::into);
+    let account_tip: Option<SharedString> = claude
+        .tip
+        .clone()
+        .filter(|_| claude.state == ToolState::Ok)
+        .or_else(|| account.as_ref().and_then(account_detail))
+        .map(Into::into);
     let rows = [
         ("Claude Code", &claude, "claude"),
         ("GitHub", &env.gh, "gh"),

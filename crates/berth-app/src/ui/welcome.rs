@@ -4,14 +4,16 @@
 use std::sync::Arc;
 
 use gpui::{
-    Context, Image, ImageFormat, ImageSource, InteractiveElement as _, IntoElement, ObjectFit,
-    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-    StyledImage as _, Window, div, img, prelude::FluentBuilder as _, px,
+    App, AppContext as _, ClickEvent, Context, DismissEvent, Entity, Focusable as _, Image,
+    ImageFormat, ImageSource, InteractiveElement as _, IntoElement, ObjectFit, ParentElement as _,
+    Render, SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window,
+    div, img, prelude::FluentBuilder as _, px,
 };
 use gpui_component::TitleBar;
 
 use super::kit::{Btn, Size, TypeExt as _, caption, icon};
 use super::repo_window::tilde;
+use super::sign_in::SignInDialog;
 use super::{Berth, EnvGlobal, prompt_open_repository};
 use crate::backend::{Command, RecentRepo, ToolState, ToolStatus};
 use crate::theme::{MONO, SANS, Tokens, ty};
@@ -22,15 +24,42 @@ pub struct Welcome {
     recent: Vec<RecentRepo>,
     error: Option<String>,
     logo: Arc<Image>,
+    /// Signing Claude Code in, over the window (ADR 0017).
+    sign_in: Option<Entity<SignInDialog>>,
 }
 
 impl Welcome {
-    pub fn new(recent: Vec<RecentRepo>, error: Option<String>) -> Self {
+    pub fn new(
+        recent: Vec<RecentRepo>,
+        error: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Self {
+        // Coming back from a sign-in in Terminal: look again.
+        cx.observe_window_activation(window, |_, window, cx| {
+            if window.is_window_active() {
+                Berth::backend(cx).send(Command::RefreshEnvironment);
+            }
+        })
+        .detach();
         Self {
             recent,
             error,
             logo: Arc::new(Image::from_bytes(ImageFormat::Png, LOGO.to_vec())),
+            sign_in: None,
         }
+    }
+
+    fn open_sign_in(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let dialog = cx.new(|cx| SignInDialog::new(Berth::backend(cx), cx));
+        cx.subscribe_in(&dialog, window, |this, _, _: &DismissEvent, _, cx| {
+            this.sign_in = None;
+            cx.notify();
+        })
+        .detach();
+        window.focus(&dialog.read(cx).focus_handle(cx), cx);
+        self.sign_in = Some(dialog);
+        cx.notify();
     }
 }
 
@@ -53,7 +82,10 @@ fn check_row(
     t: &Tokens,
     name: &str,
     s: &ToolStatus,
-    action: Option<(&'static str, Command)>,
+    action: Option<(
+        &'static str,
+        impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    )>,
     last: bool,
 ) -> gpui::Div {
     let ok = s.state == ToolState::Ok;
@@ -90,12 +122,12 @@ fn check_row(
                 .child(div().medium().child(name.to_owned()))
                 .child(div().ty(ty::META).text_color(t.text2).child(detail)),
         )
-        .when_some(action.filter(|_| !ok), |d, (label, cmd)| {
+        .when_some(action.filter(|_| !ok), |d, (label, on_click)| {
             d.child(
                 Btn::new(SharedString::from(format!("welcome-{name}")))
                     .label(label)
                     .medium()
-                    .on_click(move |_, _, cx| Berth::backend(cx).send(cmd.clone())),
+                    .on_click(on_click),
             )
         })
 }
@@ -261,8 +293,12 @@ impl Render for Welcome {
                             .child(div().semibold().child("Before you start"))
                             .child(div().ml_auto().ty(ty::META).text_color(t.text2).child(format!("{ready} of 2 ready"))),
                     )
-                    .child(check_row(&t, "Claude Code", &env.claude, Some(("Sign in…", Command::ToolAuth { tool: "claude".into(), sign_in: true })), false))
-                    .child(check_row(&t, "GitHub CLI", &env.gh, Some(("Sign in…", Command::ToolAuth { tool: "gh".into(), sign_in: true })), true)),
+                    .child(check_row(&t, "Claude Code", &env.claude, Some(if env.claude.switchable {
+                        ("Sign in…", Box::new(cx.listener(|this, _, window, cx| this.open_sign_in(window, cx))) as Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>)
+                    } else {
+                        ("Check again", Box::new(|_: &ClickEvent, _: &mut Window, cx: &mut App| Berth::backend(cx).send(Command::CheckEnvironment)))
+                    }), false))
+                    .child(check_row(&t, "GitHub CLI", &env.gh, Some(("Sign in…", |_: &ClickEvent, _: &mut Window, cx: &mut App| Berth::backend(cx).send(Command::ToolAuth { tool: "gh".into(), sign_in: true }))), true)),
             )
             .child(
                 div()
@@ -314,5 +350,16 @@ impl Render for Welcome {
                     .child(left)
                     .child(right),
             )
+            .when_some(self.sign_in.clone(), |d, dialog| {
+                let weak = dialog.downgrade();
+                d.child(super::modal::overlay(
+                    &t,
+                    dialog.entity_id(),
+                    dialog.into_any_element(),
+                    move |_, cx| {
+                        let _ = weak.update(cx, |_, cx| cx.emit(DismissEvent));
+                    },
+                ))
+            })
     }
 }

@@ -15,6 +15,7 @@ use gpui_component::scroll::ScrollableElement as _;
 use super::RepoState;
 use super::kit::{Btn, Size, TypeExt as _, field_frame, icon, radio, spinner};
 use super::modal;
+use super::sign_in::SignInDialog;
 use crate::backend::{Command, NewWorkflow, OriginChoice, OriginSource};
 use crate::keymap::{Confirm, OriginTab};
 use crate::theme::{MONO, Tokens, ty};
@@ -41,6 +42,8 @@ pub struct NewWorkflowForm {
     /// the dialog's Confirm (the input passes the key on).
     submitted: bool,
     focus: FocusHandle,
+    /// Signing Claude Code in, over the form (ADR 0017).
+    sign_in: Option<Entity<SignInDialog>>,
 }
 
 impl EventEmitter<DismissEvent> for NewWorkflowForm {}
@@ -107,7 +110,44 @@ impl NewWorkflowForm {
             reuse: None,
             submitted: false,
             focus: cx.focus_handle(),
+            sign_in: None,
         }
+    }
+
+    /// Why the workflow's agent couldn't start: it would run on this Mac,
+    /// where Claude Code is signed out (or missing).
+    fn agent_blocked(&self, cx: &App) -> Option<&'static str> {
+        let s = self.state.read(cx);
+        let placement = match &self.reuse {
+            Some(picked) => s
+                .slots
+                .iter()
+                .find(|e| Some(&e.slot.id) == picked.as_ref())
+                .map(|e| e.slot.placement.clone()),
+            None => s
+                .snapshot
+                .slot_types
+                .iter()
+                .find(|t| self.slot_type.as_deref() == Some(t.name.as_str()))
+                .map(|t| t.placement.clone()),
+        };
+        let host = placement.is_none_or(|p| p != berth_slot::Placement::Inside.as_str());
+        let why = cx.try_global::<super::EnvGlobal>()?.0.claude.blocks_agents;
+        why.filter(|_| host)
+    }
+
+    fn open_sign_in(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let backend = self.state.read(cx).backend.clone();
+        let dialog = cx.new(|cx| SignInDialog::new(backend, cx));
+        cx.subscribe_in(&dialog, window, |this, _, _: &DismissEvent, window, cx| {
+            this.sign_in = None;
+            window.focus(&this.focus, cx);
+            cx.notify();
+        })
+        .detach();
+        window.focus(&dialog.read(cx).focus_handle(cx), cx);
+        self.sign_in = Some(dialog);
+        cx.notify();
     }
 
     /// Start in an existing slot (`None`: let the user pick one).
@@ -229,7 +269,10 @@ impl NewWorkflowForm {
             return;
         };
         let slot_id = self.reuse_target(cx);
-        if self.submitted || self.reuse.is_some() && slot_id.is_none() {
+        if self.submitted
+            || self.reuse.is_some() && slot_id.is_none()
+            || self.agent_blocked(cx).is_some()
+        {
             return;
         }
         self.submitted = true;
@@ -290,6 +333,9 @@ fn title_case(name: &str) -> String {
 
 impl Render for NewWorkflowForm {
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
+        if let Some(d) = &self.sign_in {
+            return d.clone().into_any_element();
+        }
         let t = Tokens::get(cx);
         let sources = self.sources(cx);
         let state = self.state.read(cx);
@@ -729,7 +775,9 @@ impl Render for NewWorkflowForm {
                 .child(label)
         };
         let has_slots = !state.slots.is_empty();
+        let blocked = self.agent_blocked(cx);
         let ready = self.origin(cx).is_some()
+            && blocked.is_none()
             && if reusing {
                 self.reuse_target(cx).is_some()
             } else {
@@ -845,12 +893,23 @@ impl Render for NewWorkflowForm {
             .child(
                 modal::footer(
                     &t,
-                    if reusing {
-                        "The agent takes the first round in the slot's files as they are."
-                    } else {
-                        "The agent takes the first round as soon as the slot exists."
+                    match blocked {
+                        Some(why) => div().text_color(t.attention).child(why),
+                        None => div().child(if reusing {
+                            "The agent takes the first round in the slot's files as they are."
+                        } else {
+                            "The agent takes the first round as soon as the slot exists."
+                        }),
                     },
                 )
+                    .when(blocked.is_some(), |d| {
+                        d.child(
+                            Btn::new("nw-sign-in")
+                                .size(Size::S32)
+                                .label("Sign in…")
+                                .on_click(cx.listener(|this, _, window, cx| this.open_sign_in(window, cx))),
+                        )
+                    })
                     .child(
                         Btn::new("nw-cancel")
                             .size(Size::S32)
@@ -870,5 +929,6 @@ impl Render for NewWorkflowForm {
                             .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
                     ),
             )
+            .into_any_element()
     }
 }

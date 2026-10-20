@@ -21,8 +21,8 @@ use super::kit::{Btn, Size, TypeExt as _, dot, field_frame, icon, kbd, plural, r
 use super::motion;
 use crate::backend::Command;
 use crate::keymap::{
-    AcceptCompletion, AcceptSuggestion, ChooseModel, DismissCompletion, FollowUpFromOutcome,
-    NewWorkflow, NewWorkflowHere, NextCompletion, PrevCompletion,
+    AcceptCompletion, AcceptSuggestion, ChooseModel, ClaudeAccount, DismissCompletion,
+    FollowUpFromOutcome, NewWorkflow, NewWorkflowHere, NextCompletion, PrevCompletion,
 };
 use crate::theme::{MONO, Tokens, ty};
 
@@ -304,8 +304,11 @@ impl Composer {
             return;
         }
         // Questions are answered in their card in the flow (`AnswerCard`);
-        // nothing is sent before the slot exists.
-        if !view.workflow.state.accepts_prompt() || slot_creating(state) {
+        // nothing is sent before the slot exists, nor while no agent can run.
+        if !view.workflow.state.accepts_prompt()
+            || slot_creating(state)
+            || agent_blocked(state, cx).is_some()
+        {
             return;
         }
         state.backend.send(Command::SendPrompt {
@@ -370,7 +373,8 @@ impl Render for Composer {
         let focused = self.input.read(cx).focus_handle(cx).is_focused(window);
         let has_text = !self.input.read(cx).value().trim().is_empty();
         let creating = slot_creating(state);
-        let can_send = wf.state.accepts_prompt() && !creating;
+        let signed_out = agent_blocked(state, cx).filter(|_| wf.state.accepts_prompt());
+        let can_send = wf.state.accepts_prompt() && !creating && signed_out.is_none();
         let ready = can_send && (has_text || !self.attachments.is_empty() || !pending.is_empty());
         let last_is_summary = view
             .nodes
@@ -744,6 +748,7 @@ impl Render for Composer {
             .when_some(self.notice.clone().filter(|_| !completing), |d, notice| {
                 d.child(div().ty(ty::META).text_color(t.attention).child(notice))
             })
+            .when_some(signed_out, |d, why| d.child(sign_in_row(&t, why)))
             .child(boxed)
             .into_any_element()
     }
@@ -902,6 +907,35 @@ fn closed_row(t: &Tokens) -> impl IntoElement {
 }
 
 /// The selected slot is still being created (`slot.sh create`, then `status`).
+/// Why the selected slot's agent can't run: Claude Code is signed out (or
+/// missing) on this Mac and the slot's agent runs here. An `inside` slot signs
+/// its agent in by itself.
+fn agent_blocked(state: &super::RepoState, cx: &App) -> Option<&'static str> {
+    let host = state
+        .selected()
+        .is_some_and(|e| e.slot.placement != berth_slot::Placement::Inside.as_str());
+    let why = cx.try_global::<super::EnvGlobal>()?.0.claude.blocks_agents;
+    why.filter(|_| host)
+}
+
+/// The composer's "sign in first" line, with the way to do it.
+fn sign_in_row(t: &Tokens, why: &'static str) -> gpui::Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .ty(ty::META)
+        .text_color(t.text2)
+        .child(dot(8., t.attention))
+        .child(div().flex_1().min_w_0().child(why))
+        .child(
+            Btn::new("composer-sign-in")
+                .size(Size::S26)
+                .label("Sign in…")
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(ClaudeAccount), cx)),
+        )
+}
+
 fn slot_creating(state: &super::RepoState) -> bool {
     state
         .selected()

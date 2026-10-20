@@ -138,10 +138,18 @@ pub enum Command {
     },
     /// Re-check Claude Code, GitHub CLI and Docker.
     CheckEnvironment,
+    /// [`Command::CheckEnvironment`] when a window comes to the front, unless
+    /// one ran moments ago.
+    RefreshEnvironment,
     /// Sign in (in Terminal) or out of `tool` ("claude" | "gh").
     ToolAuth {
         tool: String,
         sign_in: bool,
+    },
+    /// Sign Claude Code in (in Terminal) the chosen way; with an account
+    /// signed in already, this switches to another.
+    ClaudeSignIn {
+        method: LoginMethod,
     },
     /// Show `~/.config/berth/connectors` in Finder.
     RevealConnectors,
@@ -308,11 +316,43 @@ pub enum ToolState {
 #[derive(Debug, Clone, Default)]
 pub struct ToolStatus {
     pub state: ToolState,
-    /// Short form for the rail footer ("signed in", "qianfan").
+    /// Short form for the rail footer ("signed in", "qianfan", "Max plan").
     pub summary: String,
     /// One line for Settings and Welcome.
     pub detail: String,
     pub user: Option<String>,
+    /// The footer's hover: who it signs in as, the organization, the plan.
+    pub tip: Option<String>,
+    /// Berth's sign in, switch and sign out apply (not to an API key or a
+    /// cloud provider set in the environment).
+    pub switchable: bool,
+    /// Why agents on this Mac can't run (Claude Code missing or signed out);
+    /// `None` while it is checking or could not tell.
+    pub blocks_agents: Option<&'static str>,
+}
+
+/// How `claude auth login` signs in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginMethod {
+    /// A Claude subscription (Pro, Max, Team, Enterprise): the default.
+    Subscription,
+    /// The Anthropic Console: API usage billing.
+    Console,
+    /// The organization's single sign-on.
+    Sso,
+}
+
+impl LoginMethod {
+    pub const ALL: [Self; 3] = [Self::Subscription, Self::Console, Self::Sso];
+
+    #[must_use]
+    pub fn flag(self) -> &'static str {
+        match self {
+            Self::Subscription => "--claudeai",
+            Self::Console => "--console",
+            Self::Sso => "--sso",
+        }
+    }
 }
 
 impl ToolStatus {
@@ -322,7 +362,7 @@ impl ToolStatus {
             state,
             summary: summary.to_owned(),
             detail: detail.to_owned(),
-            user: None,
+            ..Self::default()
         }
     }
 
@@ -515,8 +555,9 @@ pub enum UiEvent {
     },
     /// The models the agent can run on, as the SDK last reported them.
     Models(Vec<ModelChoice>),
-    /// The plan's limits as any session last reported them (ADR 0014).
-    Quota(berth_core::Quota),
+    /// The plan's limits as any session last reported them (ADR 0014);
+    /// `None` once Claude Code signs in as someone else.
+    Quota(Option<berth_core::Quota>),
     /// A predicted next prompt for an idle workflow (ADR 0016).
     Suggestion {
         workflow_id: String,
@@ -527,8 +568,9 @@ pub enum UiEvent {
         workflow_id: String,
         tasks: Vec<berth_protocol::BackgroundTask>,
     },
-    /// Who Claude Code works as, as a session last reported it.
-    Account(berth_protocol::Account),
+    /// Who Claude Code works as, as a session last reported it; `None` once
+    /// it signs in as someone else.
+    Account(Option<berth_protocol::Account>),
     /// The slash commands the repo's sessions offer (ADR 0015).
     Commands {
         repo_id: String,

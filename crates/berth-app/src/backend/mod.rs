@@ -12,7 +12,7 @@ mod slots;
 mod terminal;
 pub mod types;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -61,6 +61,15 @@ pub(crate) struct Shared {
     secrets: Arc<dyn SecretStore>,
     launch: SidecarLaunch,
     ui: UnboundedSender<UiEvent>,
+    /// When the tools were last checked ([`Command::RefreshEnvironment`]).
+    env_checked: Mutex<Option<std::time::Instant>>,
+    /// Why agents on this Mac can't run, as the last check found.
+    claude_blocked: Mutex<Option<&'static str>>,
+    /// Sessions to restart once their round ends: Claude Code signed in as
+    /// another account while they worked (ADR 0017).
+    restart_after_round: Mutex<HashSet<String>>,
+    /// Workflows whose session runs something in the background.
+    background: Mutex<HashSet<String>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -90,6 +99,10 @@ pub fn start(rt: &tokio::runtime::Handle, ui: UnboundedSender<UiEvent>) -> Resul
         secrets,
         launch,
         ui,
+        env_checked: Mutex::default(),
+        claude_blocked: Mutex::default(),
+        restart_after_round: Mutex::default(),
+        background: Mutex::default(),
     });
     shared.reload_connectors();
 
@@ -167,7 +180,9 @@ impl Shared {
             | Command::LoadSettings
             | Command::SetSetting { .. }
             | Command::CheckEnvironment
+            | Command::RefreshEnvironment
             | Command::ToolAuth { .. }
+            | Command::ClaudeSignIn { .. }
             | Command::RevealConnectors => return None,
         };
         self.repo_of_workflow(&wf).ok()
@@ -397,7 +412,12 @@ impl Shared {
                 self.check_environment().await;
                 Ok(())
             }
+            Command::RefreshEnvironment => {
+                self.refresh_environment().await;
+                Ok(())
+            }
             Command::ToolAuth { tool, sign_in } => self.tool_auth(&tool, sign_in).await,
+            Command::ClaudeSignIn { method } => self.claude_sign_in(method).await,
             Command::RevealConnectors => {
                 let dir = berth_connectors::default_connectors_dir();
                 std::fs::create_dir_all(&dir)?;
