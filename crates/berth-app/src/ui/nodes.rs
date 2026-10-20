@@ -1563,7 +1563,12 @@ fn outcome(t: &Tokens, node: &Node, o: &Outcome, ctx: &RowCtx, line: bool) -> Di
                             div()
                                 .ty(ty::META)
                                 .text_color(t.text3)
-                                .child(format!("{closed} · workflow closed")),
+                                // A message after it (or a reopen) carried it on.
+                                .child(if ctx.view.workflow.state == WorkflowState::Closed {
+                                    format!("{closed} · workflow closed")
+                                } else {
+                                    format!("{closed} · closed, then continued")
+                                }),
                         )
                         .child(div().ml_auto().children(details_link(t, node, ctx))),
                 )

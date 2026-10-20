@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
-use berth_core::{AnswerDelivery, Effect, Engine, WorkflowState, prompt};
+use berth_core::{AnswerDelivery, Effect, Engine, SlotState, WorkflowState, prompt};
 use berth_protocol::{
     AppToSidecar, ConnectorSkill, FindingAction, QuestionAnswer, ReviewAnswer, SessionResume,
     SessionStart, SessionTurn, TurnAttachment,
@@ -292,6 +292,7 @@ impl Shared {
         text: &str,
         attachments: &[std::path::PathBuf],
     ) -> Result<()> {
+        self.continue_closed(workflow_id).await?;
         // Refused before an agent starts for it: a prompt the workflow can't
         // take now, or a command Berth does itself (ADR 0015).
         Engine::check_prompt(&self.core().store, workflow_id)?;
@@ -335,6 +336,45 @@ impl Shared {
         self.settle_if_gone(workflow_id, &session);
         self.emit_workflow(workflow_id);
         self.emit_comments(workflow_id);
+        Ok(())
+    }
+
+    /// A prompt to a closed workflow continues it in its slot: it opens
+    /// again in a new section, and the agent resumes the same conversation.
+    async fn continue_closed(self: &Arc<Self>, workflow_id: &str) -> Result<()> {
+        let (wf, slot) = {
+            let core = self.core();
+            let wf = core.store.workflow(workflow_id)?;
+            let slot = core.store.slot(&wf.slot_id)?;
+            (wf, slot)
+        };
+        if wf.state != WorkflowState::Closed {
+            return Ok(());
+        }
+        if !matches!(slot.state, SlotState::Ready | SlotState::Running) {
+            return Err(anyhow!(
+                "The slot is {}, so the workflow can't go on in it.",
+                slot.state.as_str()
+            ));
+        }
+        // The session that closed it stops once that round ends; the next
+        // one resumes the conversation.
+        if let Some(s) = self.take_session(workflow_id) {
+            s.shutdown().await;
+        }
+        let slot = self.refresh_branch(&slot).await?;
+        let fx = {
+            let mut core = self.core();
+            let super::Core { store, engine } = &mut *core;
+            engine.continue_closed(store, workflow_id)?
+        };
+        if slot.state == SlotState::Ready {
+            self.core()
+                .store
+                .transition_slot(&slot.id, SlotState::Running, None)?;
+        }
+        self.run_effects(workflow_id, fx);
+        self.emit_slots(&slot.repo_id);
         Ok(())
     }
 

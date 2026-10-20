@@ -460,7 +460,10 @@ sent) → `running` (a round in flight) ⇄ `awaiting_answer` (suspended on `ask
 `idle` (between rounds; accepts a Prompt) → … → `closed` (after an Outcome). After an
 app restart every open workflow settles to `idle` (or stays `awaiting_answer`); the
 session resumes lazily on the next Prompt or answer. A rewind (§11) sets it back to
-`idle`, a closed one included (its slot hosts it again).
+`idle`, a closed one included (its slot hosts it again). So does a Prompt to a closed
+workflow its slot still shows (nothing came after it there): it goes on in that slot,
+a new section starts from the checkout as it is, and the agent resumes the same
+session, so the conversation carries on (`Engine::continue_closed`).
 
 ---
 
@@ -789,7 +792,10 @@ settles nothing (ADR 0013).
   dimmed with the reason, and it says when the slot's open workflow will be closed).
   **New workflow here** (⌥⌘N, the rail's context menu, More, ⌘K, the menu bar)
   opens it on the selected slot; a closed workflow's composer offers it too, and
-  its follow-ups offer **Continue here** beside **Create slot**.
+  its follow-ups offer **Continue here** beside **Create slot**. A closed workflow's
+  composer also takes a message: it continues that workflow and its conversation in
+  the slot (§6.3), and its Outcome then says "closed, then continued". Once the slot
+  has moved on to another workflow, Open from History is the way back.
 - **Slash commands** (ADR 0015): typing `/` at the start of the composer lists the
   commands and skills the repo's sessions offer (`session.commands`, the last one
   reported, kept per repo in `settings.commands:<repo_id>`, so the list is there

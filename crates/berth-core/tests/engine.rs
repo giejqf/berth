@@ -1074,6 +1074,62 @@ fn rewinding_past_an_outcome_reopens_the_workflow() {
     assert_eq!(w.closed_at, None);
 }
 
+#[test]
+fn writing_to_a_closed_workflow_continues_it_in_its_slot() {
+    let (store, mut engine, wf) = setup();
+    let home = store.workflow(&wf).unwrap().slot_id;
+    engine.session_started(&wf);
+    engine
+        .submit_prompt(&store, &wf, "one", vec![], false)
+        .unwrap();
+    engine
+        .apply(
+            &store,
+            &wf,
+            &SidecarToApp::NodeOutcome(NodeOutcome {
+                outcome: Outcome {
+                    kind: OutcomeKind::Pr,
+                    r#ref: "https://github.com/o/r/pull/1".into(),
+                    summary: "s".into(),
+                    follow_ups: vec![],
+                },
+            }),
+        )
+        .unwrap();
+    engine
+        .apply(&store, &wf, &ended(TerminalKind::RecordOutcome, None))
+        .unwrap();
+    assert_eq!(store.workflow(&wf).unwrap().state, WorkflowState::Closed);
+    let nodes = store.workflow_view(&wf).unwrap().nodes.len();
+
+    let fx = engine.continue_closed(&store, &wf).unwrap();
+    let w = store.workflow(&wf).unwrap();
+    assert_eq!(w.state, WorkflowState::Idle);
+    assert_eq!(w.closed_at, None);
+    // Section 1 had the round: section 2 starts from the checkout as it is.
+    assert_eq!(w.section_no, 2);
+    assert!(fx.contains(&Effect::Snapshot {
+        workflow_id: wf.clone(),
+        section_no: 2,
+        kind: SnapshotKind::Start
+    }));
+    // Same slot, same conversation: no marker, and the prompt goes as typed.
+    assert_eq!(store.workflow_view(&wf).unwrap().nodes.len(), nodes);
+    let sub = engine
+        .submit_prompt(&store, &wf, "also the changelog", vec![], false)
+        .unwrap();
+    assert_eq!(sub.turn_text, "also the changelog");
+    // An open workflow is left as it is.
+    assert!(engine.continue_closed(&store, &wf).unwrap().is_empty());
+
+    // Once its slot moved on to another workflow, it opens from the history.
+    store
+        .set_workflow_state(&wf, WorkflowState::Closed)
+        .unwrap();
+    Engine::create_workflow(&store, &home, origin("Next")).unwrap();
+    assert!(engine.continue_closed(&store, &wf).is_err());
+}
+
 fn second_slot(store: &Store, of: &str) -> Slot {
     let first = store.slot(of).unwrap();
     let slot = Slot {

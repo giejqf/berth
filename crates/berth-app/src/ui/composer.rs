@@ -305,7 +305,7 @@ impl Composer {
         }
         // Questions are answered in their card in the flow (`AnswerCard`);
         // nothing is sent before the slot exists, nor while no agent can run.
-        if !view.workflow.state.accepts_prompt()
+        if !takes_prompt(state, &view.workflow)
             || slot_creating(state)
             || agent_blocked(state, cx).is_some()
         {
@@ -349,7 +349,11 @@ impl Render for Composer {
             return div().into_any_element();
         };
         let wf = &view.workflow;
-        if wf.state == WorkflowState::Closed {
+        // A closed workflow takes a message while its slot still shows it:
+        // the message continues the conversation there.
+        let closed = wf.state == WorkflowState::Closed;
+        let takes = takes_prompt(state, wf);
+        if closed && !takes {
             return closed_row(&t).into_any_element();
         }
         // The slot's model and effort; it can change any time, mid-round too.
@@ -373,8 +377,8 @@ impl Render for Composer {
         let focused = self.input.read(cx).focus_handle(cx).is_focused(window);
         let has_text = !self.input.read(cx).value().trim().is_empty();
         let creating = slot_creating(state);
-        let signed_out = agent_blocked(state, cx).filter(|_| wf.state.accepts_prompt());
-        let can_send = wf.state.accepts_prompt() && !creating && signed_out.is_none();
+        let signed_out = agent_blocked(state, cx).filter(|_| takes);
+        let can_send = takes && !creating && signed_out.is_none();
         let ready = can_send && (has_text || !self.attachments.is_empty() || !pending.is_empty());
         let last_is_summary = view
             .nodes
@@ -442,6 +446,13 @@ impl Render for Composer {
                         ),
                 )
                 .into_any_element(),
+            WorkflowState::Closed if !self.drag_hover => div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(icon("check", 14., t.done))
+                .child("This workflow is closed. Write to go on with it here: the agent picks up the conversation.")
+                .into_any_element(),
             _ if self.drag_hover => div()
                 .flex()
                 .items_center()
@@ -480,6 +491,28 @@ impl Render for Composer {
                 .into_any_element(),
         };
         let footer_hint: gpui::AnyElement = match wf.state {
+            // Or start the next one: from the outcome's follow-up, here, or anywhere.
+            WorkflowState::Closed => div()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .ml(px(-6.))
+                .child(next_button(
+                    "follow-up",
+                    "Follow up from outcome",
+                    "⌘⇧N",
+                    || Box::new(FollowUpFromOutcome),
+                ))
+                .child(next_button(
+                    "new-workflow-here",
+                    "New workflow here",
+                    "⌥⌘N",
+                    || Box::new(NewWorkflowHere),
+                ))
+                .child(next_button("new-workflow", "New workflow", "⌘N", || {
+                    Box::new(NewWorkflow)
+                }))
+                .into_any_element(),
             WorkflowState::Starting if creating => div()
                 .child("Unlocks when the slot is ready")
                 .into_any_element(),
@@ -861,7 +894,33 @@ fn completion_list(
         .into_any_element()
 }
 
-/// A closed workflow: no composer, just the ways forward.
+/// Whether the composer sends `wf` a prompt now: it takes one, or it is
+/// closed in a slot that still shows it (the prompt continues it there).
+fn takes_prompt(state: &super::RepoState, wf: &berth_core::Workflow) -> bool {
+    wf.state.accepts_prompt()
+        || wf.state == WorkflowState::Closed
+            && state.selected().is_some_and(|e| {
+                matches!(e.slot.state, SlotState::Ready | SlotState::Running)
+                    && e.workflow.as_ref().is_some_and(|w| w.id == wf.id)
+            })
+}
+
+/// One of a closed workflow's other ways forward, under its composer.
+fn next_button(
+    id: &'static str,
+    label: &'static str,
+    keys: &'static str,
+    action: fn() -> Box<dyn gpui::Action>,
+) -> Btn {
+    Btn::new(id)
+        .ghost()
+        .size(Size::S26)
+        .label(label)
+        .tooltip(format!("{label}  {keys}"))
+        .on_click(move |_, w, cx| w.dispatch_action(action(), cx))
+}
+
+/// A closed workflow whose slot moved on: no composer, just the ways forward.
 fn closed_row(t: &Tokens) -> impl IntoElement {
     div()
         .flex()

@@ -234,22 +234,7 @@ impl Engine {
             });
         }
         // Diffs from here compare against this checkout, not the old one.
-        let used = store
-            .rounds(workflow_id)?
-            .iter()
-            .any(|r| r.section_no == wf.section_no && r.is_work());
-        let section = if used {
-            wf.section_no + 1
-        } else {
-            wf.section_no
-        };
-        store.set_section_no(workflow_id, section)?;
-        store.delete_snapshots(workflow_id, section, SnapshotKind::Start)?;
-        fx.push(Effect::Snapshot {
-            workflow_id: workflow_id.to_owned(),
-            section_no: section,
-            kind: SnapshotKind::Start,
-        });
+        Self::next_section(store, &wf, &mut fx)?;
         store.insert_node(
             workflow_id,
             None,
@@ -266,6 +251,59 @@ impl Engine {
             workflow_id: workflow_id.to_owned(),
         });
         Ok(fx)
+    }
+
+    /// The user wrote to closed workflow `workflow_id` after its Outcome: it
+    /// opens again in its own slot and goes on from there. A new section
+    /// starts in the checkout as it is now (its start snapshot is an
+    /// [`Effect::Snapshot`]); the agent's session resumes on the prompt, so
+    /// the conversation carries on. Only while the slot still shows it (no
+    /// workflow came after it there); an open workflow is left as it is.
+    pub fn continue_closed(&mut self, store: &Store, workflow_id: &str) -> Result<Vec<Effect>> {
+        let wf = store.workflow(workflow_id)?;
+        if wf.state != WorkflowState::Closed {
+            return Ok(Vec::new());
+        }
+        let latest = store.workflows_for_slot(&wf.slot_id)?.pop();
+        if latest.is_none_or(|l| l.id != wf.id) {
+            return Err(CoreError::InvalidTransition(
+                "its slot has moved on to another workflow; open it from the history instead"
+                    .to_owned(),
+            ));
+        }
+        store.reopen_workflow(workflow_id)?;
+        let mut fx = vec![Effect::StateChanged {
+            workflow_id: workflow_id.to_owned(),
+            state: WorkflowState::Idle,
+        }];
+        Self::next_section(store, &wf, &mut fx)?;
+        self.live.remove(workflow_id);
+        fx.push(Effect::FlowChanged {
+            workflow_id: workflow_id.to_owned(),
+        });
+        Ok(fx)
+    }
+
+    /// A new section, when the current one had work in it, starting from a
+    /// snapshot of the checkout as it is now.
+    fn next_section(store: &Store, wf: &Workflow, fx: &mut Vec<Effect>) -> Result<()> {
+        let used = store
+            .rounds(&wf.id)?
+            .iter()
+            .any(|r| r.section_no == wf.section_no && r.is_work());
+        let section = if used {
+            wf.section_no + 1
+        } else {
+            wf.section_no
+        };
+        store.set_section_no(&wf.id, section)?;
+        store.delete_snapshots(&wf.id, section, SnapshotKind::Start)?;
+        fx.push(Effect::Snapshot {
+            workflow_id: wf.id.clone(),
+            section_no: section,
+            kind: SnapshotKind::Start,
+        });
+        Ok(())
     }
 
     /// Take a Claude Code session from the repo's history into `slot` (ADR
