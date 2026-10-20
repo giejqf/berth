@@ -485,12 +485,14 @@ impl RepoWindow {
                 });
             }
             RepoEvent::Details { title, entries } => {
-                let (title, entries) = (title.clone(), entries.clone());
+                let title = title.clone();
+                let state = details::transcript_state(entries);
+                let entries = std::sync::Arc::new(entries.clone());
                 window.open_sheet(cx, move |sheet, _, cx| {
                     sheet
                         .title(title.clone())
                         .size(px(620.))
-                        .child(details::transcript(&entries, cx))
+                        .child(details::transcript(entries.clone(), state.clone(), cx))
                 });
             }
             RepoEvent::SlotRequest {

@@ -14,8 +14,14 @@ mod ui;
 use gpui::{App, Menu, MenuItem};
 
 fn main() {
-    let env_notes = shell_env::import_login_shell_env();
+    // The login shell runs while the font default is set; the environment
+    // changes only once both are done, with no other thread left running.
+    let login = std::thread::spawn(shell_env::read_login_shell);
     disable_font_smoothing();
+    let read = login
+        .join()
+        .unwrap_or_else(|_| Err("reading the login shell's environment failed".to_owned()));
+    let env_notes = shell_env::import_login_shell_env(read);
     let _log_guard = init_logging();
     for note in env_notes {
         tracing::warn!("{note}");

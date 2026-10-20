@@ -157,7 +157,7 @@ berth/
 | Visual system | Gruvbox tokens in `theme.rs` (dark and light), IBM Plex Sans 13/18 and JetBrains Mono 12, bundled (SIL OFL 1.1: fonts are data, compatible with MIT) | Sizes follow the design *as rendered* (its CSS adds padding/borders to stated widths). Text renders without CoreGraphics stroke dilation: Berth sets `AppleFontSmoothing = 0` in its own defaults domain at launch (ADR 0003). |
 | GitHub | `gh` CLI with `--json`, reusing the user's auth | No GitHub API client crate. |
 | Secrets | macOS Keychain via `security-framework` | Never written to SQLite or disk. |
-| Sidecar runtime | Node 22+, pnpm, `tsx` in dev, bundled with `esbuild` for release | Bundle shipped inside the app at `Contents/Resources/sidecar/`, with the SDK's native `claude` next to it. Claude binary: `$BERTH_CLAUDE_PATH`, else `claude` beside the bundle, else the SDK's own. Node: `node` on the login shell's `PATH`, else where Homebrew, MacPorts, Volta, mise, asdf, nodenv, n, nvm or fnm put it (`backend/launch.rs`; nvm's setup in `~/.zshrc` never reaches a login shell), looked up for each sidecar; without it, or older than 22, host agents don't start and the UI says so. TypeScript 6 (typescript-eslint does not support 7 yet), zod 4. |
+| Sidecar runtime | Node 22+, pnpm, `tsx` in dev, bundled with `esbuild` for release | Bundle shipped inside the app at `Contents/Resources/sidecar/`, with the SDK's native `claude` next to it. Claude binary: `$BERTH_CLAUDE_PATH`, else `claude` beside the bundle, else the SDK's own. Node: `node` on the login shell's `PATH` (`shell_env.rs`: read at launch, 3 s at most, while the main thread sets the font default; a shell that takes longer is stopped with what it started, and Berth goes on with the `PATH` it was given), else where Homebrew, MacPorts, Volta, mise, asdf, nodenv, n, nvm or fnm put it (`backend/launch.rs`; nvm's setup in `~/.zshrc` never reaches a login shell), looked up for each sidecar; without it, or older than 22, host agents don't start and the UI says so. TypeScript 6 (typescript-eslint does not support 7 yet), zod 4. |
 | Dev overrides | `BERTH_HOME` (app data), `BERTH_CONFIG_DIR` (slots/connectors), `BERTH_LOG_DIR`, `BERTH_SECRETS=memory`, `BERTH_SIDECAR` (command line), `BERTH_THEME=light\|dark`, `BERTH_DEV_SEED=<scenario>` (devtools) | Never needed in normal use. |
 | Logging | `tracing` (Rust), `pino` (TS); both to `~/Library/Logs/Berth/` | No telemetry. None. |
 
@@ -618,7 +618,8 @@ settings         key, value          # last_repo, recent_repos, model, models, q
 
 Timestamps are unix epoch milliseconds. `nodes.raw_first/raw_last` are `raw_events.id`
 values; "show details" reads that span filtered to the node's lane (a CollectResults
-node shows its branch's transcript).
+node shows its branch's transcript). It shows in a sheet as a virtualized list
+(`ui/details.rs`): a round's transcript can run to hundreds of entries.
 
 `workflows.claude_session_id` enables resume after app restart
 (`session.resume`). `raw_events` is append-only and is what "show details" reads.
@@ -913,7 +914,8 @@ settles nothing (ADR 0013).
   with the design artboards. Use it to check UI changes without a human.
   `BERTH_DEV_SLOW_MOTION=<factor>` stretches every animation so a shot can catch
   one midway; `draw <label>` forces a frame and logs how long it took (profile a
-  release build: `cargo build --release -p berth-app --features devtools`); `fake_node <title>` appends a just-recorded decision (view only).
+  release build: `cargo build --release -p berth-app --features devtools`); `fake_node <title>` appends a just-recorded decision (view only); `scroll <dy> [x y]`
+  scrolls the flow, or whatever is at `x y`.
   Without a display link (display asleep) the window draws only when `shot` or
   `keys` forces it. Screenshots can then trail an `action` by a step, and an action
   sent right after its target appeared is routed against a frame without it and

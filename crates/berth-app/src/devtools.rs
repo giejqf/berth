@@ -162,14 +162,23 @@ pub fn start(cx: &mut App) {
                         window.draw(cx).clear(cx);
                     });
                 }),
-                // Scroll the event flow by N pixels (positive = up / back in time).
+                // Scroll the event flow by N pixels (positive = up / back in
+                // time), or whatever is at `x y` when given.
                 "scroll" => cx.update(|cx| {
-                    let dy: f32 = arg.parse().unwrap_or(400.0);
+                    let v: Vec<f32> = arg
+                        .split_whitespace()
+                        .filter_map(|s| s.parse().ok())
+                        .collect();
+                    let dy = v.first().copied().unwrap_or(400.0);
                     with_window(cx, |window, cx| {
                         let size = window.viewport_size();
+                        let position = match (v.get(1), v.get(2)) {
+                            (Some(&x), Some(&y)) => gpui::point(gpui::px(x), gpui::px(y)),
+                            _ => gpui::point(size.width * 0.35, size.height * 0.4),
+                        };
                         window.dispatch_event(
                             gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
-                                position: gpui::point(size.width * 0.35, size.height * 0.4),
+                                position,
                                 delta: gpui::ScrollDelta::Pixels(gpui::point(
                                     gpui::px(0.),
                                     gpui::px(dy),
