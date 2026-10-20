@@ -742,7 +742,12 @@ settles nothing (ADR 0013).
 - The composer takes **attachments**: drop files on it, paste files or images, or
   pick them (⌘⇧O). They show as chips until sent. Attachments and **artifacts**
   show in the flow as small tiles: a 56px thumbnail (the image itself, or Quick
-  Look's for video/PDF/HTML; an icon otherwise) with the name and size. Clicking an
+  Look's for video/PDF/HTML; an icon otherwise) with the name and size. Tiles,
+  chips and the Files strip draw a thumbnail decoded off the main thread, one at a
+  time, and kept at 160px (`ui/files.rs` `small_image`): `img(path)` would keep each
+  image at full size, in memory and on the GPU, for as long as the app runs (~60 MB
+  a Retina screenshot). Only the image the Files tab shows is kept at full size; the
+  one it showed before is let go. Clicking an
   image (PNG, JPEG, GIF, WebP) shows it in the review pane's Files tab; anything
   else opens in Quick Look (`qlmanage -p`). Both are
   read-only; never an editor (§1.1). See `ui/composer.rs`, `ui/files.rs`,
@@ -893,7 +898,8 @@ settles nothing (ADR 0013).
   design's scenario into a fresh `BERTH_HOME` (`src/seed.rs`), so screenshots line up
   with the design artboards. Use it to check UI changes without a human.
   `BERTH_DEV_SLOW_MOTION=<factor>` stretches every animation so a shot can catch
-  one midway; `fake_node <title>` appends a just-recorded decision (view only).
+  one midway; `draw <label>` forces a frame and logs how long it took (profile a
+  release build: `cargo build --release -p berth-app --features devtools`); `fake_node <title>` appends a just-recorded decision (view only).
   Without a display link (display asleep) the window draws only when `shot` or
   `keys` forces it. Screenshots can then trail an `action` by a step, and an action
   sent right after its target appeared is routed against a frame without it and

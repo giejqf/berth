@@ -333,6 +333,15 @@ pub fn start(cx: &mut App) {
                     }
                 }),
                 // Real keystrokes through GPUI's dispatch, e.g. `keys 2 enter`.
+                // Force one frame and log how long it took (`label` names it).
+                "draw" => cx.update(|cx| {
+                    with_window(cx, |window, cx| {
+                        let started = std::time::Instant::now();
+                        window.draw(cx).clear(cx);
+                        let ms = started.elapsed().as_secs_f64() * 1000.;
+                        tracing::info!(label = arg, ms = format!("{ms:.1}"), "devtools draw");
+                    });
+                }),
                 "keys" => cx.update(|cx| {
                     let strokes: Vec<gpui::Keystroke> = arg
                         .split_whitespace()

@@ -562,7 +562,7 @@ impl Render for Composer {
                     .border_color(t.border)
                     .bg(t.card)
                     .child(if is_inline_image(a.mime) {
-                        img(a.path.clone())
+                        img(super::files::small_image(a.path.clone()))
                             .size(px(28.))
                             .rounded(px(4.))
                             .object_fit(ObjectFit::Cover)

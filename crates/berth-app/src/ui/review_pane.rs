@@ -44,6 +44,8 @@ pub struct ReviewPane {
     file: Option<String>,
     /// Files: the image at its actual size (scrolling) instead of fitted.
     actual_size: bool,
+    /// Files: the image shown at full size, the only one kept decoded at it.
+    full_image: Option<std::path::PathBuf>,
     strip: ScrollHandle,
     findings: Entity<FindingsView>,
 }
@@ -86,6 +88,7 @@ impl ReviewPane {
             tab: Tab::Changes,
             file: None,
             actual_size: false,
+            full_image: None,
             strip: ScrollHandle::new(),
             findings,
         };

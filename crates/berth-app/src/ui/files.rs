@@ -4,13 +4,15 @@
 //! shows it in Finder, here and in the review pane.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use berth_core::files::{human_size, is_inline_image, is_video, mime_for, wants_thumbnail};
 use berth_protocol::{Artifact, FileRef};
 use gpui::{
-    AnyElement, App, ClipboardItem, Image, ImageFormat, InteractiveElement as _, IntoElement,
-    ObjectFit, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _,
-    StyledImage as _, div, img, prelude::FluentBuilder as _, px,
+    AnyElement, App, Asset, ClipboardItem, Image, ImageCacheError, ImageFormat, ImageSource,
+    InteractiveElement as _, IntoElement, ObjectFit, ParentElement as _, RenderImage, SharedString,
+    StatefulInteractiveElement as _, Styled as _, StyledImage as _, div, img,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_component::menu::{ContextMenuExt as _, PopupMenu};
 use gpui_component::{h_flex, v_flex};
@@ -20,6 +22,69 @@ use super::kit::{TypeExt as _, icon};
 use crate::backend::{BackendHandle, Command};
 use crate::keymap::{CopyFile, RevealFile, ShowFile};
 use crate::theme::Tokens;
+
+/// The longest side of a thumbnail, in pixels: a 56pt tile on a 2x screen,
+/// with room to spare.
+const THUMB_PX: u32 = 160;
+
+/// A picture at thumbnail size, for the flow's tiles, the Files strip and the
+/// composer's chips. `img(path)` keeps an image decoded at full size for as
+/// long as the app runs, in memory and again on the GPU (about 60 MB for a
+/// Retina screenshot), so a slot with screenshots weighs that much per tile.
+/// This decodes once, off the main thread, and keeps only the small copy.
+pub fn small_image(path: impl Into<Arc<Path>>) -> ImageSource {
+    let path: Arc<Path> = path.into();
+    ImageSource::Custom(Arc::new(move |window, cx| {
+        window.use_asset::<SmallImage>(&path, cx)
+    }))
+}
+
+enum SmallImage {}
+
+impl Asset for SmallImage {
+    type Source = Arc<Path>;
+    type Output = Result<Arc<RenderImage>, ImageCacheError>;
+
+    // An `async fn` would borrow `App` into the future, which must be 'static.
+    #[allow(clippy::manual_async_fn)]
+    fn load(
+        path: Self::Source,
+        _: &mut App,
+    ) -> impl std::future::Future<Output = Self::Output> + Send + 'static {
+        async move {
+            shrink(&path).map_err(|e| {
+                tracing::debug!(path = %path.display(), error = %e, "thumbnail");
+                ImageCacheError::Asset(e.to_string().into())
+            })
+        }
+    }
+}
+
+/// One picture decodes at a time: a full-size screenshot takes ~30 MB while
+/// it does, which the allocator keeps after it's freed, once per decode
+/// running at once.
+static DECODING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The picture at `path` scaled to fit [`THUMB_PX`] (a GIF's first frame).
+fn shrink(path: &Path) -> Result<Arc<RenderImage>, image::ImageError> {
+    let _one = DECODING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let picture = image::ImageReader::open(path)?
+        .with_guessed_format()?
+        .decode()?;
+    let mut small = if picture.width().max(picture.height()) > THUMB_PX {
+        picture.thumbnail(THUMB_PX, THUMB_PX)
+    } else {
+        picture
+    }
+    .into_rgba8();
+    // GPUI draws BGRA.
+    for pixel in small.pixels_mut() {
+        pixel.0.swap(0, 2);
+    }
+    Ok(Arc::new(RenderImage::new(vec![image::Frame::new(small)])))
+}
 
 /// A file's right-click menu (`path` is the app's copy).
 pub fn file_menu(menu: PopupMenu, path: &Path) -> PopupMenu {
@@ -149,19 +214,26 @@ fn open_handler(
 /// size. Clicking views it (see [`open_handler`]); right-clicking copies it or
 /// shows it in Finder.
 fn file_tile(id: SharedString, f: &FileRef, backend: &BackendHandle, t: &Tokens) -> AnyElement {
-    let thumb = match preview_image(f) {
-        Some(path) => img(path)
+    // The icon stands in while the thumbnail decodes, and if it can't.
+    let (glyph, card, muted) = (file_icon(&f.mime), t.card, t.text3);
+    let placeholder = move || {
+        div()
             .size_full()
-            .object_fit(ObjectFit::Cover)
-            .into_any_element(),
-        None => div()
-            .size_full()
-            .bg(t.card)
+            .bg(card)
             .flex()
             .items_center()
             .justify_center()
-            .child(icon(file_icon(&f.mime), 20., t.text3))
+            .child(icon(glyph, 20., muted))
+            .into_any_element()
+    };
+    let thumb = match preview_image(f) {
+        Some(path) => img(small_image(path))
+            .size_full()
+            .object_fit(ObjectFit::Cover)
+            .with_loading(placeholder)
+            .with_fallback(placeholder)
             .into_any_element(),
+        None => placeholder(),
     };
     let tile = h_flex()
         .id(id)

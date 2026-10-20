@@ -36,11 +36,11 @@ gpui_platform.workspace = true
 gpui-component = { workspace = true, features = ["tree-sitter-languages"] }
 gpui-base.workspace = true
 gpui-kit-assets = "=0.7.3"
-image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
 [features]
 # Scripted UI autopilot + window screenshots for development (see src/devtools.rs).
-devtools = ["gpui/test-support", "gpui_platform/test-support", "dep:image"]
+devtools = ["gpui/test-support", "gpui_platform/test-support"]
 
 [dev-dependencies]
 tempfile.workspace = true

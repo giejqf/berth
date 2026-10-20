@@ -10,7 +10,7 @@ use berth_core::WorkflowView;
 use berth_core::files::{human_size, is_inline_image, is_video};
 use berth_protocol::{FileRef, NodePayload};
 use gpui::{
-    AnyElement, Context, ImgResourceLoader, InteractiveElement as _, IntoElement, ObjectFit,
+    AnyElement, App, Context, ImgResourceLoader, InteractiveElement as _, IntoElement, ObjectFit,
     ParentElement as _, Resource, SharedString, StatefulInteractiveElement as _, Styled as _,
     StyledImage as _, Window, div, img, prelude::FluentBuilder as _, px,
 };
@@ -62,6 +62,23 @@ pub(super) fn workflow_files(view: &WorkflowView) -> Vec<PaneFile> {
         }
     }
     out
+}
+
+impl ReviewPane {
+    /// Let go of the image shown before at full size, decoded and on the GPU
+    /// (GPUI keeps both until told otherwise; tens of MB for a screenshot).
+    fn keep_full_image(&mut self, shown: Option<&PathBuf>, window: &mut Window, cx: &mut App) {
+        if self.full_image.as_ref() == shown {
+            return;
+        }
+        if let Some(old) = std::mem::replace(&mut self.full_image, shown.cloned()) {
+            let source = Resource::Path(Arc::from(old.as_path()));
+            if let Some(Ok(data)) = cx.fetch_asset::<ImgResourceLoader>(&source) {
+                let _ = window.drop_image(data);
+            }
+            cx.remove_asset::<ImgResourceLoader>(&source);
+        }
+    }
 }
 
 /// A file's small picture: the image itself or its Quick Look thumbnail.
@@ -185,6 +202,7 @@ impl ReviewPane {
             .filter(|_| is_inline_image(&f.mime) && current.error.is_none())
             .map(PathBuf::from);
         let image_shown = image.is_some();
+        self.keep_full_image(image.as_ref(), window, cx);
         // Pixel size, once the image is decoded (the cache `img` uses).
         let pixels = image.as_ref().and_then(|path| {
             let source = Resource::Path(Arc::from(path.as_path()));
@@ -409,7 +427,7 @@ impl ReviewPane {
                 }
             ));
             let inner: AnyElement = match picture(&pf.file) {
-                Some(path) => img(path)
+                Some(path) => img(crate::ui::files::small_image(path))
                     .size_full()
                     .object_fit(ObjectFit::Cover)
                     .into_any_element(),
