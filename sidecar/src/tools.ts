@@ -14,6 +14,7 @@ import {
   type PresentReviewInput,
   type RecordDecisionInput,
   type RecordOutcomeInput,
+  type ReplyInput,
   type RequestSlotInput,
   type ToolName,
   type WriteSummaryInput,
@@ -36,6 +37,9 @@ export const shapes = {
     question: z.string().min(1),
     options: z.array(z.string()).optional().describe("Suggested answers"),
     allow_free_text: z.boolean().optional().describe("Allow an answer outside `options` (default true)"),
+  },
+  reply: {
+    message: z.string().min(1).describe("Your answer, in Markdown; the user reads it in the flow"),
   },
   write_summary: {
     done: z.array(z.string()).describe("What this section accomplished"),
@@ -83,6 +87,7 @@ const schemaMatchesProtocol: {
   record_decision: Same<Infer<typeof shapes.record_decision>, RecordDecisionInput>;
   ask_user: Same<Infer<typeof shapes.ask_user>, AskUserInput>;
   write_summary: Same<Infer<typeof shapes.write_summary>, WriteSummaryInput>;
+  reply: Same<Infer<typeof shapes.reply>, ReplyInput>;
   record_outcome: Same<Infer<typeof shapes.record_outcome>, RecordOutcomeInput>;
   request_slot: Same<Infer<typeof shapes.request_slot>, RequestSlotInput>;
   present_artifact: Same<Infer<typeof shapes.present_artifact>, PresentArtifactInput>;
@@ -91,6 +96,7 @@ const schemaMatchesProtocol: {
   record_decision: true,
   ask_user: true,
   write_summary: true,
+  reply: true,
   record_outcome: true,
   request_slot: true,
   present_artifact: true,
@@ -110,6 +116,7 @@ export interface ToolHost {
   recordDecision(input: RecordDecisionInput, call: CallContext): Promise<ToolOutcome>;
   askUser(input: AskUserInput, call: CallContext): Promise<ToolOutcome>;
   writeSummary(input: WriteSummaryInput, call: CallContext): Promise<ToolOutcome>;
+  reply(input: ReplyInput, call: CallContext): Promise<ToolOutcome>;
   recordOutcome(input: RecordOutcomeInput, call: CallContext): Promise<ToolOutcome>;
   requestSlot(input: RequestSlotInput, call: CallContext): Promise<ToolOutcome>;
   presentArtifact(input: PresentArtifactInput, call: CallContext): Promise<ToolOutcome>;
@@ -157,6 +164,9 @@ export function createBerthServer(host: ToolHost): McpSdkServerConfigWithInstanc
       ),
       tool("write_summary", TOOLS.write_summary.description, shapes.write_summary, async (args, extra) =>
         result(await host.writeSummary(args, callContext(extra))),
+      ),
+      tool("reply", TOOLS.reply.description, shapes.reply, async (args, extra) =>
+        result(await host.reply(args, callContext(extra))),
       ),
       tool("record_outcome", TOOLS.record_outcome.description, shapes.record_outcome, async (args, extra) =>
         result(await host.recordOutcome(args, callContext(extra))),

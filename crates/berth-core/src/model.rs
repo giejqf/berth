@@ -231,10 +231,14 @@ pub struct Round {
 
 impl Round {
     /// Whether the agent worked in it: anything but a slash command Claude
-    /// Code ran by itself (ADR 0015), which opens no section's work.
+    /// Code ran by itself (ADR 0015) or a round that only answered the user
+    /// (ADR 0019), which open no section's work.
     #[must_use]
     pub fn is_work(&self) -> bool {
-        self.terminal_kind != Some(TerminalKind::Command)
+        !matches!(
+            self.terminal_kind,
+            Some(TerminalKind::Command | TerminalKind::Reply)
+        )
     }
 }
 
@@ -398,6 +402,10 @@ pub struct WorkflowFacts {
     pub review: Option<(i64, usize)>,
     /// When the last section was summarized.
     pub summary_at: Option<i64>,
+    /// When the agent answered with a `reply` (ADR 0019), if nothing was
+    /// summarized after it: the workflow waits on the user's next message,
+    /// not on a review.
+    pub reply_at: Option<i64>,
     pub outcome: Option<berth_protocol::Outcome>,
     pub rounds: usize,
     pub last_round_at: Option<i64>,

@@ -150,6 +150,19 @@ describe("round termination (§5.3)", () => {
     expect(emitter.ofType("round.ended")[0]).toMatchObject({ terminal_kind: "write_summary", nudges: 0 });
   });
 
+  it("a reply shows the answer and ends the round as reply", async () => {
+    const { emitter, session, q } = setup();
+    session.turn("why TOML?");
+    expect((await session.reply({ message: "Because **comments** survive." }, {})).ok).toBe(true);
+    expect(emitter.ofType("node.reply")[0]).toMatchObject({ message: "Because **comments** survive." });
+    const second = await session.writeSummary({ done: [], remaining: [] }, {});
+    expect(second.ok).toBe(false);
+    q.send(sdk.result(0.1));
+    await flush();
+    expect(q.prompts).toEqual(["why TOML?"]);
+    expect(emitter.ofType("round.ended")[0]).toMatchObject({ terminal_kind: "reply", nudges: 0 });
+  });
+
   it("a nudge that produces a terminal call ends the round normally", async () => {
     const { emitter, session, q } = setup();
     session.turn("go");

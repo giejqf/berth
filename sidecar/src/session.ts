@@ -32,6 +32,7 @@ import type {
   PresentReviewInput,
   RecordDecisionInput,
   RecordOutcomeInput,
+  ReplyInput,
   RequestSlotInput,
   RequestSlotResult,
   SessionResume,
@@ -49,7 +50,8 @@ export const BERTH_SYSTEM_PROMPT = `You are working inside Berth. The user never
 How to work:
 - Announce each meaningful decision with the berth \`record_decision\` tool the moment you make it (an approach chosen, a trade-off accepted, a convention adopted). Short title; the why goes in the rationale.
 - Never narrate file edits or tool use in prose. The user reviews the diff separately.
-- End every round with exactly one of these berth tools: \`ask_user\` when you need the user's input, \`write_summary\` when you finished a chunk of work for the user to review, or \`record_outcome\` when the workflow is done (usually right after opening a PR). Never end a turn without one of them, and never call two.
+- End every round with exactly one of these berth tools: \`ask_user\` when you need the user's input, \`write_summary\` when you finished a chunk of work for the user to review, \`reply\` when you answered a question or discussed something without changing files for them to review, or \`record_outcome\` when the workflow is done (usually right after opening a PR). Never end a turn without one of them, and never call two.
+- The user reads only the berth tools' content, not your other text. When they ask you something, the answer goes in \`reply\` (or in \`write_summary\`'s notes when you also changed files), complete and in Markdown.
 - Ask questions only through \`ask_user\`, never through AskUserQuestion or plain text.
 - Use \`gh\` for GitHub. Open PRs with \`gh pr create\`, then call \`record_outcome\` with kind "pr" and the PR URL as ref.
 - Use the connector CLIs described by their skills for external systems (Linear, PostHog, ...).
@@ -59,7 +61,7 @@ How to work:
 - Files the user attached are listed at the end of their message, with paths you can read; attached images are also shown to you directly.
 - Subagents may only call \`record_decision\`; they report everything else back to you.`;
 
-export const NUDGE_TEXT = "End this round with ask_user, write_summary, or record_outcome.";
+export const NUDGE_TEXT = "End this round with ask_user, write_summary, reply, or record_outcome.";
 export const MAX_NUDGES = 2;
 export const SUBAGENT_TOOL_ERROR = "Not available to subagents; report this back to the main agent.";
 /** Largest attached image sent to Claude as an image block (larger ones go by path only). */
@@ -99,7 +101,7 @@ export function claudePath(): string | undefined {
   return existsSync(bundled) ? bundled : undefined;
 }
 
-type TerminalTool = "ask_user" | "present_review" | "write_summary" | "record_outcome";
+type TerminalTool = "ask_user" | "present_review" | "write_summary" | "record_outcome" | "reply";
 
 interface Round {
   startedAt: number;
@@ -732,7 +734,7 @@ export class Session implements ToolHost {
     const round = this.round;
     if (!round) return;
     if (round.interrupted) return this.endRound("interrupted");
-    if (round.terminal === "write_summary" || round.terminal === "record_outcome") {
+    if (round.terminal === "write_summary" || round.terminal === "record_outcome" || round.terminal === "reply") {
       return this.endRound(round.terminal);
     }
     if (isError) return this.endRound("error");
@@ -941,6 +943,16 @@ export class Session implements ToolHost {
       ...(input.notes ? { notes: input.notes } : {}),
     });
     return { ok: true, text: "Summary recorded; the section is closed. End your turn now." };
+  }
+
+  async reply(input: ReplyInput, call: CallContext): Promise<ToolOutcome> {
+    if ((await this.attribute(call, input, "reply")).inSubagent) {
+      return { ok: false, error: SUBAGENT_TOOL_ERROR };
+    }
+    const rejected = this.claimTerminal("reply");
+    if (rejected) return { ok: false, error: rejected };
+    this.emitter.emit({ type: "node.reply", message: input.message });
+    return { ok: true, text: "Reply shown to the user. End your turn now." };
   }
 
   async recordOutcome(input: RecordOutcomeInput, call: CallContext): Promise<ToolOutcome> {

@@ -1252,6 +1252,17 @@ impl Store {
             [workflow_id],
             |r| r.get(0),
         )?;
+        // The later of the last summary and the last reply, in flow order.
+        let last: Option<(String, i64)> = self
+            .conn
+            .query_row(
+                "SELECT kind, created_at FROM nodes WHERE workflow_id = ?1 \
+                 AND kind IN ('summary', 'reply') ORDER BY seq DESC LIMIT 1",
+                [workflow_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let reply_at = last.and_then(|(kind, at)| (kind == "reply").then_some(at));
         let outcome: Option<String> = self
             .conn
             .query_row(
@@ -1279,6 +1290,7 @@ impl Store {
             question_at,
             review: review.map(|(at, n)| (at, usize::try_from(n).unwrap_or(0))),
             summary_at,
+            reply_at,
             outcome,
             rounds: usize::try_from(rounds).unwrap_or(0),
             last_round_at,

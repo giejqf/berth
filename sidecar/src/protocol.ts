@@ -161,6 +161,8 @@ explanation?: string,
  */
 subagent: boolean, };
 
+export type Reply = { message: string, };
+
 export type Decision = { title: string, rationale: string, affects: Array<string>, reversible: boolean, };
 
 export type Summary = { done: Array<string>, remaining: Array<string>, follow_ups: Array<FollowUp>, notes?: string, };
@@ -189,11 +191,11 @@ export type Artifact = { artifact_id: string, title: string, description?: strin
  */
 error?: string, };
 
-export type NodeKind = "origin" | "prompt" | "question" | "decision" | "summary" | "outcome" | "subagent_spawn" | "collect_results" | "artifact" | "review" | "rewind" | "reopened" | "command" | "compacted" | "refusal";
+export type NodeKind = "origin" | "prompt" | "question" | "decision" | "summary" | "outcome" | "subagent_spawn" | "collect_results" | "artifact" | "review" | "rewind" | "reopened" | "command" | "compacted" | "refusal" | "reply";
 
-export type NodePayload = { "kind": "origin", "payload": Origin } | { "kind": "prompt", "payload": Prompt } | { "kind": "question", "payload": Question } | { "kind": "decision", "payload": Decision } | { "kind": "summary", "payload": Summary } | { "kind": "outcome", "payload": Outcome } | { "kind": "subagent_spawn", "payload": SubagentSpawn } | { "kind": "collect_results", "payload": CollectResults } | { "kind": "artifact", "payload": Artifact } | { "kind": "review", "payload": Review } | { "kind": "rewind", "payload": Rewind } | { "kind": "reopened", "payload": Reopened } | { "kind": "command", "payload": Command } | { "kind": "compacted", "payload": Compacted } | { "kind": "refusal", "payload": Refusal };
+export type NodePayload = { "kind": "origin", "payload": Origin } | { "kind": "prompt", "payload": Prompt } | { "kind": "question", "payload": Question } | { "kind": "decision", "payload": Decision } | { "kind": "summary", "payload": Summary } | { "kind": "outcome", "payload": Outcome } | { "kind": "subagent_spawn", "payload": SubagentSpawn } | { "kind": "collect_results", "payload": CollectResults } | { "kind": "artifact", "payload": Artifact } | { "kind": "review", "payload": Review } | { "kind": "rewind", "payload": Rewind } | { "kind": "reopened", "payload": Reopened } | { "kind": "command", "payload": Command } | { "kind": "compacted", "payload": Compacted } | { "kind": "refusal", "payload": Refusal } | { "kind": "reply", "payload": Reply };
 
-export type ToolName = "record_decision" | "ask_user" | "write_summary" | "record_outcome" | "request_slot" | "present_artifact" | "present_review";
+export type ToolName = "record_decision" | "ask_user" | "write_summary" | "record_outcome" | "request_slot" | "present_artifact" | "present_review" | "reply";
 
 export type FollowUpInput = { id?: string, title: string, description: string, };
 
@@ -204,6 +206,12 @@ export type AskUserInput = { question: string, options?: Array<string>, allow_fr
 export type WriteSummaryInput = { done: Array<string>, remaining: Array<string>, follow_ups?: Array<FollowUpInput>, notes?: string, };
 
 export type RecordOutcomeInput = { kind: OutcomeKind, ref: string, summary: string, follow_ups?: Array<FollowUpInput>, };
+
+export type ReplyInput = { 
+/**
+ * The answer, in Markdown.
+ */
+message: string, };
 
 export type RequestSlotInput = { name: string, purpose: string, from_follow_up?: string, };
 
@@ -355,6 +363,8 @@ export type NodeOutcome = { kind: OutcomeKind,
  */
 ref: string, summary: string, follow_ups: Array<FollowUp>, };
 
+export type NodeReply = { message: string, };
+
 export type NodeArtifact = { artifact_id: string, 
 /**
  * Absolute path inside the slot.
@@ -377,7 +387,7 @@ export type BranchCollected = { branch_id: string, result_text: string, status: 
 
 export type SlotRequest = { request_id: string, name: string, purpose: string, from_follow_up?: string, };
 
-export type TerminalKind = "write_summary" | "record_outcome" | "unterminated" | "interrupted" | "error" | "command";
+export type TerminalKind = "write_summary" | "record_outcome" | "unterminated" | "interrupted" | "error" | "command" | "reply";
 
 export type RoundEnded = { terminal_kind: TerminalKind, cost_usd: number, duration_ms: number, nudges: number, 
 /**
@@ -527,11 +537,11 @@ provider?: string, };
 
 export type SessionError = { message: string, fatal: boolean, };
 
-export type SidecarToApp = { "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.artifact" } & NodeArtifact | { "type": "node.review" } & NodeReview | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels | { "type": "sessions.listed" } & SessionsListed | { "type": "session.context" } & SessionContext | { "type": "session.quota" } & SessionQuota | { "type": "node.compacted" } & NodeCompacted | { "type": "session.commands" } & SessionCommands | { "type": "branch.progress" } & BranchProgress | { "type": "node.refusal" } & NodeRefusal | { "type": "session.suggestion" } & SessionSuggestion | { "type": "session.tasks" } & SessionTasks | { "type": "session.account" } & SessionAccount | { "type": "sessions.renamed" } & SessionsRenamed;
+export type SidecarToApp = { "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.reply" } & NodeReply | { "type": "node.artifact" } & NodeArtifact | { "type": "node.review" } & NodeReview | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels | { "type": "sessions.listed" } & SessionsListed | { "type": "session.context" } & SessionContext | { "type": "session.quota" } & SessionQuota | { "type": "node.compacted" } & NodeCompacted | { "type": "session.commands" } & SessionCommands | { "type": "branch.progress" } & BranchProgress | { "type": "node.refusal" } & NodeRefusal | { "type": "session.suggestion" } & SessionSuggestion | { "type": "session.tasks" } & SessionTasks | { "type": "session.account" } & SessionAccount | { "type": "sessions.renamed" } & SessionsRenamed;
 
 export type AppMessage = { id: string, } & ({ "type": "session.start" } & SessionStart | { "type": "session.resume" } & SessionResume | { "type": "session.turn" } & SessionTurn | { "type": "session.interrupt" } | { "type": "session.stop" } | { "type": "question.answer" } & QuestionAnswer | { "type": "review.answer" } & ReviewAnswer | { "type": "slot_request.resolved" } & SlotRequestResolved | { "type": "session.configure" } & SessionConfigure | { "type": "sessions.list" } & SessionsList | { "type": "session.background" } & SessionBackground | { "type": "sessions.rename" } & SessionsRename);
 
-export type SidecarMessage = { id: string, reply_to?: string, } & ({ "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.artifact" } & NodeArtifact | { "type": "node.review" } & NodeReview | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels | { "type": "sessions.listed" } & SessionsListed | { "type": "session.context" } & SessionContext | { "type": "session.quota" } & SessionQuota | { "type": "node.compacted" } & NodeCompacted | { "type": "session.commands" } & SessionCommands | { "type": "branch.progress" } & BranchProgress | { "type": "node.refusal" } & NodeRefusal | { "type": "session.suggestion" } & SessionSuggestion | { "type": "session.tasks" } & SessionTasks | { "type": "session.account" } & SessionAccount | { "type": "sessions.renamed" } & SessionsRenamed);
+export type SidecarMessage = { id: string, reply_to?: string, } & ({ "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.reply" } & NodeReply | { "type": "node.artifact" } & NodeArtifact | { "type": "node.review" } & NodeReview | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels | { "type": "sessions.listed" } & SessionsListed | { "type": "session.context" } & SessionContext | { "type": "session.quota" } & SessionQuota | { "type": "node.compacted" } & NodeCompacted | { "type": "session.commands" } & SessionCommands | { "type": "branch.progress" } & BranchProgress | { "type": "node.refusal" } & NodeRefusal | { "type": "session.suggestion" } & SessionSuggestion | { "type": "session.tasks" } & SessionTasks | { "type": "session.account" } & SessionAccount | { "type": "sessions.renamed" } & SessionsRenamed);
 
 export const MCP_SERVER_NAME = "berth" as const;
 
@@ -543,4 +553,5 @@ export const TOOLS: Record<ToolName, { terminal: boolean; subagent: boolean; des
   request_slot: { terminal: false, subagent: false, description: "Ask the app to create a new slot with its own workflow (for example to pursue a follow-up in parallel). The user must approve. The current workflow continues here." },
   present_artifact: { terminal: false, subagent: false, description: "Show the user a file you made: a screenshot, a screen recording, a rendered chart or page, a report. Save it first, then pass its path and a short title. The app copies it and shows it as a card in the event flow. Non-blocking." },
   present_review: { terminal: true, subagent: false, description: "Present code review findings and wait for the user's decision on each. One finding per issue: its level (high: a bug, data loss or a security hole; mid: worth fixing before merge; low: a nit), a one-line title, the detail (why it matters, what a fix would be), where it is, and what you suggest: fix, dismiss (not worth changing), or decide (a judgment call that is theirs). The user picks for each and the decisions come back as the result: fix what they marked fix, leave the dismissed ones, follow their words on the rest. Ends the round while waiting; the decisions resume it." },
+  reply: { terminal: true, subagent: false, description: "End the round with your answer to the user, when you answered a question or discussed something and changed nothing for them to review. The message is Markdown and shows in the flow under their message: answer fully there, since they don't read your other text. Does not end the section. When you changed files, use write_summary instead." },
 };

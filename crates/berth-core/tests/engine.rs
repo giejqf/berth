@@ -1169,6 +1169,52 @@ fn a_message_sent_while_the_agent_works_joins_its_round() {
     assert!(refused.is_some_and(|e| e.to_string().contains("while the agent worked")));
 }
 
+#[test]
+fn a_reply_answers_in_the_flow_without_ending_the_section() {
+    let (store, mut engine, wf) = setup();
+    engine.session_started(&wf);
+    engine
+        .submit_prompt(&store, &wf, "one", vec![], false)
+        .unwrap();
+    engine.apply(&store, &wf, &summary("first")).unwrap();
+    engine
+        .apply(&store, &wf, &ended(TerminalKind::WriteSummary, None))
+        .unwrap();
+    let section = store.workflow(&wf).unwrap().section_no;
+    assert_eq!(section, 2);
+
+    engine
+        .submit_prompt(&store, &wf, "why TOML?", vec![], false)
+        .unwrap();
+    engine
+        .apply(
+            &store,
+            &wf,
+            &SidecarToApp::NodeReply(berth_protocol::NodeReply {
+                reply: berth_protocol::Reply {
+                    message: "Comments survive a round trip.".into(),
+                },
+            }),
+        )
+        .unwrap();
+    engine
+        .apply(&store, &wf, &ended(TerminalKind::Reply, None))
+        .unwrap();
+    let w = store.workflow(&wf).unwrap();
+    assert_eq!(w.state, WorkflowState::Idle);
+    assert_eq!(w.section_no, section, "a reply ends no section");
+    let view = store.workflow_view(&wf).unwrap();
+    assert!(matches!(
+        view.nodes.last().unwrap().payload,
+        NodePayload::Reply(_)
+    ));
+    // Nothing changed to review: the round is no section work.
+    assert!(!view.rounds.last().unwrap().is_work());
+    // The slot waits on the user's next message, not on a review.
+    let facts = store.workflow_facts(&wf).unwrap();
+    assert!(facts.reply_at.is_some());
+}
+
 fn second_slot(store: &Store, of: &str) -> Slot {
     let first = store.slot(of).unwrap();
     let slot = Slot {

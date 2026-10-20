@@ -156,7 +156,12 @@ pub fn rail_group(entry: &SlotEntry) -> RailGroup {
     }
     match entry.workflow.as_ref().map(|w| w.state) {
         Some(WorkflowState::Running | WorkflowState::Starting) => RailGroup::Working,
-        Some(WorkflowState::Idle) if entry.facts.summary_at.is_some() => RailGroup::Review,
+        // After a summary, unless the agent answered something since.
+        Some(WorkflowState::Idle)
+            if entry.facts.summary_at.is_some() && entry.facts.reply_at.is_none() =>
+        {
+            RailGroup::Review
+        }
         // A question, or an idle workflow waiting for the next prompt.
         Some(WorkflowState::AwaitingAnswer | WorkflowState::Idle) => RailGroup::NeedsYou,
         Some(WorkflowState::Closed) | None => RailGroup::Done,

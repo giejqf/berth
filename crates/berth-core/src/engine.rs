@@ -891,6 +891,16 @@ impl Engine {
                 )?;
                 self.end_section(store, workflow_id, &mut fx)?;
             }
+            // An answer: in the flow, and no section ends (ADR 0019).
+            SidecarToApp::NodeReply(r) => {
+                self.insert_lane_node(
+                    store,
+                    workflow_id,
+                    None,
+                    NodePayload::Reply(r.reply.clone()),
+                )?;
+                fx.push(Effect::FlowChanged { workflow_id: wf_id });
+            }
             SidecarToApp::NodeArtifact(a) => {
                 let name = a.path.rsplit('/').next().unwrap_or(&a.path).to_owned();
                 let payload = NodePayload::Artifact(berth_protocol::Artifact {

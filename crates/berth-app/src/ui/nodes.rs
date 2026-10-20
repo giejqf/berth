@@ -11,7 +11,7 @@ use berth_core::flow::{FlowItem, Lane, SubagentGroup};
 use berth_core::{BranchState, Node, SlotState, WorkflowState, WorkflowView};
 use berth_protocol::{
     Artifact, CompactTrigger, Compacted, Decision, FollowUp, NodePayload, Origin, OriginKind,
-    Outcome, OutcomeKind, Prompt, Question, Refusal, Reopened, Review, Rewind, Summary,
+    Outcome, OutcomeKind, Prompt, Question, Refusal, Reopened, Reply, Review, Rewind, Summary,
 };
 use std::f32::consts::FRAC_PI_2;
 
@@ -233,6 +233,7 @@ fn node_row(t: &Tokens, node: &Node, ctx: &RowCtx, line: bool, cx: &mut App) -> 
         NodePayload::Command(c) => command(t, node, c, ctx, line),
         NodePayload::Compacted(c) => compacted(t, node, c, ctx, line),
         NodePayload::Refusal(r) => refusal(t, node, r, line),
+        NodePayload::Reply(r) => reply(t, node, r, ctx, line),
         // Spawn/Collect are folded into their group; never laid out alone.
         NodePayload::SubagentSpawn(_) | NodePayload::CollectResults(_) => div(),
     }
@@ -779,6 +780,61 @@ fn compacting_row(
                         });
                     },
                 )))),
+        ),
+    )
+}
+
+/// The agent's answer (`reply`, ADR 0019): its message under yours, in full
+/// unless it runs long.
+fn reply(t: &Tokens, node: &Node, r: &Reply, ctx: &RowCtx, line: bool) -> Div {
+    let key = format!("more-{}", node.id);
+    let long = overflows(&r.message, ctx.width - 100., 14);
+    let open = ctx.more.contains(&key);
+    let flow = ctx.flow.clone();
+    let mut header = div()
+        .flex()
+        .items_baseline()
+        .gap(px(8.))
+        .child(div().semibold().child("Agent"))
+        .child(
+            div()
+                .ty(ty::META)
+                .text_color(t.text3)
+                .child(clock(node.created_at)),
+        )
+        .child(div().ml_auto().children(details_link(t, node, ctx)));
+    if long {
+        header = header.child(link(
+            SharedString::from(key.clone()),
+            if open { "Show less" } else { "Show more" },
+            t,
+            move |_, _, cx| {
+                let _ = flow.update(cx, |f, cx| f.toggle(key.clone(), true, cx));
+            },
+        ));
+    }
+    let text: AnyElement = if long && !open {
+        clamped(t, &r.message, t.text, 14)
+    } else {
+        rich(t, &r.message, t.text).into_any_element()
+    };
+    row(
+        t,
+        glyph(t.accent_soft, icon("comment", 14., t.accent)),
+        line,
+        div().pb(px(if line { 20. } else { 12. })).child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .bg(t.card)
+                .border_1()
+                .border_color(t.border)
+                .rounded(px(6.))
+                .px(px(14.))
+                .py(px(10.))
+                .child(header)
+                .child(text),
         ),
     )
 }

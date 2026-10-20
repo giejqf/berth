@@ -139,13 +139,14 @@ pub fn rail_lines(entry: &SlotEntry, state: &RepoState) -> (String, String) {
                     None => "Starting…".to_owned(),
                 },
             },
-            WorkflowState::Idle => match f.summary_at {
-                Some(at) => format!(
+            WorkflowState::Idle => match (f.reply_at, f.summary_at) {
+                (Some(at), _) => format!("Replied · {}", ago(at)),
+                (None, Some(at)) => format!(
                     "Section {} ready · {}",
                     w.section_no.saturating_sub(1).max(1),
                     ago(at)
                 ),
-                None => "Your turn".to_owned(),
+                (None, None) => "Your turn".to_owned(),
             },
             WorkflowState::Closed => {
                 let what = match f.outcome.as_ref().map(|o| (o.kind, o.r#ref.as_str())) {

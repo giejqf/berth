@@ -21,10 +21,11 @@ pub enum ToolName {
     RequestSlot,
     PresentArtifact,
     PresentReview,
+    Reply,
 }
 
 impl ToolName {
-    pub const ALL: [ToolName; 7] = [
+    pub const ALL: [ToolName; 8] = [
         Self::RecordDecision,
         Self::AskUser,
         Self::WriteSummary,
@@ -32,6 +33,7 @@ impl ToolName {
         Self::RequestSlot,
         Self::PresentArtifact,
         Self::PresentReview,
+        Self::Reply,
     ];
 
     #[must_use]
@@ -44,6 +46,7 @@ impl ToolName {
             Self::RequestSlot => "request_slot",
             Self::PresentArtifact => "present_artifact",
             Self::PresentReview => "present_review",
+            Self::Reply => "reply",
         }
     }
 
@@ -52,7 +55,11 @@ impl ToolName {
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
-            Self::AskUser | Self::PresentReview | Self::WriteSummary | Self::RecordOutcome
+            Self::AskUser
+                | Self::PresentReview
+                | Self::WriteSummary
+                | Self::RecordOutcome
+                | Self::Reply
         )
     }
 
@@ -105,6 +112,13 @@ impl ToolName {
                  leave the dismissed ones, follow their words on the rest. Ends the round while \
                  waiting; the decisions resume it."
             }
+            Self::Reply => {
+                "End the round with your answer to the user, when you answered a question or \
+                 discussed something and changed nothing for them to review. The message is \
+                 Markdown and shows in the flow under their message: answer fully there, since \
+                 they don't read your other text. Does not end the section. When you changed \
+                 files, use write_summary instead."
+            }
         }
     }
 }
@@ -152,6 +166,12 @@ pub struct WriteSummaryInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ReplyInput {
+    /// The answer, in Markdown.
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

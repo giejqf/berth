@@ -237,6 +237,16 @@ pub fn start(cx: &mut App) {
                 // the design's Working state without spending tokens.
                 "fake_live" => cx.update(|cx| fake_live(arg, cx)),
                 "fake_node" => cx.update(|cx| fake_node(arg, cx)),
+                // The agent's answer (`reply`) to the selected workflow; `\n`
+                // in the text is a line break (view only).
+                "fake_reply" => cx.update(|cx| {
+                    push_fake_node(
+                        berth_protocol::NodePayload::Reply(berth_protocol::Reply {
+                            message: arg.replace("\\n", "\n"),
+                        }),
+                        cx,
+                    );
+                }),
                 // A suggested next prompt / a background task for the selected
                 // workflow, as if its session had reported them (view only).
                 "suggest" | "background" => cx.update(|cx| {

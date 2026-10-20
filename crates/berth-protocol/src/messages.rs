@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::nodes::{BranchStatus, Decision, Outcome, Summary};
+use crate::nodes::{BranchStatus, Decision, Outcome, Reply, Summary};
 use crate::tools::FindingInput;
 
 /// A connector skill installed into the slot (§8.2); mentioned in the system prompt.
@@ -405,6 +405,12 @@ pub struct NodeSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct NodeReply {
+    #[serde(flatten)]
+    pub reply: Reply,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct NodeOutcome {
     #[serde(flatten)]
     pub outcome: Outcome,
@@ -480,6 +486,8 @@ pub enum TerminalKind {
     Error,
     /// A slash command Claude Code ran without the model (ADR 0015).
     Command,
+    /// The agent answered the user (`reply`, ADR 0019): no section end.
+    Reply,
 }
 
 impl TerminalKind {
@@ -492,6 +500,7 @@ impl TerminalKind {
             Self::Interrupted => "interrupted",
             Self::Error => "error",
             Self::Command => "command",
+            Self::Reply => "reply",
         }
     }
 
@@ -504,6 +513,7 @@ impl TerminalKind {
             Self::Interrupted,
             Self::Error,
             Self::Command,
+            Self::Reply,
         ]
         .into_iter()
         .find(|k| k.as_str() == s)
@@ -662,6 +672,8 @@ pub enum SidecarToApp {
     NodeSummary(NodeSummary),
     #[serde(rename = "node.outcome")]
     NodeOutcome(NodeOutcome),
+    #[serde(rename = "node.reply")]
+    NodeReply(NodeReply),
     #[serde(rename = "node.artifact")]
     NodeArtifact(NodeArtifact),
     #[serde(rename = "node.review")]
@@ -714,6 +726,7 @@ impl SidecarToApp {
             Self::NodeQuestion(_) => "node.question",
             Self::NodeSummary(_) => "node.summary",
             Self::NodeOutcome(_) => "node.outcome",
+            Self::NodeReply(_) => "node.reply",
             Self::NodeArtifact(_) => "node.artifact",
             Self::NodeReview(_) => "node.review",
             Self::BranchSpawned(_) => "branch.spawned",

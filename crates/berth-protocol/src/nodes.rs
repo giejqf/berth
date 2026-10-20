@@ -479,6 +479,13 @@ pub struct CollectResults {
     pub status: BranchStatus,
 }
 
+/// The agent's answer to the user (`reply`, ADR 0019): a round that answered
+/// or discussed something and changed nothing to review. Markdown.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct Reply {
+    pub message: String,
+}
+
 /// Node discriminant; matches the `nodes.kind` column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -498,10 +505,11 @@ pub enum NodeKind {
     Command,
     Compacted,
     Refusal,
+    Reply,
 }
 
 impl NodeKind {
-    pub const ALL: [NodeKind; 15] = [
+    pub const ALL: [NodeKind; 16] = [
         Self::Origin,
         Self::Prompt,
         Self::Question,
@@ -517,6 +525,7 @@ impl NodeKind {
         Self::Command,
         Self::Compacted,
         Self::Refusal,
+        Self::Reply,
     ];
 
     #[must_use]
@@ -537,6 +546,7 @@ impl NodeKind {
             Self::Command => "command",
             Self::Compacted => "compacted",
             Self::Refusal => "refusal",
+            Self::Reply => "reply",
         }
     }
 
@@ -567,6 +577,7 @@ pub enum NodePayload {
     Command(Command),
     Compacted(Compacted),
     Refusal(Refusal),
+    Reply(Reply),
 }
 
 impl NodePayload {
@@ -588,6 +599,7 @@ impl NodePayload {
             Self::Command(_) => NodeKind::Command,
             Self::Compacted(_) => NodeKind::Compacted,
             Self::Refusal(_) => NodeKind::Refusal,
+            Self::Reply(_) => NodeKind::Reply,
         }
     }
 
@@ -609,6 +621,7 @@ impl NodePayload {
             Self::Command(p) => serde_json::to_string(p),
             Self::Compacted(p) => serde_json::to_string(p),
             Self::Refusal(p) => serde_json::to_string(p),
+            Self::Reply(p) => serde_json::to_string(p),
         }
     }
 
@@ -630,6 +643,7 @@ impl NodePayload {
             NodeKind::Command => Self::Command(serde_json::from_str(json)?),
             NodeKind::Compacted => Self::Compacted(serde_json::from_str(json)?),
             NodeKind::Refusal => Self::Refusal(serde_json::from_str(json)?),
+            NodeKind::Reply => Self::Reply(serde_json::from_str(json)?),
         })
     }
 }

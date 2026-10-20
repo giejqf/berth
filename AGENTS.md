@@ -182,6 +182,7 @@ The event flow is the primary UI. It is an ordered list of **nodes** per workflo
 | `Artifact` | Agent (`present_artifact`) | `{ artifact_id, title, description?, file: FileRef, error? }` — a file the agent made for the user (screenshot, recording, rendered page) |
 | `Reopened` | App (a session was opened from the history) | `{ slot, checkout, branch, from_checkout?, from_branch? }` — where the conversation goes on, and where it ran before when that was another checkout (ADR 0010) |
 | `Rewind` | App (the user rewound the conversation) | `{ dropped_rounds, from, to }` — marks where a rewind landed: what was dropped, when it ran |
+| `Reply` | Agent (`reply`) | `{ message }` — the agent's answer, Markdown, when the round answered or discussed something and changed nothing to review (ADR 0019) |
 | `Refusal` | Sidecar (`model_refusal_fallback` / `_no_fallback`) | `{ model, fallback_model?, category?, explanation?, subagent }` — the model refused a request; Claude Code went on with its fallback model, or the round stopped (ADR 0016) |
 | `Command` | App (a round that was a slash command Claude Code ran by itself) | `{ command, output }` — what the command printed, markdown (`/context`, `/usage`); ADR 0015 |
 | `Compacted` | Sidecar (from a `compact_boundary`) | `{ trigger: manual \| auto, pre_tokens, post_tokens? }` — Claude Code compacted the conversation (`/compact`, or on its own as the window filled) |
@@ -212,6 +213,11 @@ ask_user        { question, options?: string[], allow_free_text?: boolean }
 write_summary   { done: string[], remaining: string[], follow_ups?: FollowUp[], notes? }
   → Terminal. Ends the section. Triggers a tree snapshot (§7).
 
+reply           { message }
+  → Terminal. Emits Reply node: the answer, Markdown, in the flow. For a round
+     that answered or discussed something and changed nothing to review: ends
+     no section, takes no snapshot (ADR 0019). Not available to subagents.
+
 record_outcome  { kind, ref, summary, follow_ups?: FollowUp[] }
   → Terminal. Ends the workflow. App links `ref` to a GitHub entity if kind = pr.
 
@@ -237,7 +243,8 @@ present_review  { findings: [{ level, title, detail, path?, line?, suggested }],
 
 The agent's system prompt (sidecar `src/session.ts`, `BERTH_SYSTEM_PROMPT`) instructs:
 announce decisions as you make them, never narrate file edits, end every round with
-exactly one of `ask_user` / `write_summary` / `record_outcome`, use `gh` for PRs,
+exactly one of `ask_user` / `write_summary` / `reply` / `record_outcome` (the user reads
+only the tools, so an answer goes in `reply`), use `gh` for PRs,
 use connector CLIs for external systems, show files it made with `present_artifact`,
 present code review findings with `present_review` and act on the decisions.
 The app appends repo/slot/origin context via
@@ -250,10 +257,12 @@ Code's own `AskUserQuestion` tool is disallowed so questions go through `ask_use
 A round must end with **exactly one** terminal tool call.
 
 - Zero terminal calls when `result` arrives → sidecar sends a **nudge** turn
-  ("End this round with ask_user, write_summary, or record_outcome.") Max 2 nudges.
+  ("End this round with ask_user, write_summary, reply, or record_outcome.") Max 2 nudges.
   After that the app marks the round `unterminated` and renders a stub Summary from
   the last assistant text so the UI never dangles.
 - Second terminal call in the same round → tool returns an error; first one wins.
+- `reply` ends the round but not the section: no snapshot, and the round is not
+  section work (`Round::is_work`), like a command (ADR 0019).
 - `ask_user` suspends the round; the user's answer resumes the **same** round. A
   pending `ask_user` counts as the round's terminal call; an *answered* one does not,
   so the resumed round still ends with its own terminal call (ADR 0001).
@@ -678,6 +687,7 @@ session.quota    { complete, available, plan?, windows: [{ key, label?, utilizat
 sessions.listed  { sessions: [{ session_id, title, first_prompt?, cwd?, git_branch?, last_modified }] }   # reply to sessions.list
 node.compacted   { trigger, pre_tokens, post_tokens? }   # compact_boundary (ADR 0015)
 node.refusal     { model, fallback_model?, category?, explanation?, subagent }   # ADR 0016
+node.reply       { message }                     # the agent's answer (ADR 0019)
 branch.progress  { branch_id, summary }          # a subagent's task_progress summary
 session.suggestion { text }                      # prompt_suggestion: a predicted next prompt
 session.tasks    { tasks: [{ task_id, kind, description, agent? }] }   # background_tasks_changed, ambient ones left out
@@ -688,7 +698,7 @@ session.commands { commands: [{ name, description, argument_hint, aliases, built
 
 The sidecar is stateless across restarts: all state lives in SQLite on the app side.
 `system_prompt` is appended to `BERTH_SYSTEM_PROMPT`. `raw.event.seq` restarts with
-each sidecar process. `terminal_kind` ∈ `write_summary | record_outcome | unterminated |
+each sidecar process. `terminal_kind` ∈ `write_summary | record_outcome | reply | unterminated |
 interrupted | error | command`. `round.ended.cost_usd` is the delta of the SDK's cumulative cost.
 stdin EOF or `session.stop` stops the session and ends the process; stdout carries
 protocol lines only (logs go to `~/Library/Logs/Berth/sidecar.log`). A sidecar is
@@ -730,7 +740,8 @@ settles nothing (ADR 0013).
   (its agent working, or the slot being created or destroyed) is the working spinner,
   in the rail and its collapsed strip alike. The second line says what is happening
   (the live round's current step from `berth_core::activity`, "Asked a question · 40s
-  ago", "Review: 5 findings to decide · 1m ago", "Committed · 1 follow-up"); while
+  ago", "Review: 5 findings to decide · 1m ago", "Replied · 1m ago", "Committed · 1
+  follow-up"; after a reply the slot needs you, not a review); while
   Claude Code retries a failed API request it says so ("The API is overloaded; trying
   again (2 of 10) in 8s", `api_retry`). The footer shows Claude Code / GitHub CLI status
   (`backend/env.rs`; Node.js too while agents can't run without it); once signed in, Claude Code's line names the plan ("Max plan",
