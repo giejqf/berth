@@ -478,7 +478,8 @@ pub struct DiffResult {
     pub section: Option<u32>,
     pub from: String,
     pub to: String,
-    pub patch: String,
+    /// Parsed off the UI thread; diffs between the same two objects share it.
+    pub diff: Arc<berth_git::Diff>,
     pub stats: DiffStats,
     pub sections: Vec<u32>,
 }

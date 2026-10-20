@@ -495,6 +495,14 @@ Diffs: `git diff-tree -p -M --no-color <a> <b>`, parsed in `berth-git` into a ty
 model (files, hunks, lines with old/new numbers). Live tree is diffed via a fresh
 snapshot. Binary files show as "binary changed".
 
+Nothing about a diff runs on the UI thread but laying out its rows. The backend parses
+it and keeps the last 24 by the two object ids they compare (`backend/review.rs`;
+never by a ref name, which can move), so a live tree that hasn't changed diffs from
+the cache. The diff view syntax-highlights on a background thread, lines plain until
+the colors arrive, and keeps the last 8 highlighted diffs per theme
+(`ui/diff_view.rs`). A hidden review pane takes no diff; it catches up when shown, and
+lays out again only when the diff, its comments, the filter or the mode change.
+
 **Review comments** attach to `(snapshot_pair, path, side, line)`. They are stored
 locally and sent to the agent with the next Prompt. Optionally pushed to a PR via
 `gh pr comment` / `gh api` when the user chooses "post to PR".

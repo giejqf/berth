@@ -104,7 +104,7 @@ impl ReviewPane {
     pub fn set_visible(&mut self, visible: bool, cx: &mut Context<'_, Self>) {
         self.visible = visible;
         if visible {
-            self.ensure_loaded(cx);
+            self.sync(cx);
         }
     }
 
@@ -200,10 +200,13 @@ impl ReviewPane {
         }
     }
 
+    /// Follow the repo state (any change to it). Only a shown pane takes a
+    /// new diff, and lays out again only for what changed.
     fn sync(&mut self, cx: &mut Context<'_, Self>) {
-        if self.visible {
-            self.ensure_loaded(cx);
+        if !self.visible {
+            return;
         }
+        self.ensure_loaded(cx);
         let current = self
             .workflow_id(cx)
             .and_then(|wf| self.state.read(cx).diffs.get(&wf).cloned());
@@ -217,7 +220,7 @@ impl ReviewPane {
             self.diff.update(cx, |d, cx| d.show(current, cx));
         } else {
             // Comments may have changed.
-            self.diff.update(cx, DiffView::relayout);
+            self.diff.update(cx, DiffView::refresh_comments);
         }
         cx.notify();
     }

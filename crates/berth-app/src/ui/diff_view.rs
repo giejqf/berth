@@ -3,18 +3,18 @@
 //! comments and the new-comment editor. Virtualized; nothing is editable
 //! except the comment text.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use berth_core::ReviewCommentRow;
-use berth_git::{Diff, FileDiff, FileStatus, LineKind, parse_diff};
+use berth_git::{Diff, FileDiff, FileStatus, LineKind};
 use berth_protocol::DiffSide;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable, HighlightStyle,
     Hsla, InteractiveElement as _, IntoElement, ListAlignment, ListState, ParentElement as _,
-    Render, SharedString, StatefulInteractiveElement as _, Styled as _, StyledText, TextRun,
+    Render, SharedString, StatefulInteractiveElement as _, Styled as _, StyledText, Task, TextRun,
     Window, div, font, list, prelude::FluentBuilder as _, px,
 };
 use gpui_component::Rope;
@@ -53,10 +53,18 @@ pub struct DiffView {
     state: Entity<RepoState>,
     list: ListState,
     shown: Option<Arc<DiffResult>>,
-    diff: Rc<Diff>,
+    diff: Arc<Diff>,
     rows: Rc<Vec<Row>>,
-    /// Per file, per hunk: highlight runs for each line.
-    styles: Rc<Styles>,
+    /// Per file, per hunk: highlight runs for each line (empty until they
+    /// are worked out).
+    styles: Arc<Styles>,
+    /// The diffs highlighted last, by theme, newest last. Each holds its diff,
+    /// so another one can't take its place (diffs of the same two objects
+    /// share one).
+    highlighted: VecDeque<(Arc<Diff>, bool, Arc<Styles>)>,
+    highlighting: Option<Task<()>>,
+    /// The review comments the rows were laid out with.
+    laid_out: Vec<String>,
     collapsed: HashSet<usize>,
     pub split: bool,
     filter: String,
@@ -94,9 +102,12 @@ impl DiffView {
             state,
             list: ListState::new(0, ListAlignment::Top, px(600.)),
             shown: None,
-            diff: Rc::default(),
+            diff: Arc::default(),
             rows: Rc::default(),
-            styles: Rc::default(),
+            styles: Arc::default(),
+            highlighted: VecDeque::new(),
+            highlighting: None,
+            laid_out: Vec::new(),
             collapsed: HashSet::new(),
             split: false,
             filter: String::new(),
@@ -113,8 +124,9 @@ impl DiffView {
         &self.diff
     }
 
-    /// Show `diff` (parse, highlight, lay out). Keeps the draft only when the
-    /// diff is the same pair of snapshots.
+    /// Show `diff` (parsed by the backend; highlighted off the UI thread, or
+    /// from the cache). Keeps the draft only when the diff is the same pair of
+    /// snapshots.
     pub fn show(&mut self, diff: Option<Arc<DiffResult>>, cx: &mut Context<'_, Self>) {
         let same_pair = match (&self.shown, &diff) {
             (Some(a), Some(b)) => a.from == b.from && a.to == b.to,
@@ -126,17 +138,68 @@ impl DiffView {
             self.editing = None;
             self.collapsed.clear();
         }
-        self.diff = Rc::new(
-            self.shown
-                .as_ref()
-                .and_then(|d| parse_diff(&d.patch).ok())
-                .unwrap_or_default(),
-        );
+        self.diff = self
+            .shown
+            .as_ref()
+            .map(|d| d.diff.clone())
+            .unwrap_or_default();
         self.dark = Tokens::get(cx).dark;
-        self.styles = Rc::new(highlight_all(&self.diff, &Tokens::get(cx)));
+        self.highlight(cx);
         self.relayout(cx);
         if !same_pair {
             self.list.scroll_to(gpui::ListOffset::default());
+        }
+    }
+
+    /// Syntax colors for the shown diff: from the cache, else worked out on a
+    /// background thread (tree-sitter over every hunk takes a while on a big
+    /// diff); the lines show plain until they arrive.
+    fn highlight(&mut self, cx: &mut Context<'_, Self>) {
+        const KEEP: usize = 8;
+        let (diff, dark) = (self.diff.clone(), self.dark);
+        if let Some(at) = self
+            .highlighted
+            .iter()
+            .position(|(d, k, _)| Arc::ptr_eq(d, &diff) && *k == dark)
+            && let Some(entry) = self.highlighted.remove(at)
+        {
+            self.styles = entry.2.clone();
+            self.highlighted.push_back(entry);
+            self.highlighting = None;
+            return;
+        }
+        self.styles = Arc::default();
+        if diff.files.is_empty() {
+            self.highlighting = None;
+            return;
+        }
+        let theme = syntax_theme(&Tokens::get(cx));
+        let work = cx.background_spawn({
+            let diff = diff.clone();
+            async move { highlight_all(&diff, theme.as_ref()) }
+        });
+        // Replacing the task drops one for a diff no longer shown.
+        self.highlighting = Some(cx.spawn(async move |this, cx| {
+            let styles = Arc::new(work.await);
+            let _ = this.update(cx, |v, cx| {
+                v.highlighted
+                    .push_back((diff.clone(), dark, styles.clone()));
+                while v.highlighted.len() > KEEP {
+                    v.highlighted.pop_front();
+                }
+                if Arc::ptr_eq(&v.diff, &diff) && v.dark == dark {
+                    v.styles = styles;
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
+    /// Lay out again if the review comments on the shown pair changed since.
+    pub fn refresh_comments(&mut self, cx: &mut Context<'_, Self>) {
+        let ids: Vec<String> = self.comments(cx).into_iter().map(|c| c.id).collect();
+        if ids != self.laid_out {
+            self.relayout(cx);
         }
     }
 
@@ -228,6 +291,7 @@ impl DiffView {
 
     pub fn relayout(&mut self, cx: &mut Context<'_, Self>) {
         let comments = self.comments(cx);
+        self.laid_out = comments.iter().map(|c| c.id.clone()).collect();
         let mut by_anchor: HashMap<Anchor, Vec<String>> = HashMap::new();
         for c in &comments {
             if self.editing.as_deref() == Some(c.id.as_str()) {
@@ -258,11 +322,15 @@ impl DiffView {
             }
             for (hi, h) in f.hunks.iter().enumerate() {
                 rows.push(Row::Hunk(fi, hi));
+                // Most lines carry nothing: skip building their anchor.
+                let anchored = !by_anchor.is_empty() || self.draft.is_some();
                 let attach = |rows: &mut Vec<Row>,
                               side: DiffSide,
                               line: Option<u32>,
                               draft: &Option<Anchor>| {
-                    let Some(line) = line else { return };
+                    let Some(line) = line.filter(|_| anchored) else {
+                        return;
+                    };
                     let a = Anchor {
                         path: path.clone(),
                         side,
@@ -524,8 +592,8 @@ fn syntax_theme(t: &Tokens) -> Option<HighlightTheme> {
     serde_json::from_value(json).ok()
 }
 
-fn highlight_all(diff: &Diff, t: &Tokens) -> Styles {
-    let Some(theme) = syntax_theme(t) else {
+fn highlight_all(diff: &Diff, theme: Option<&HighlightTheme>) -> Styles {
+    let Some(theme) = theme else {
         return Vec::new();
     };
     diff.files
@@ -551,7 +619,7 @@ fn highlight_all(diff: &Diff, t: &Tokens) -> Styles {
                             if range.is_empty() {
                                 return Vec::new();
                             }
-                            hl.styles(&range, &theme)
+                            hl.styles(&range, theme)
                                 .into_iter()
                                 .map(|(r, s)| (r.start - range.start..r.end - range.start, s))
                                 .collect()
@@ -641,7 +709,7 @@ impl Render for DiffView {
         let t = Tokens::get(cx);
         if t.dark != self.dark {
             self.dark = t.dark;
-            self.styles = Rc::new(highlight_all(&self.diff, &t));
+            self.highlight(cx);
         }
         let comments: HashMap<String, ReviewCommentRow> = self
             .comments(cx)
@@ -714,9 +782,9 @@ type Styles = Vec<Vec<Vec<Vec<(Range<usize>, HighlightStyle)>>>>;
 
 struct Ctx {
     t: Tokens,
-    diff: Rc<Diff>,
+    diff: Arc<Diff>,
     rows: Rc<Vec<Row>>,
-    styles: Rc<Styles>,
+    styles: Arc<Styles>,
     comments: HashMap<String, ReviewCommentRow>,
     rounds: HashMap<String, usize>,
     user: String,

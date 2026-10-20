@@ -65,6 +65,8 @@ pub(crate) struct Shared {
     env_checked: Mutex<Option<std::time::Instant>>,
     /// Why agents on this Mac can't run, as the last check found.
     agents_blocked: Mutex<Option<(&'static str, AgentFix)>>,
+    /// The diffs computed last, by the objects they compare.
+    diff_cache: Mutex<review::DiffCache>,
     /// Sessions to restart once their round ends: Claude Code signed in as
     /// another account while they worked (ADR 0017).
     restart_after_round: Mutex<HashSet<String>>,
@@ -101,6 +103,7 @@ pub fn start(rt: &tokio::runtime::Handle, ui: UnboundedSender<UiEvent>) -> Resul
         ui,
         env_checked: Mutex::default(),
         agents_blocked: Mutex::default(),
+        diff_cache: Mutex::default(),
         restart_after_round: Mutex::default(),
         background: Mutex::default(),
     });
