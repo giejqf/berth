@@ -151,14 +151,16 @@ fn details_link(t: &Tokens, node: &Node, ctx: &RowCtx) -> Option<AnyElement> {
     )
 }
 
-/// A node's title text with inline code chips.
+/// A node's title text (semibold) with inline code, selectable.
 fn inline_title(t: &Tokens, text: &str) -> AnyElement {
-    rich::para(t, &rich::inlines(text)).into_any_element()
+    rich::selectable(t, &rich::inlines(text), t.text, gpui::FontWeight::SEMIBOLD).into_any_element()
 }
 
 // ---- rows ----
 
 pub fn render_row(ix: usize, ctx: &RowCtx, window: &mut Window, cx: &mut App) -> AnyElement {
+    // Text in this row selects after the rows above it.
+    super::select::begin_row(ix);
     let t = Tokens::get(cx);
     let last = ix + 1 == ctx.rows.len();
     let focused = ctx.flow_focused && ctx.cursor == Some(ix);

@@ -223,7 +223,43 @@ fn flat(inl: &[Inline]) -> String {
         .collect()
 }
 
-/// Full rendering: wrapping words, code chips, lists. Color is the text color.
+/// One paragraph as a single run of text you can select and copy: bold in
+/// the semibold weight, code in mono on the raised background, the rest in
+/// `weight`.
+pub fn selectable(
+    t: &Tokens,
+    inl: &[Inline],
+    color: Hsla,
+    weight: FontWeight,
+) -> super::select::Selectable {
+    let mut text = String::new();
+    let mut runs = Vec::new();
+    for span in inl {
+        let (s, family, weight, background) = match span {
+            Inline::Text(s) => (s, SANS, weight, None),
+            Inline::Bold(s) => (s, SANS, FontWeight::SEMIBOLD, None),
+            Inline::Code(s) => (s, MONO, FontWeight::NORMAL, Some(t.raised)),
+        };
+        if s.is_empty() {
+            continue;
+        }
+        text.push_str(s);
+        let mut f = font(family);
+        f.weight = weight;
+        runs.push(TextRun {
+            len: s.len(),
+            font: f,
+            color,
+            background_color: background,
+            underline: None,
+            strikethrough: None,
+        });
+    }
+    super::select::styled(text, runs, t)
+}
+
+/// Full rendering: paragraphs, headings, lists and tables, every one of them
+/// selectable. Color is the text color.
 pub fn rich(t: &Tokens, text: &str, color: Hsla) -> Div {
     let blocks = parse(text);
     let mut col = div()
@@ -234,9 +270,15 @@ pub fn rich(t: &Tokens, text: &str, color: Hsla) -> Div {
         .min_w_0();
     for b in blocks {
         col = col.child(match b {
-            Block::Para(i) => para(t, &i),
-            Block::Heading(i) => para(t, &bolded(i)),
-            Block::Table(rows) => table(t, &rows),
+            Block::Para(i) => div()
+                .min_w_0()
+                .child(selectable(t, &i, color, FontWeight::NORMAL)),
+            Block::Heading(i) => {
+                div()
+                    .min_w_0()
+                    .child(selectable(t, &bolded(i), color, FontWeight::NORMAL))
+            }
+            Block::Table(rows) => table(t, &rows, color),
             Block::List(items) => {
                 let mut list = div().flex().flex_col().gap(px(4.));
                 for item in items {
@@ -252,7 +294,12 @@ pub fn rich(t: &Tokens, text: &str, color: Hsla) -> Div {
                                     .pl(px(5.))
                                     .child(dot(5., color)),
                             )
-                            .child(para(t, &item).flex_1()),
+                            .child(div().flex_1().min_w_0().child(selectable(
+                                t,
+                                &item,
+                                color,
+                                FontWeight::NORMAL,
+                            ))),
                     );
                 }
                 list
@@ -273,7 +320,7 @@ fn bolded(inl: Vec<Inline>) -> Vec<Inline> {
 
 /// A table. Columns of quantities (counts, percentages) are narrow and
 /// right-aligned; the others share the room. The header row is quieter.
-fn table(t: &Tokens, rows: &[Vec<String>]) -> Div {
+fn table(t: &Tokens, rows: &[Vec<String>], color: Hsla) -> Div {
     let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
     let body = rows.get(1..).unwrap_or_default();
     let quantity: Vec<bool> = (0..columns)
@@ -294,7 +341,8 @@ fn table(t: &Tokens, rows: &[Vec<String>]) -> Div {
             .overflow_hidden()
             .when(n == 0, |d| d.text_color(t.text3));
         for (c, cell) in row.iter().enumerate() {
-            let text = para(t, &inlines(cell));
+            let cell_color = if n == 0 { t.text3 } else { color };
+            let text = selectable(t, &inlines(cell), cell_color, FontWeight::NORMAL);
             line = line.child(if quantity.get(c).copied().unwrap_or(false) {
                 div()
                     .flex_none()

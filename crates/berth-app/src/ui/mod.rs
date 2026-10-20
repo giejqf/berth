@@ -22,6 +22,7 @@ mod repo_window;
 mod review_pane;
 mod rewind;
 pub mod rich;
+mod select;
 mod settings;
 mod sign_in;
 mod slot_rail;

@@ -352,6 +352,15 @@ pub fn start(cx: &mut App) {
                     }
                 }),
                 // Real keystrokes through GPUI's dispatch, e.g. `keys 2 enter`.
+                // Log the window's selected text (what ⌘C would copy), without
+                // touching the clipboard.
+                "selection" => cx.update(|cx| {
+                    with_window(cx, |window, cx| {
+                        window.draw(cx).clear(cx);
+                        let text = gpui_base::TextSelection::selected_text(window, cx);
+                        tracing::info!(text, "devtools selection");
+                    });
+                }),
                 // Force one frame and log how long it took (`label` names it).
                 "draw" => cx.update(|cx| {
                     with_window(cx, |window, cx| {

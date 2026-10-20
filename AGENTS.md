@@ -928,7 +928,10 @@ settles nothing (ADR 0013).
   once. All of it is skipped while macOS's Reduce motion is on (gpui-base reads it at
   launch and on window activation).
 - The event flow is one column: main-lane nodes in order, subagent groups as blocks
-  (§5.4), section-end markers. Layout is computed in `berth-core` (`flow::layout`),
+  (§5.4), section-end markers. Its text selects with the mouse, across nodes, and ⌘C
+  copies it (`ui/select.rs`: styled runs in gpui-base's window text selection, which
+  the root's ⌘C copies); each paragraph is one run, inline code mono on a tint, in
+  reading order by row. Layout is computed in `berth-core` (`flow::layout`),
   views only draw it.
 - Performance budget: 60 fps while streaming; event flow must virtualize; diff view
   must handle 10k-line diffs without jank. The flow is a GPUI `list` that splices only
