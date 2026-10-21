@@ -743,10 +743,10 @@ settles nothing (ADR 0013).
   ago", "Review: 5 findings to decide · 1m ago", "Replied · 1m ago", "Committed · 1
   follow-up"; after a reply the slot needs you, not a review); while
   Claude Code retries a failed API request it says so ("The API is overloaded; trying
-  again (2 of 10) in 8s", `api_retry`). The footer shows Claude Code / GitHub CLI status
-  (`backend/env.rs`; Node.js too while agents can't run without it); once signed in, Claude Code's line names the plan ("Max plan",
-  "API key", or "via Bedrock"), and hovering it says who it signs in as (`claude auth
-  status`, else `session.account`, kept in `settings.account`).
+  again (2 of 10) in 8s", `api_retry`). The rail's foot is a **Command palette** button
+  (⌘K; the ⌘ glyph alone on the collapsed strip). Claude Code, GitHub CLI and Node.js
+  status (`backend/env.rs`) show in Settings and Welcome, and where they block
+  something (the composer, New workflow).
 - A slot's first line is its workflow's title, or the name the user gave it: **Rename
   slot** (R with the rail focused, a double-click, the row's context menu, the flow's
   More menu, ⌘K) stores `slots.custom_name`; an empty name goes back to the title.

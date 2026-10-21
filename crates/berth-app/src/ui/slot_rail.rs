@@ -1,5 +1,5 @@
 //! Left rail: the repo's slots grouped by what they need (Needs you, Working,
-//! Ready to review, Done), the tool status footer, and a 56px collapsed strip
+//! Ready to review, Done), the command palette button, and a 56px collapsed strip
 //! used when the review pane needs the room.
 
 use std::collections::HashMap;
@@ -17,17 +17,17 @@ use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::tooltip::Tooltip;
 
+use super::RepoState;
 use super::kit::{
     Btn, Size, TypeExt as _, ago, caption, count_badge, dot, dur, now_ms, plural, spinner,
 };
 use super::motion;
 use super::repo_state::{RailGroup, rail_group};
 use super::windows::{DragChip, Dragged, SlotDrag, WindowDrag};
-use super::{EnvGlobal, RepoState};
-use crate::backend::{SlotEntry, ToolState, ToolStatus};
+use crate::backend::SlotEntry;
 use crate::keymap::{
-    DestroySlot, MoveSlotToNewWindow, NewWorkflow, NewWorkflowHere, OpenHistory, RailNext,
-    RailOpen, RailPrev, RenameSlot, ToggleRail,
+    CommandPalette, DestroySlot, MoveSlotToNewWindow, NewWorkflow, NewWorkflowHere, OpenHistory,
+    RailNext, RailOpen, RailPrev, RenameSlot, ToggleRail,
 };
 use crate::theme::{Tokens, ty};
 
@@ -220,45 +220,11 @@ fn status_dot(t: &Tokens, entry: &SlotEntry, size: f32) -> AnyElement {
     }
 }
 
-fn tool_color(t: &Tokens, s: &ToolStatus) -> Hsla {
-    match s.state {
-        ToolState::Ok => t.done,
-        ToolState::Warn | ToolState::Missing => t.attention,
-        ToolState::Checking => t.text3,
-    }
-}
-
-/// Tool status lines at the bottom of the rail.
-fn footer(t: &Tokens, cx: &App, collapsed: bool) -> Div {
-    let env = cx
-        .try_global::<EnvGlobal>()
-        .map(|e| e.0.clone())
-        .unwrap_or_default();
-    // Once signed in: the plan Claude Code works on and who it signs in as
-    // on hover, from `claude auth status` (ADR 0017), else as its last
-    // session reported them (ADR 0016).
-    let mut claude = env.claude.clone();
-    let account = cx
-        .try_global::<super::Berth>()
-        .and_then(|b| b.account.clone())
-        .filter(|_| claude.state == ToolState::Ok);
-    if claude.summary == "signed in"
-        && let Some(plan) = account.as_ref().and_then(plan_summary)
-    {
-        claude.summary = plan;
-    }
-    let account_tip: Option<SharedString> = claude
-        .tip
-        .clone()
-        .filter(|_| claude.state == ToolState::Ok)
-        .or_else(|| account.as_ref().and_then(account_detail))
-        .map(Into::into);
-    // Node.js only when agents can't run for want of it.
-    let mut rows = vec![("Claude Code", &claude, "claude")];
-    if env.node.blocks_agents.is_some() {
-        rows.push(("Node.js", &env.node, "node"));
-    }
-    rows.push(("GitHub", &env.gh, "gh"));
+/// The bottom of the rail: the command palette (⌘K).
+fn footer(t: &Tokens, collapsed: bool) -> Div {
+    let open = |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
+        window.dispatch_action(Box::new(CommandPalette), cx);
+    };
     let base = div()
         .mt_auto()
         .flex()
@@ -267,92 +233,24 @@ fn footer(t: &Tokens, cx: &App, collapsed: bool) -> Div {
         .border_t_1()
         .border_color(t.border);
     if collapsed {
-        let mut col = base.w_full().items_center().py(px(10.)).gap(px(8.));
-        for (name, s, id) in rows {
-            let tip: SharedString = format!("{name} · {}", summary(s)).into();
-            col = col.child(
-                div()
-                    .id(SharedString::from(format!("env-{id}")))
-                    .p(px(2.))
-                    .child(dot(6., tool_color(t, s)))
-                    .tooltip(move |w, cx| Tooltip::new(tip.clone()).build(w, cx)),
-            );
-        }
-        return col;
-    }
-    let mut col = base
-        .px(px(8.))
-        .py(px(10.))
-        .gap(px(6.))
-        .ty(ty::META)
-        .text_color(t.text2);
-    for (name, s, id) in rows {
-        let tip = account_tip.clone().filter(|_| id == "claude");
-        col = col.child(
-            div()
-                .id(SharedString::from(format!("env-row-{id}")))
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .min_w_0()
-                .when_some(tip, |d, tip| {
-                    d.tooltip(move |w, cx| Tooltip::new(tip.clone()).build(w, cx))
-                })
-                .child(dot(6., tool_color(t, s)))
-                .child(
-                    div()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .whitespace_nowrap()
-                        .child(format!("{name} · {}", summary(s))),
-                ),
+        return base.w_full().items_center().py(px(8.)).child(
+            Btn::new("rail-palette-collapsed")
+                .ghost()
+                .size(Size::S32)
+                .icon("command", 16.)
+                .tooltip("Command palette  ⌘K")
+                .on_click(open),
         );
     }
-    col
-}
-
-/// Where API requests go, when it is not Anthropic.
-fn provider(a: &berth_protocol::Account) -> Option<&'static str> {
-    match a.provider.as_deref() {
-        None | Some("firstParty") => None,
-        Some("bedrock") => Some("via Bedrock"),
-        Some("vertex") => Some("via Vertex AI"),
-        Some("foundry") => Some("via Foundry"),
-        Some("gateway") => Some("via a gateway"),
-        Some(_) => Some("via a cloud provider"),
-    }
-}
-
-/// The footer's short form: "Max plan" ("Claude Max"), or where requests go.
-fn plan_summary(a: &berth_protocol::Account) -> Option<String> {
-    provider(a).map(str::to_owned).or_else(|| {
-        let plan = a.plan.as_deref()?.trim();
-        let plan = plan.strip_prefix("Claude ").unwrap_or(plan);
-        Some(format!("{plan} plan"))
-    })
-}
-
-/// The hover's long form: who, which organization, which plan, where.
-fn account_detail(a: &berth_protocol::Account) -> Option<String> {
-    let parts: Vec<&str> = [
-        a.email.as_deref(),
-        a.organization.as_deref(),
-        a.plan.as_deref(),
-        provider(a),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-    (!parts.is_empty()).then(|| format!("Signed in as {}", parts.join(" · ")))
-}
-
-fn summary(s: &ToolStatus) -> String {
-    if s.state == ToolState::Checking {
-        "checking…".to_owned()
-    } else {
-        s.summary.clone()
-    }
+    base.px(px(8.)).py(px(8.)).child(
+        Btn::new("rail-palette")
+            .ghost()
+            .size(Size::S28)
+            .icon("command", 14.)
+            .label("Command palette")
+            .hint("⌘K")
+            .on_click(open),
+    )
 }
 
 impl Render for SlotRail {
@@ -617,7 +515,7 @@ impl Render for SlotRail {
                     ),
             )
             .child(list)
-            .child(footer(&t, cx, false))
+            .child(footer(&t, false))
     }
 }
 
@@ -684,5 +582,5 @@ pub fn collapsed(state: &Entity<RepoState>, t: &Tokens, cx: &App) -> Div {
                 .child(status_dot(t, entry, 10.)),
         );
     }
-    col.child(footer(t, cx, true))
+    col.child(footer(t, true))
 }

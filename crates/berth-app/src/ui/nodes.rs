@@ -1655,7 +1655,7 @@ fn outcome(t: &Tokens, node: &Node, o: &Outcome, ctx: &RowCtx, line: bool) -> Di
                 );
         }
         OutcomeKind::Pr if r.starts_with("http") => {
-            meta = meta.child(link("open-pr", "Open PR", t, move |_, _, cx| {
+            meta = meta.child(link("open-pr", "View PR", t, move |_, _, cx| {
                 cx.open_url(&r);
             }));
         }
