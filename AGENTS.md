@@ -566,7 +566,9 @@ from Linear issue" calls `linear-cli` to list issues).
 
 `[origin].list` makes the binary print a JSON array of `{ ref, title, body?, url? }`;
 the New Workflow dialog offers it as a source (`kind` `linear`/`posthog` map to those
-Origin kinds; anything else becomes a thought). Other shapes are mapped in
+Origin kinds; anything else becomes a thought). Every source there, GitHub issues and
+PRs too, is listed again each time its tab opens; the last list shows meanwhile, with
+a spinner in the search field. Other shapes are mapped in
 `connector.toml`: `items = "results"` (dot path to the array) and
 `fields = { ref = "id", title = "name", … }` (dot paths in each item; numbers become
 text). `connector.toml` is strict: unknown keys are errors, the name must match
@@ -582,7 +584,7 @@ Linear and PostHog are connectors, not integrations, but they ship with Berth
 
 | Connector | CLI | Keys | Origins |
 |---|---|---|---|
-| `linear` | [`linear-cli`](https://github.com/nesszer/linear-cli) (MIT), release binary | `LINEAR_API_KEY` | your open assigned issues (`api query`, GraphQL aliases give `ref/title/body/url`) |
+| `linear` | [`linear-cli`](https://github.com/nesszer/linear-cli) (MIT), release binary | `LINEAR_API_KEY` | open issues in your teams, yours and unassigned, the 250 last updated (`api query`, GraphQL aliases give `ref/title/body/url`) |
 | `posthog` | `posthog-cli` (MIT, PostHog's official CLI), built from the published crate | `POSTHOG_CLI_API_KEY`, `POSTHOG_CLI_PROJECT_ID`; optional `POSTHOG_CLI_HOST` | active error tracking issues, last 7 days (`api call --json query-error-tracking-issues-list`) |
 
 - `scripts/fetch-connectors.sh` (`just fetch-connectors`; run by `setup`, `dev`,

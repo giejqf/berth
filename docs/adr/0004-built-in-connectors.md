@@ -36,6 +36,11 @@ issues, so the origin list uses its raw GraphQL command instead:
 update first), with aliases (`ref: identifier`, `body: description`) that
 produce Berth's item shape directly.
 
+*Later:* the list is `issues` filtered to open issues in the user's teams that
+are assigned to them or to no one, the 250 most recently updated, in one
+request (`items = "data.issues.nodes"`): `--paginate` walks 50 at a time, and
+a team's unassigned backlog can be long.
+
 The skill teaches reading (`i get --comments`), and writing only when asked or
 to link the workflow's PR. It keeps the agent off `i start --checkout` and
 `git pr`, since Berth owns the branch and PRs go through `gh`.

@@ -229,13 +229,7 @@ impl NewWorkflowForm {
 
     fn choose(&mut self, source: Source, cx: &mut Context<'_, Self>) {
         if let Source::List(src) = &source {
-            let s = self.state.read(cx);
-            if !s.origins.contains_key(src) {
-                s.backend.send(Command::ListOrigins {
-                    repo_id: s.repo_id().to_owned(),
-                    source: src.clone(),
-                });
-            }
+            self.state.update(cx, |s, cx| s.list_origins(src, cx));
         }
         self.source = source;
         self.selected = None;
@@ -430,6 +424,8 @@ impl Render for NewWorkflowForm {
                 .into_any_element(),
             Source::List(src) => {
                 let query = self.search.read(cx).value().to_lowercase();
+                let updating =
+                    state.origins_loading.contains(src) && state.origins.contains_key(src);
                 let list: gpui::AnyElement = match state.origins.get(src) {
                     None => div()
                         .flex()
@@ -598,8 +594,13 @@ impl Render for NewWorkflowForm {
                         field_frame(&t, focused(&self.search), false)
                             .h(px(34.))
                             .px(px(10.))
+                            .gap(px(8.))
                             .items_center()
-                            .child(super::kit::bare_input(&self.search)),
+                            .child(super::kit::bare_input(&self.search))
+                            // The last list stays while a newer one loads.
+                            .when(updating, |d| {
+                                d.child(spinner("origins-updating", 10, t.text3))
+                            }),
                     )
                     .child(list)
                     .into_any_element()

@@ -720,11 +720,11 @@ fn shipped_connectors_are_valid() {
     assert_eq!(linear.secrets, ["LINEAR_API_KEY"]);
     assert_eq!(posthog.optional_secrets, ["POSTHOG_CLI_HOST"]);
 
-    // linear-cli `api query --paginate` prints the aliased nodes as an array.
-    let nodes = serde_json::json!([
+    // linear-cli `api query` prints the response; the aliased nodes are in it.
+    let response = serde_json::json!({"data": {"issues": {"nodes": [
         {"ref": "ENG-1", "title": "Fix login", "body": null, "url": "https://linear.app/a/issue/ENG-1"}
-    ]);
-    let items = linear.origin.as_ref().unwrap().map(&nodes).unwrap();
+    ]}}});
+    let items = linear.origin.as_ref().unwrap().map(&response).unwrap();
     assert_eq!(items[0].r#ref, "ENG-1");
     assert_eq!(items[0].body, None);
 

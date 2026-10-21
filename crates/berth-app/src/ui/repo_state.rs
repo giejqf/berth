@@ -72,7 +72,10 @@ pub struct RepoState {
     diff_wanted: HashMap<String, u64>,
     diff_tickets: u64,
     pub comments: HashMap<String, Vec<ReviewCommentRow>>,
+    /// Each source's last list, shown while a newer one loads.
     pub origins: HashMap<OriginSource, Result<Vec<OriginChoice>, String>>,
+    /// Sources being listed now.
+    pub origins_loading: HashSet<OriginSource>,
     pub connectors: Vec<ConnectorInfo>,
     /// The preset the review pane shows, per workflow.
     pub review_preset: HashMap<String, (DiffPreset, Option<u32>)>,
@@ -203,6 +206,7 @@ impl RepoState {
             diff_tickets: 0,
             comments: HashMap::new(),
             origins: HashMap::new(),
+            origins_loading: HashSet::new(),
             connectors,
             review_preset: HashMap::new(),
             model_setting: None,
@@ -568,12 +572,24 @@ impl RepoState {
         });
     }
 
+    /// Lists `source` again: issues, PRs and tickets move on between visits.
+    pub fn list_origins(&mut self, source: &OriginSource, cx: &mut Context<'_, Self>) {
+        if self.origins_loading.insert(source.clone()) {
+            self.backend.send(Command::ListOrigins {
+                repo_id: self.repo_id().to_owned(),
+                source: source.clone(),
+            });
+            cx.notify();
+        }
+    }
+
     pub fn set_origins(
         &mut self,
         source: OriginSource,
         result: Result<Vec<OriginChoice>, String>,
         cx: &mut Context<'_, Self>,
     ) {
+        self.origins_loading.remove(&source);
         self.origins.insert(source, result);
         cx.notify();
     }
