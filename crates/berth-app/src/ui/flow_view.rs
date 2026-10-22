@@ -397,10 +397,14 @@ impl FlowView {
         let review_open = state.review_open;
         let sections = wf.section_no.saturating_sub(1).max(1);
         let rounds = view.rounds.len();
+        // One line: the branch gives way first, then the rest is clipped.
         let mut meta = div()
             .flex()
             .items_center()
             .gap(px(8.))
+            .min_w_0()
+            .overflow_hidden()
+            .whitespace_nowrap()
             .ty(ty::META)
             .text_color(t.text2)
             .child(origin_chip(
@@ -410,7 +414,14 @@ impl FlowView {
             ));
         if let Some(e) = entry {
             meta = meta
-                .child(div().font_family(MONO).child(e.slot.branch.clone()))
+                .child(
+                    div()
+                        .min_w(px(80.))
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .font_family(MONO)
+                        .child(e.slot.branch.clone()),
+                )
                 .child(div().text_color(t.text3).child("·"))
                 .child(e.slot.slot_type.clone());
         }
@@ -531,6 +542,7 @@ fn background_chip(
         div()
             .id("background-tasks")
             .flex()
+            .flex_none()
             .items_center()
             .gap(px(6.))
             .child(spinner("background-spin", 10, t.text2))
@@ -538,6 +550,7 @@ fn background_chip(
                 div()
                     .ty(ty::META)
                     .text_color(t.text2)
+                    .whitespace_nowrap()
                     .child(format!("{} in background", tasks.len())),
             )
             .tooltip(move |w, cx| gpui_component::tooltip::Tooltip::new(tip.clone()).build(w, cx))
@@ -563,6 +576,7 @@ fn more_menu(t: &Tokens) -> impl IntoElement {
     let color = t.text2;
     Button::new("more-actions")
         .ghost()
+        .flex_none()
         .w(px(28.))
         .h(px(28.))
         .child(icon("more", 16., color))
@@ -633,13 +647,7 @@ impl Render for FlowView {
             .comments
             .get(&view.workflow.id)
             .map_or(0, |c| c.iter().filter(|c| c.sent_in_node.is_none()).count());
-        let width = window.viewport_size().width.as_f32()
-            - if state.review_open {
-                super::repo_window::review_width(window, cx) + super::slot_rail::STRIP_W
-            } else {
-                super::repo_window::RAIL_W
-            }
-            - 40.;
+        let width = state.flow_width - 40.;
         let ctx = Rc::new(RowCtx {
             view: view.clone(),
             rows: self.rows.clone(),

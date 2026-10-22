@@ -844,21 +844,38 @@ fn row_content(ix: usize, c: &Ctx, cx: &mut App) -> AnyElement {
                     14.,
                     t.text3,
                 ))
+                // Long paths lose their start, so the file name stays.
                 .child(
                     div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis_start()
+                        .whitespace_nowrap()
                         .font_family(MONO)
                         .medium()
                         .child(f.display_path().to_owned()),
                 )
-                .children(status_label(f).map(|s| div().text_color(t.text3).child(s)))
+                .children(status_label(f).map(|s| {
+                    div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .text_color(t.text3)
+                        .child(s)
+                }))
                 .child(
                     div()
                         .ml_auto()
+                        .flex_none()
+                        .whitespace_nowrap()
                         .text_color(t.done)
                         .child(format!("+{}", f.additions())),
                 )
                 .child(
                     div()
+                        .flex_none()
+                        .whitespace_nowrap()
                         .text_color(if f.deletions() == 0 {
                             t.text3
                         } else {
@@ -1160,9 +1177,30 @@ fn comment_card(c: &Ctx, r: &ReviewCommentRow) -> impl IntoElement {
                 .items_center()
                 .gap(px(8.))
                 .child(avatar(t, initial, 18.))
-                .child(div().semibold().child(c.user.clone()))
-                .child(div().ty(ty::META).text_color(t.text3).child(when))
-                .child(div().ml_auto().child(status)),
+                .child(
+                    div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .semibold()
+                        .child(c.user.clone()),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .whitespace_nowrap()
+                        .ty(ty::META)
+                        .text_color(t.text3)
+                        .child(when),
+                )
+                .child(
+                    div()
+                        .ml_auto()
+                        .flex_none()
+                        .whitespace_nowrap()
+                        .child(status),
+                ),
         )
         .child(
             div()
@@ -1177,7 +1215,7 @@ fn comment_card(c: &Ctx, r: &ReviewCommentRow) -> impl IntoElement {
                     .gap(px(12.))
                     .ty(ty::META)
                     .text_color(t.text3)
-                    .child("Sends with your next prompt")
+                    .child(super::kit::shrink("Sends with your next prompt"))
                     .child(div().ml_auto().child(link(
                         SharedString::from(format!("edit-{id}")),
                         "Edit",
@@ -1236,14 +1274,9 @@ fn draft_card(c: &Ctx) -> impl IntoElement {
                 .items_center()
                 .gap(px(8.))
                 .child(
-                    div()
-                        .flex()
-                        .ty(ty::META)
-                        .text_color(t.text3)
-                        .child(div().font_family(MONO).child("esc"))
-                        .child(" to cancel"),
+                    super::kit::shrink(super::kit::keyed(&["", "esc", " to cancel"], t.text3))
+                        .ty(ty::META),
                 )
-                .child(div().flex_1())
                 .child(
                     Btn::new("draft-cancel")
                         .size(Size::S26)

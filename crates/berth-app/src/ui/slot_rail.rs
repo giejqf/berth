@@ -400,6 +400,7 @@ impl Render for SlotRail {
                         .flex()
                         .flex_col()
                         .gap(px(1.))
+                        .flex_1()
                         .min_w_0()
                         .child(
                             div()

@@ -17,7 +17,9 @@ use gpui::{
 use gpui_component::input::{InputEvent, Position, TextareaState};
 
 use super::RepoState;
-use super::kit::{Btn, Size, TypeExt as _, dot, field_frame, icon, kbd, plural, ring, spinner};
+use super::kit::{
+    Btn, Size, TypeExt as _, dot, field_frame, icon, kbd, keyed, plural, ring, shrink, spinner,
+};
 use super::motion;
 use crate::backend::{AgentFix, Command};
 use crate::keymap::{
@@ -406,11 +408,11 @@ impl Render for Composer {
                 .items_center()
                 .gap(px(8.))
                 .child(spinner("composer-spin", 10, t.text2))
-                .child(if creating {
+                .child(shrink(if creating {
                     "Creating the slot. The agent starts once it is ready."
                 } else {
                     "Starting the agent…"
-                })
+                }))
                 .into_any_element(),
             WorkflowState::Running
                 if state
@@ -423,7 +425,7 @@ impl Render for Composer {
                     .items_center()
                     .gap(px(8.))
                     .child(spinner("composer-spin", 10, t.accent))
-                    .child("Claude Code is compacting the conversation. What you send goes to the agent once it's done.")
+                    .child(shrink("Claude Code is compacting the conversation. What you send goes to the agent once it's done."))
                     .into_any_element()
             }
             WorkflowState::Running => div()
@@ -431,48 +433,49 @@ impl Render for Composer {
                 .items_center()
                 .gap(px(8.))
                 .child(spinner("composer-spin", 10, t.accent))
-                .child(
-                    div()
-                        .flex()
-                        .child("The agent is working. What you send goes to it at its next step; ")
-                        .child(kbd("⌘."))
-                        .child(" interrupts it."),
-                )
+                .child(shrink(keyed(
+                    &[
+                        "The agent is working. What you send goes to it at its next step; ",
+                        "⌘.",
+                        " interrupts it.",
+                    ],
+                    t.text2,
+                )))
                 .into_any_element(),
             WorkflowState::AwaitingAnswer if reviewing => div()
                 .flex()
                 .items_center()
                 .gap(px(8.))
                 .child(dot(8., t.attention))
-                .child(
-                    div()
-                        .flex()
-                        .child("Waiting for your decisions on the findings. Press ")
-                        .child(kbd("A"))
-                        .child(" to go to them; the composer unlocks when the round resumes."),
-                )
+                .child(shrink(keyed(
+                    &[
+                        "Waiting for your decisions on the findings. Press ",
+                        "A",
+                        " to go to them; the composer unlocks when the round resumes.",
+                    ],
+                    t.text2,
+                )))
                 .into_any_element(),
             WorkflowState::AwaitingAnswer => div()
                 .flex()
                 .items_center()
                 .gap(px(8.))
                 .child(dot(8., t.attention))
-                .child(
-                    div()
-                        .flex()
-                        .child("Waiting for your answer above. Press ")
-                        .child(kbd("A"))
-                        .child(
-                            " to jump to the card; the composer unlocks when the round resumes.",
-                        ),
-                )
+                .child(shrink(keyed(
+                    &[
+                        "Waiting for your answer above. Press ",
+                        "A",
+                        " to jump to the card; the composer unlocks when the round resumes.",
+                    ],
+                    t.text2,
+                )))
                 .into_any_element(),
             WorkflowState::Closed if !self.drag_hover => div()
                 .flex()
                 .items_center()
                 .gap(px(8.))
                 .child(icon("check", 14., t.done))
-                .child("This workflow is closed. Write to go on with it here: the agent picks up the conversation.")
+                .child(shrink("This workflow is closed. Write to go on with it here: the agent picks up the conversation."))
                 .into_any_element(),
             _ if self.drag_hover => div()
                 .flex()
@@ -480,7 +483,7 @@ impl Render for Composer {
                 .gap(px(8.))
                 .text_color(t.accent)
                 .child(icon("paperclip", 14., t.accent))
-                .child("Drop to attach to your next message")
+                .child(shrink("Drop to attach to your next message"))
                 .into_any_element(),
             _ if suggestion.is_some() => div()
                 .flex()
@@ -516,6 +519,7 @@ impl Render for Composer {
             WorkflowState::Closed => div()
                 .flex()
                 .items_center()
+                .flex_wrap()
                 .gap(px(4.))
                 .ml(px(-6.))
                 .child(next_button(
@@ -558,24 +562,30 @@ impl Render for Composer {
                     .flex()
                     .items_center()
                     .gap(px(6.))
+                    .max_w_full()
                     .h(px(22.))
                     .px(px(8.))
                     .rounded(px(4.))
                     .bg(t.attention_soft)
                     .text_color(t.text)
                     .child(icon("comment", 12., t.text))
-                    .child(format!(
+                    .child(div().flex_none().whitespace_nowrap().child(format!(
                         "{} attached ·",
                         plural(pending.len(), "comment", "comments")
-                    ))
+                    )))
                     .child(
                         div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
                             .font_family(MONO)
                             .child(format!("{}:{}", first.path, first.line)),
                     )
                     .child(
                         div()
                             .id("detach-comments")
+                            .flex_none()
                             .size(px(16.))
                             .flex()
                             .items_center()
@@ -595,10 +605,10 @@ impl Render for Composer {
                     .into_any_element()
             }
             _ => div()
-                .flex()
-                .child("No comments yet · ")
-                .child(kbd("⌘K"))
-                .child(" for actions")
+                .child(keyed(
+                    &["No comments yet · ", "⌘K", " for actions"],
+                    t.text3,
+                ))
                 .into_any_element(),
         };
 
@@ -711,8 +721,16 @@ impl Render for Composer {
                     .pr(px(8.))
                     .pt(px(6.))
                     .pb(px(8.))
-                    .child(div().ty(ty::META).text_color(t.text3).child(footer_hint))
-                    .child(div().flex_1())
+                    // The hint gives way to the buttons: it wraps (the closed
+                    // workflow's buttons onto a second line).
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .ty(ty::META)
+                            .text_color(t.text3)
+                            .child(footer_hint),
+                    )
                     .when_some(agent, |d, label| {
                         d.child(
                             Btn::new("agent-settings")

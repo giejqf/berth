@@ -324,6 +324,8 @@ impl Render for ReviewPane {
             div()
                 .id(id)
                 .flex()
+                .flex_none()
+                .whitespace_nowrap()
                 .items_baseline()
                 .gap(px(6.))
                 .ty(ty::TITLE)
@@ -377,11 +379,9 @@ impl Render for ReviewPane {
                 )
             });
         if let Some(d) = shown.as_ref().filter(|_| !off_diff) {
-            row1 = row1.child(diff_stats(
-                &t,
-                d.stats.files,
-                d.stats.additions,
-                d.stats.deletions,
+            // The first thing to go when the pane is narrow.
+            row1 = row1.child(div().min_w_0().overflow_hidden().whitespace_nowrap().child(
+                diff_stats(&t, d.stats.files, d.stats.additions, d.stats.deletions),
             ));
         }
         row1 = row1
@@ -390,6 +390,7 @@ impl Render for ReviewPane {
                 d.child(
                     div()
                         .flex()
+                        .flex_none()
                         .border_1()
                         .border_color(t.border_strong)
                         .rounded(px(6.))
@@ -449,7 +450,8 @@ impl Render for ReviewPane {
                         }
                     }))
             };
-        let mut row2 = div().flex().items_center().gap(px(8.)).child(
+        // The section stepper goes under the presets when they don't fit.
+        let mut row2 = div().flex().flex_wrap().items_center().gap(px(8.)).child(
             div()
                 .flex()
                 .gap(px(2.))
@@ -757,23 +759,30 @@ impl Render for ReviewPane {
         let left = if on_files {
             files::hints(&t)
         } else if all_comments.is_empty() {
-            div()
-                .flex()
-                .child("Hover a line and press ")
-                .child(div().font_family(MONO).text_color(t.text2).child("C"))
-                .child(" to comment · ")
-                .child(div().font_family(MONO).text_color(t.text2).child("⌘↓"))
-                .child(" next change")
+            div().child(super::kit::keyed(
+                &[
+                    "Hover a line and press ",
+                    "C",
+                    " to comment · ",
+                    "⌘↓",
+                    " next change",
+                ],
+                t.text3,
+            ))
         } else {
             div()
                 .flex()
                 .items_center()
                 .gap(px(6.))
                 .when(pending > 0, |d| d.child(dot(8., t.attention)))
-                .child(format!("{pending} pending · {sent} sent · {posted} posted"))
+                .child(super::kit::shrink(format!(
+                    "{pending} pending · {sent} sent · {posted} posted"
+                )))
         };
+        // The buttons go under the hint when the pane is too narrow for both.
         let footer = div()
             .flex()
+            .flex_wrap()
             .items_center()
             .gap(px(10.))
             .pl(px(16.))
@@ -783,33 +792,39 @@ impl Render for ReviewPane {
             .border_color(t.border)
             .ty(ty::META)
             .text_color(t.text3)
-            .child(left.flex_1().min_w_0().flex_wrap())
+            .child(left.flex_1().min_w(px(160.)))
             .when(!on_files, |d| {
                 d.child(
-                    Btn::new("ask-hunk")
-                        .size(Size::S26)
-                        .label("Ask agent about hunk")
-                        .disabled(files.is_empty())
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.diff.update(cx, DiffView::ask_about_hunk);
-                        })),
+                    div()
+                        .flex()
+                        .gap(px(10.))
+                        .ml_auto()
+                        .child(
+                            Btn::new("ask-hunk")
+                                .size(Size::S26)
+                                .label("Ask agent about hunk")
+                                .disabled(files.is_empty())
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.diff.update(cx, DiffView::ask_about_hunk);
+                                })),
+                        )
+                        .child({
+                            let b = Btn::new("post-pr")
+                                .size(Size::S26)
+                                .label(if unposted > 0 {
+                                    format!("Post {unposted} to PR")
+                                } else {
+                                    "Post to PR".to_owned()
+                                })
+                                .disabled(unposted == 0)
+                                .on_click(cx.listener(|this, _, _, cx| this.post(cx)));
+                            if unposted > 0 {
+                                b.icon("pr-medium", 12.)
+                            } else {
+                                b
+                            }
+                        }),
                 )
-                .child({
-                    let b = Btn::new("post-pr")
-                        .size(Size::S26)
-                        .label(if unposted > 0 {
-                            format!("Post {unposted} to PR")
-                        } else {
-                            "Post to PR".to_owned()
-                        })
-                        .disabled(unposted == 0)
-                        .on_click(cx.listener(|this, _, _, cx| this.post(cx)));
-                    if unposted > 0 {
-                        b.icon("pr-medium", 12.)
-                    } else {
-                        b
-                    }
-                })
             });
 
         let mut context = KeyContext::new_with_defaults();

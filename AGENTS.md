@@ -736,6 +736,13 @@ settles nothing (ADR 0013).
   its header, the one at the top of the strip, or ⌘⇧L), and on its own while the
   review pane is open and leaves the flow less room than at 1400px (under 1400px at
   the pane's own width). The review pane opens automatically on `Summary` and `Outcome`.
+  The flow never gets narrower than 560px: a rail opened by hand narrows the review
+  pane down to its 400px, then collapses again (`RepoWindow::panes`), and a repo window
+  is at least 1017px wide (strip + flow + pane at their minimums). Everything in the
+  flow and the pane is laid out to hold at those widths: GPUI wraps text only at a
+  definite width, so text sharing a row gets `min_w_0` (`kit::shrink`) or an ellipsis,
+  what must keep its size `flex_none`, rows of buttons wrap, and a sentence with keys
+  in it is one text (`kit::keyed`), not a row of pieces.
 - The rail groups slots by what they need: **Needs you** (a question, an idle workflow
   awaiting its next prompt, a failed slot), **Working**, **Ready to review** (idle after
   a summary), **Done**. Each slot's mark is a dot in its group's color; a busy slot's
@@ -914,6 +921,8 @@ settles nothing (ADR 0013).
   answers resume a round mid-way).
 - Dialogs (New workflow, Settings, ⌘K, confirmations) are drawn by the app
   (`ui/modal.rs`): scrim, 10px radius, one soft shadow, ⌘↩ confirms, esc closes.
+  None is taller than the window less 24px around it: a long one's body scrolls
+  between its header and footer.
 - Theme tokens in `berth-app/src/theme.rs`; light/dark follow the system unless
   Settings › Appearance picks one (setting `theme`). Views use `ui/kit.rs` primitives
   and never invent sizes or colors.
@@ -952,6 +961,8 @@ settles nothing (ADR 0013).
   `keys` forces it. Screenshots can then trail an `action` by a step, and an action
   sent right after its target appeared is routed against a frame without it and
   lost. When a sequence looks wrong, log the state before suspecting the app.
+  `resize <w> <h>` resizes the window and `review_width <w>` sets the review pane's
+  width as a drag would, to check layouts at their narrowest.
   `window <n>` points later commands at another repo window, `windows` logs them
   all, and `mouse_down`/`mouse_move`/`mouse_up <x> <y>` drive real drags (positions
   may leave the window, as a drag between windows does).

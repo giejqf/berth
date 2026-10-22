@@ -62,6 +62,9 @@ pub const REVIEW_W: f32 = 521.;
 /// flow (next to the collapsed rail), so its header's meta line still fits.
 const REVIEW_MIN_W: f32 = 400.;
 const FLOW_MIN_W: f32 = 560.;
+/// The narrowest window: the flow and the review pane at their minimums
+/// beside the collapsed rail, so neither is ever squeezed past them.
+pub const WINDOW_MIN_W: f32 = slot_rail::STRIP_W + FLOW_MIN_W + REVIEW_MIN_W;
 /// The terminal panel's default and smallest heights.
 const TERMINAL_H: f32 = 280.;
 const TERMINAL_MIN_H: f32 = 120.;
@@ -416,7 +419,7 @@ impl RepoWindow {
             set_review_width(None, cx);
             return;
         }
-        self.review_drag = Some((e.position.x, review_width(window, cx)));
+        self.review_drag = Some((e.position.x, self.panes(window, cx).1));
     }
 
     fn drag_review(&mut self, e: &MouseMoveEvent, window: &mut Window, cx: &mut Context<'_, Self>) {
@@ -427,8 +430,14 @@ impl RepoWindow {
             self.end_review_drag(cx);
             return;
         }
-        // The pane's left edge follows the pointer.
-        let w = clamp_review(w + (x - e.position.x).as_f32(), window);
+        // The pane's left edge follows the pointer, as far as the flow lets it.
+        let rail = if self.panes(window, cx).0 {
+            slot_rail::STRIP_W
+        } else {
+            RAIL_W
+        };
+        let room = window.viewport_size().width.as_f32() - rail;
+        let w = clamp_review(w + (x - e.position.x).as_f32(), room);
         cx.global_mut::<super::Berth>().review_width = Some(w);
         cx.notify();
     }
@@ -807,11 +816,31 @@ impl RepoWindow {
     }
 
     fn rail_collapsed(&self, window: &Window, cx: &App) -> bool {
+        self.panes(window, cx).0
+    }
+
+    /// Whether the rail is collapsed, and the review pane's width: as the
+    /// user left them, as far as the flow keeps `FLOW_MIN_W`. The rail opened
+    /// by hand narrows the review pane down to its minimum, then collapses.
+    fn panes(&self, window: &Window, cx: &App) -> (bool, f32) {
+        let w = window.viewport_size().width.as_f32();
+        let want = cx
+            .try_global::<super::Berth>()
+            .and_then(|b| b.review_width)
+            .unwrap_or(REVIEW_W);
+        let beside_strip = clamp_review(want, w - slot_rail::STRIP_W);
+        if !self.review_open {
+            let collapsed = self.rail_override.unwrap_or(false) || w - RAIL_W < FLOW_MIN_W;
+            return (collapsed, beside_strip);
+        }
         // As at the design's width below 1400px: whenever the review pane
         // leaves the flow less room than that.
-        let room = window.viewport_size().width.as_f32() - review_width(window, cx) - RAIL_W;
-        let auto = self.review_open && room < WIDE - REVIEW_W - RAIL_W;
-        self.rail_override.unwrap_or(auto)
+        let auto = w - beside_strip - RAIL_W < WIDE - REVIEW_W - RAIL_W;
+        if !self.rail_override.unwrap_or(auto) && w - RAIL_W - FLOW_MIN_W >= REVIEW_MIN_W {
+            (false, clamp_review(want, w - RAIL_W))
+        } else {
+            (true, beside_strip)
+        }
     }
 
     fn title_bar(&self, t: &Tokens, cx: &Context<'_, Self>) -> TitleBar {
@@ -827,9 +856,12 @@ impl RepoWindow {
             // The native buttons span x = 15–75; the repo line follows them.
             .child(div().w(px(59.)).flex_none())
             .child(
+                // No wider than the bar leaves it: the title bar's own row
+                // grows to fit its content, so this starts from nothing.
                 div()
                     .flex_1()
-                    .min_w_0()
+                    .w_0()
+                    .overflow_hidden()
                     .flex()
                     .items_center()
                     .gap(px(8.))
@@ -837,7 +869,7 @@ impl RepoWindow {
                     .ty(ty::BODY)
                     .text_color(t.text)
                     .child(icon("folder", 14., t.text3))
-                    .child(div().flex_none().semibold().child(name))
+                    .child(div().flex_none().whitespace_nowrap().semibold().child(name))
                     .child(div().flex_none().text_color(t.text3).child("·"))
                     .child(
                         div()
@@ -906,7 +938,16 @@ impl Render for RepoWindow {
                 .and_then(|t| t.active())
                 .is_some_and(|v| v.focus_handle(cx).contains_focused(window, cx));
         let review_open = self.review_open && has_workflow;
-        let collapsed = self.rail_collapsed(window, cx);
+        let (collapsed, review_w) = self.panes(window, cx);
+        // The flow's settled width, for what its rows lay out by hand.
+        let flow_w = window.viewport_size().width.as_f32()
+            - if collapsed {
+                slot_rail::STRIP_W
+            } else {
+                RAIL_W
+            }
+            - if review_open { review_w } else { 0. };
+        self.state.update(cx, |s, _| s.flow_width = flow_w);
         let modal = self.modal.as_ref().map(|(v, ..)| v.clone());
         let closing = self.closing.as_ref().and_then(|(v, at)| {
             motion::since(*at, motion::FAST, window, cx).map(|p| (v.clone(), p))
@@ -931,7 +972,6 @@ impl Render for RepoWindow {
             cx,
         );
         // Opening and closing slide; a drag and a window resize follow at once.
-        let review_w = review_width(window, cx);
         let review = motion::value(
             "review-open",
             if review_open { 1. } else { 0. },
@@ -1399,19 +1439,11 @@ fn drop_overlay(t: &Tokens, label: String, target: bool) -> gpui::AnyElement {
     }
 }
 
-/// The review pane's width: as the user last dragged it (kept in settings,
-/// the same in every window), within its minimum and the flow's room.
-pub fn review_width(window: &Window, cx: &App) -> f32 {
-    let want = cx
-        .try_global::<super::Berth>()
-        .and_then(|b| b.review_width)
-        .unwrap_or(REVIEW_W);
-    clamp_review(want, window)
-}
-
-fn clamp_review(w: f32, window: &Window) -> f32 {
-    let room = window.viewport_size().width.as_f32() - slot_rail::STRIP_W - FLOW_MIN_W;
-    w.clamp(REVIEW_MIN_W, room.max(REVIEW_MIN_W))
+/// The review pane's width `w` (as the user last dragged it, kept in
+/// settings, the same in every window) within its minimum and what `room`
+/// (the window less the rail) leaves beside the flow's.
+fn clamp_review(w: f32, room: f32) -> f32 {
+    w.clamp(REVIEW_MIN_W, (room - FLOW_MIN_W).max(REVIEW_MIN_W))
 }
 
 /// Every window takes the width (`None`: the design's), and the next launch.

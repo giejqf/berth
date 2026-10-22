@@ -13,7 +13,7 @@ use gpui::{
 };
 use gpui_component::input::{InputEvent, InputState};
 
-use super::kit::{Btn, Size, TypeExt as _, field_frame, kbd, key_chip, radio};
+use super::kit::{Btn, Size, TypeExt as _, field_frame, key_chip, keyed, radio, shrink};
 use super::rich::{self, rich};
 use crate::backend::{BackendHandle, Command};
 use crate::keymap::{
@@ -278,24 +278,25 @@ impl Render for AnswerCard {
         }
 
         let free_text = q.allow_free_text || n == 0;
+        // One paragraph, so it wraps beside the button on a narrow flow.
+        let last = n.to_string();
         let hint = if n > 0 {
-            div()
-                .flex()
-                .items_center()
-                .child(kbd("1"))
-                .child("–")
-                .child(kbd(n.to_string()))
-                .child(" or ")
-                .child(kbd("↑↓"))
-                .child(" to pick · ")
-                .child(kbd("↩"))
-                .child(" to answer")
+            keyed(
+                &[
+                    "",
+                    "1",
+                    "–",
+                    &last,
+                    " or ",
+                    "↑↓",
+                    " to pick · ",
+                    "↩",
+                    " to answer",
+                ],
+                t.text3,
+            )
         } else {
-            div()
-                .flex()
-                .items_center()
-                .child(kbd("↩"))
-                .child(" to answer")
+            keyed(&["", "↩", " to answer"], t.text3)
         };
         let ready =
             !sent && (self.selected.is_some() || !self.input.read(cx).value().trim().is_empty());
@@ -358,8 +359,7 @@ impl Render for AnswerCard {
                     .px(px(14.))
                     .pt(px(10.))
                     .pb(px(12.))
-                    .child(div().ty(ty::META).text_color(t.text3).child(hint))
-                    .child(div().flex_1())
+                    .child(shrink(hint).ty(ty::META).text_color(t.text3))
                     .child(
                         Btn::new("answer-submit")
                             .primary()

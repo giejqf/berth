@@ -2,11 +2,11 @@
 //! workflow goes through.
 
 use gpui::{
-    App, Div, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
+    App, Div, InteractiveElement as _, IntoElement, ParentElement as _,
     StatefulInteractiveElement as _, Styled as _, div, px,
 };
 
-use super::kit::{TypeExt as _, icon};
+use super::kit::{TypeExt as _, icon, keyed};
 use crate::keymap::{NewWorkflow, NewWorkflowTab, OpenSettings};
 use crate::theme::{MONO, Tokens, ty};
 
@@ -68,10 +68,11 @@ fn step(t: &Tokens, n: u32, label: &'static str) -> Div {
         .flex()
         .items_center()
         .gap(px(8.))
-        .flex_none()
+        .min_w_0()
         .child(
             div()
                 .size(px(20.))
+                .flex_none()
                 .rounded_full()
                 .bg(t.raised)
                 .text_color(t.text)
@@ -82,7 +83,8 @@ fn step(t: &Tokens, n: u32, label: &'static str) -> Div {
                 .justify_center()
                 .child(n.to_string()),
         )
-        .child(label)
+        // Wraps when the flow is too narrow for the three steps on one line.
+        .child(div().min_w_0().child(label))
 }
 
 pub fn empty_repo(t: &Tokens, _cx: &App) -> Div {
@@ -98,7 +100,8 @@ pub fn empty_repo(t: &Tokens, _cx: &App) -> Div {
         .bg(t.win)
         .child(
             div()
-                .w(px(560.))
+                .w_full()
+                .max_w(px(560.))
                 .flex()
                 .flex_col()
                 .gap(px(24.))
@@ -149,13 +152,14 @@ pub fn empty_repo(t: &Tokens, _cx: &App) -> Div {
                 .child(
                     div()
                         .id("connectors-note")
-                        .flex()
                         .ty(ty::META)
                         .text_color(t.text3)
                         .cursor_pointer()
                         .on_click(|_, w, cx| w.dispatch_action(Box::new(OpenSettings), cx))
-                        .child("Connectors such as Linear appear here once added in Settings ")
-                        .child(div().font_family(MONO).child(SharedString::from("⌘,"))),
+                        .child(keyed(
+                            &["Connectors such as Linear appear here once added in Settings ", "⌘,"],
+                            t.text3,
+                        )),
                 ),
         )
 }

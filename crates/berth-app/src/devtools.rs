@@ -21,6 +21,8 @@
 //! fake_artifact /a.png | Title # append an artifact, the file used in place (view only)
 //! window 1                    # later commands act on the 2nd repo window (in opening order)
 //! windows                     # log every repo window: bounds and slots
+//! resize 1020 700             # resize the window (points; not below its minimum)
+//! review_width 700            # the review pane's width, as if dragged
 //! mouse_down 120 200          # press the left button at window coordinates (drags too:
 //! mouse_move -200 300         #   moves may leave the window, as a real drag does)
 //! mouse_up -200 300
@@ -387,6 +389,19 @@ pub fn start(cx: &mut App) {
                     TARGET.store(arg.trim().parse().unwrap_or(0), Ordering::Relaxed);
                 }
                 "windows" => cx.update(log_windows),
+                // The review pane's width as if dragged there (clamped as a drag is).
+                "review_width" => cx.update(|cx| {
+                    cx.global_mut::<ui::Berth>().review_width = arg.trim().parse().ok();
+                    cx.refresh_windows();
+                }),
+                "resize" => cx.update(|cx| {
+                    let mut wh = arg.split_whitespace().filter_map(|n| n.parse::<f32>().ok());
+                    if let (Some(w), Some(h)) = (wh.next(), wh.next()) {
+                        with_window(cx, |window, _| {
+                            window.resize(gpui::size(gpui::px(w), gpui::px(h)));
+                        });
+                    }
+                }),
                 "mouse_down" | "mouse_move" | "mouse_up" => cx.update(|cx| mouse(cmd, arg, cx)),
                 "quit" => cx.update(|cx| cx.quit()),
                 other => tracing::warn!(other, "unknown devtools command"),

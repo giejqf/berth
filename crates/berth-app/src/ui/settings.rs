@@ -577,8 +577,12 @@ impl Render for SettingsForm {
                         let _ = this.update(cx, |_, cx| cx.emit(DismissEvent));
                     })),
             )
+            // Scrolls when the window is too short for all of it.
             .child(
                 div()
+                    .id("settings-body")
+                    .min_h_0()
+                    .overflow_y_scroll()
                     .flex()
                     .flex_col()
                     .gap(px(20.))

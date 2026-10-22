@@ -120,8 +120,10 @@ pub fn level_counts(t: &Tokens, findings: &[Finding]) -> Div {
             row = row.child(
                 div()
                     .flex()
+                    .flex_none()
                     .items_center()
                     .gap(px(5.))
+                    .whitespace_nowrap()
                     .child(dot(6., color))
                     .child(format!("{n} {}", level.as_str())),
             );
@@ -460,6 +462,7 @@ impl FindingsView {
             Some(FindingAction::Decide) => chip(t, Tone::Neutral, "Your call"),
             None => div()
                 .flex_none()
+                .whitespace_nowrap()
                 .ty(ty::META)
                 .text_color(t.text3)
                 .child(format!("Suggested: {}", f.suggested.label())),
@@ -661,22 +664,39 @@ impl Render for FindingsView {
             .border_b_1()
             .border_color(t.border)
             .child(
+                // A narrow pane wraps the counts and the stepping under the title.
                 div()
                     .flex()
+                    .flex_wrap()
                     .items_center()
-                    .gap(px(10.))
-                    .child(div().semibold().child("Code review"))
-                    .child(div().ty(ty::META).text_color(t.text3).child(format!(
-                        "{} · {}",
-                        plural(n, "finding", "findings"),
-                        clock(presented)
-                    )))
-                    .child(level_counts(&t, &review.findings))
+                    .gap_x(px(10.))
+                    .gap_y(px(4.))
+                    .child(
+                        div()
+                            .flex_none()
+                            .whitespace_nowrap()
+                            .semibold()
+                            .child("Code review"),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .whitespace_nowrap()
+                            .ty(ty::META)
+                            .text_color(t.text3)
+                            .child(format!(
+                                "{} · {}",
+                                plural(n, "finding", "findings"),
+                                clock(presented)
+                            )),
+                    )
+                    .child(level_counts(&t, &review.findings).flex_none())
                     .when(count > 1, |d| {
                         d.child(
                             div()
                                 .ml_auto()
                                 .flex()
+                                .flex_none()
                                 .items_center()
                                 .gap(px(2.))
                                 .ty(ty::META)
@@ -863,20 +883,37 @@ impl Render for FindingsView {
                     parts.push(format!("{k} {what}"));
                 }
             }
+            // What still needs words goes under the tally when the button
+            // leaves too little room.
             div()
                 .flex()
+                .flex_wrap()
                 .items_center()
-                .gap(px(6.))
-                .child(parts.join(" · "))
+                .gap_x(px(6.))
+                .child(
+                    div()
+                        .flex_none()
+                        .whitespace_nowrap()
+                        .child(parts.join(" · ")),
+                )
                 .when(missing > 0 && open, |d| {
-                    d.child(dot(6., t.attention)).child(format!(
-                        "{} your words",
-                        if missing == 1 {
-                            "1 needs".to_owned()
-                        } else {
-                            format!("{missing} need")
-                        }
-                    ))
+                    d.child(
+                        div()
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .gap(px(6.))
+                            .whitespace_nowrap()
+                            .child(dot(6., t.attention))
+                            .child(format!(
+                                "{} your words",
+                                if missing == 1 {
+                                    "1 needs".to_owned()
+                                } else {
+                                    format!("{missing} need")
+                                }
+                            )),
+                    )
                 })
         } else if let Some(at) = review.answered_at {
             div()
@@ -884,11 +921,11 @@ impl Render for FindingsView {
                 .items_center()
                 .gap(px(6.))
                 .child(icon("check-bold", 12., t.done))
-                .child(format!(
+                .child(crate::ui::kit::shrink(format!(
                     "Sent {} · {}",
                     clock(at),
                     choice_counts(&review.findings)
-                ))
+                )))
         } else {
             div().child("Not answered: the round ended before your decisions.")
         };

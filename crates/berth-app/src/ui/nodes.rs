@@ -18,7 +18,7 @@ use std::f32::consts::FRAC_PI_2;
 use gpui::{
     AnyElement, App, Div, Entity, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
     SharedString, StatefulInteractiveElement as _, Styled, Transformation, WeakEntity, Window, div,
-    prelude::FluentBuilder as _, px, radians,
+    prelude::FluentBuilder as _, px, radians, relative,
 };
 use gpui_base::motion::MotionReveal;
 
@@ -298,11 +298,13 @@ fn origin(t: &Tokens, node: &Node, o: &Origin, _ctx: &RowCtx, line: bool) -> Div
                     .items_baseline()
                     .gap(px(8.))
                     .child(div().semibold().child("Origin"))
-                    .child(div().ty(ty::META).text_color(t.text3).child(format!(
-                        "{} · {}",
-                        origin_label(o),
-                        clock(node.created_at)
-                    )))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .ty(ty::META)
+                            .text_color(t.text3)
+                            .child(format!("{} · {}", origin_label(o), clock(node.created_at))),
+                    )
                     .when_some(o.url.clone(), |d, url| {
                         d.child(div().flex_1()).child(link(
                             "open-origin",
@@ -443,6 +445,7 @@ fn prompt(t: &Tokens, node: &Node, p: &Prompt, ctx: &RowCtx, line: bool) -> Div 
         .when(joined, |d| {
             d.child(
                 div()
+                    .min_w_0()
                     .ty(ty::META)
                     .text_color(t.text3)
                     .child("· while the agent worked"),
@@ -538,8 +541,14 @@ fn prompt(t: &Tokens, node: &Node, p: &Prompt, ctx: &RowCtx, line: bool) -> Div 
                     .ty(ty::META)
                     .text_color(t.text2)
                     .child(
+                        // A long path gives way from its start, keeping the line.
                         div()
                             .flex_none()
+                            .min_w_0()
+                            .max_w(relative(0.5))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis_start()
                             .font_family(MONO)
                             .child(format!("{}:{}", c.path, c.line)),
                     )
@@ -597,9 +606,10 @@ fn setup_row(t: &Tokens, ctx: &RowCtx) -> Div {
                         .flex()
                         .items_baseline()
                         .gap(px(8.))
-                        .child(div().semibold().child(title))
+                        .child(div().min_w_0().semibold().child(title))
                         .child(
                             div()
+                                .flex_none()
                                 .ty(ty::META)
                                 .text_color(t.text3)
                                 .child(dur(super::kit::now_ms() - since)),
@@ -653,7 +663,12 @@ fn live_row(t: &Tokens, ctx: &RowCtx, window: &Window, cx: &App) -> Div {
                 .when_some(fade, Styled::opacity)
                 .when(running, |d| d.text_color(t.text))
                 .child(mark)
-                .child(div().flex_1().min_w_0().child(step_label(label)))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(step_label(label, if running { t.text } else { t.text2 })),
+                )
                 .child(div().flex_none().text_color(t.text3).child(when)),
         );
     }
@@ -701,7 +716,7 @@ fn live_row(t: &Tokens, ctx: &RowCtx, window: &Window, cx: &App) -> Div {
                         .border_t_1()
                         .border_color(t.border)
                         .pt(px(8.))
-                        .child(meta.join(" · "))
+                        .child(div().min_w_0().child(meta.join(" · ")))
                         .child(div().ml_auto().child(link(
                             "live-transcript",
                             "Show transcript",
@@ -841,20 +856,11 @@ fn reply(t: &Tokens, node: &Node, r: &Reply, ctx: &RowCtx, line: bool) -> Div {
     )
 }
 
-/// A step label: `ticks` render in mono.
-fn step_label(s: &str) -> Div {
-    let mut d = div().flex().flex_row().flex_wrap();
-    for (i, part) in s.split('`').enumerate() {
-        if part.is_empty() {
-            continue;
-        }
-        d = d.child(if i % 2 == 1 {
-            div().font_family(MONO).child(part.to_owned())
-        } else {
-            div().whitespace_nowrap().child(part.to_owned())
-        });
-    }
-    d
+/// A step label: `ticks` render in mono. One text, so a long command or
+/// path wraps with the rest.
+fn step_label(s: &str, color: Hsla) -> gpui::StyledText {
+    let parts: Vec<&str> = s.split('`').collect();
+    super::kit::keyed(&parts, color)
 }
 
 // ---- subagents ----
@@ -901,7 +907,7 @@ fn group_row(
                 .items_baseline()
                 .gap(px(8.))
                 .child(div().semibold().child(title))
-                .child(div().ty(ty::META).text_color(t.text3).child(meta))
+                .child(div().min_w_0().ty(ty::META).text_color(t.text3).child(meta))
                 .when(n >= 3, |d| {
                     d.child(
                         div().ml_auto().child(
@@ -984,10 +990,16 @@ fn lane_view(t: &Tokens, lane: &Lane, ctx: &RowCtx, window: &mut Window, cx: &mu
                     10,
                     t.accent,
                 ))
-                .child(match since {
-                    Some(s) => format!("{label} · {s}"),
-                    None => label,
-                })
+                .child(
+                    div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .child(match since {
+                            Some(s) => format!("{label} · {s}"),
+                            None => label,
+                        }),
+                )
                 .into_any_element()
         }
         BranchState::Error | BranchState::Cancelled => div()
@@ -1054,7 +1066,15 @@ fn lane_view(t: &Tokens, lane: &Lane, ctx: &RowCtx, window: &mut Window, cx: &mu
         .child(
             div()
                 .ml_auto()
-                .flex_none()
+                // Claude Code's summary of a running one can be a sentence:
+                // it gives way like the description; counts keep their size.
+                .map(|d| {
+                    if matches!(lane.status, BranchState::Running) {
+                        d.min_w_0()
+                    } else {
+                        d.flex_none()
+                    }
+                })
                 .ty(ty::META)
                 .whitespace_nowrap()
                 .child(right),
@@ -1221,10 +1241,16 @@ fn question(t: &Tokens, node: &Node, q: &Question, ctx: &RowCtx, line: bool, _cx
                     .border_b_1()
                     .border_color(t.border)
                     .child(tag(t, Tone::Attention, "Needs your answer"))
-                    .child(div().ty(ty::META).text_color(t.text3).child(format!(
-                        "asked {} · round {round} is paused",
-                        super::kit::ago(node.created_at)
-                    )))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .ty(ty::META)
+                            .text_color(t.text3)
+                            .child(format!(
+                                "asked {} · round {round} is paused",
+                                super::kit::ago(node.created_at)
+                            )),
+                    )
                     .child(div().ml_auto().children(details_link(t, node, ctx))),
             )
             .child(ctx.answer.clone());
@@ -1318,10 +1344,16 @@ fn review(t: &Tokens, node: &Node, r: &Review, ctx: &RowCtx, line: bool) -> Div 
                     .border_b_1()
                     .border_color(t.border)
                     .child(tag(t, Tone::Attention, "Needs your decisions"))
-                    .child(div().ty(ty::META).text_color(t.text3).child(format!(
-                        "presented {} · round {round} is paused",
-                        super::kit::ago(node.created_at)
-                    )))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .ty(ty::META)
+                            .text_color(t.text3)
+                            .child(format!(
+                                "presented {} · round {round} is paused",
+                                super::kit::ago(node.created_at)
+                            )),
+                    )
                     .child(div().ml_auto().children(details_link(t, node, ctx))),
             )
             .child(
@@ -1334,8 +1366,10 @@ fn review(t: &Tokens, node: &Node, r: &Review, ctx: &RowCtx, line: bool) -> Div 
                     .child(
                         div()
                             .flex()
+                            .flex_wrap()
                             .items_center()
                             .gap(px(10.))
+                            .gap_y(px(4.))
                             .child(div().semibold().child(format!(
                                 "Code review · {}",
                                 plural(n, "finding", "findings")
@@ -1363,13 +1397,15 @@ fn review(t: &Tokens, node: &Node, r: &Review, ctx: &RowCtx, line: bool) -> Div 
     }
     let status = match r.answered_at {
         Some(at) => div()
+            .min_w_0()
             .flex()
             .items_center()
             .gap(px(8.))
             .child(icon("check-bold", 14., t.done))
-            .child(div().medium().child(choice_counts(&r.findings)))
+            .child(div().min_w_0().medium().child(choice_counts(&r.findings)))
             .child(
                 div()
+                    .flex_none()
                     .ty(ty::META)
                     .text_color(t.text2)
                     .child(format!("decided {}", clock(at))),
@@ -1469,26 +1505,38 @@ fn summary(t: &Tokens, node: &Node, s: &Summary, ctx: &RowCtx, line: bool) -> Di
     if !s.follow_ups.is_empty() {
         body = body.child(follow_ups(t, &s.follow_ups, ctx, false));
     }
-    let mut actions = div().flex().items_center().gap(px(8.)).pt(px(4.)).child(
-        Btn::new(SharedString::from(format!("review-{}", node.id)))
-            .icon("panel-right", 14.)
-            .label(if reviewing { "Reviewing" } else { "Review" })
-            .hint("⌘\\")
-            .pressed(reviewing)
-            .on_click(move |_, window, cx| {
-                if reviewing {
-                    window.dispatch_action(Box::new(ToggleReview), cx);
-                } else {
-                    let wf = wf.clone();
-                    state.update(cx, |s, cx| {
-                        s.load_diff(&wf, berth_protocol::DiffPreset::Section, Some(section), cx);
-                    });
-                    state.update(cx, |_, cx| {
-                        cx.emit(super::repo_state::RepoEvent::OpenReview);
-                    });
-                }
-            }),
-    );
+    let mut actions = div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(px(8.))
+        .gap_y(px(4.))
+        .pt(px(4.))
+        .child(
+            Btn::new(SharedString::from(format!("review-{}", node.id)))
+                .icon("panel-right", 14.)
+                .label(if reviewing { "Reviewing" } else { "Review" })
+                .hint("⌘\\")
+                .pressed(reviewing)
+                .on_click(move |_, window, cx| {
+                    if reviewing {
+                        window.dispatch_action(Box::new(ToggleReview), cx);
+                    } else {
+                        let wf = wf.clone();
+                        state.update(cx, |s, cx| {
+                            s.load_diff(
+                                &wf,
+                                berth_protocol::DiffPreset::Section,
+                                Some(section),
+                                cx,
+                            );
+                        });
+                        state.update(cx, |_, cx| {
+                            cx.emit(super::repo_state::RepoEvent::OpenReview);
+                        });
+                    }
+                }),
+        );
     if let Some((files, add, del)) = stats {
         actions = actions.child(diff_stats(t, files, add, del));
     }
@@ -1605,8 +1653,10 @@ fn outcome(t: &Tokens, node: &Node, o: &Outcome, ctx: &RowCtx, line: bool) -> Di
     };
     let mut meta = div()
         .flex()
+        .flex_wrap()
         .items_center()
         .gap(px(10.))
+        .gap_y(px(4.))
         .ty(ty::META)
         .text_color(t.text2);
     if !o.r#ref.is_empty() {
@@ -1614,8 +1664,10 @@ fn outcome(t: &Tokens, node: &Node, o: &Outcome, ctx: &RowCtx, line: bool) -> Di
             OutcomeKind::Commit => o.r#ref.chars().take(7).collect::<String>(),
             _ => o.r#ref.clone(),
         };
+        // A long branch name or PR URL ends in an ellipsis.
         meta = meta.child(
             div()
+                .min_w_0()
                 .flex()
                 .items_center()
                 .gap(px(6.))
@@ -1628,7 +1680,15 @@ fn outcome(t: &Tokens, node: &Node, o: &Outcome, ctx: &RowCtx, line: bool) -> Di
                     14.,
                     t.text2,
                 ))
-                .child(div().font_family(MONO).child(shown)),
+                .child(
+                    div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .font_family(MONO)
+                        .child(shown),
+                ),
         );
     }
     if let Some((0, (files, add, del))) = ctx.review_stats {
@@ -1637,10 +1697,11 @@ fn outcome(t: &Tokens, node: &Node, o: &Outcome, ctx: &RowCtx, line: bool) -> Di
             .child(diff_stats(t, files, add, del));
     }
     let r = o.r#ref.clone();
-    meta = meta.child(div().flex_1());
+    // Right-aligned, on a line of their own when the row runs out.
+    let mut links = div().ml_auto().flex().items_center().gap(px(10.));
     match o.kind {
         OutcomeKind::Commit if !r.is_empty() => {
-            meta = meta
+            links = links
                 .child(link("copy-sha", "Copy sha", t, move |_, _, cx| {
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(r.clone()));
                 }))
@@ -1655,12 +1716,13 @@ fn outcome(t: &Tokens, node: &Node, o: &Outcome, ctx: &RowCtx, line: bool) -> Di
                 );
         }
         OutcomeKind::Pr if r.starts_with("http") => {
-            meta = meta.child(link("open-pr", "View PR", t, move |_, _, cx| {
+            links = links.child(link("open-pr", "View PR", t, move |_, _, cx| {
                 cx.open_url(&r);
             }));
         }
         _ => {}
     }
+    meta = meta.child(links);
     let closed = ctx
         .view
         .workflow
@@ -1703,6 +1765,7 @@ fn outcome(t: &Tokens, node: &Node, o: &Outcome, ctx: &RowCtx, line: bool) -> Di
                         .child(tag(t, Tone::Done, format!("Outcome · {kind}")))
                         .child(
                             div()
+                                .min_w_0()
                                 .ty(ty::META)
                                 .text_color(t.text3)
                                 // A message after it (or a reopen) carried it on.
@@ -1911,9 +1974,10 @@ fn command(t: &Tokens, node: &Node, c: &berth_protocol::Command, ctx: &RowCtx, l
                 .flex()
                 .items_baseline()
                 .gap(px(8.))
-                .child(div().semibold().font_family(MONO).child(name))
+                .child(div().min_w_0().semibold().font_family(MONO).child(name))
                 .child(
                     div()
+                        .flex_none()
                         .ty(ty::META)
                         .text_color(t.text3)
                         .child(format!("Claude Code · {}", clock(node.created_at))),
@@ -2034,6 +2098,7 @@ fn compacted(t: &Tokens, node: &Node, c: &Compacted, ctx: &RowCtx, line: bool) -
                         .flex()
                         .items_center()
                         .gap(px(8.))
+                        .min_w_0()
                         .h(px(28.))
                         .px(px(12.))
                         .rounded(px(14.))
@@ -2041,9 +2106,18 @@ fn compacted(t: &Tokens, node: &Node, c: &Compacted, ctx: &RowCtx, line: bool) -
                         .border_1()
                         .border_color(t.accent)
                         .child(icon("minimize", 14., t.accent))
-                        .child(div().semibold().child(title))
                         .child(
                             div()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .semibold()
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
                                 .ty(ty::META)
                                 .text_color(t.text3)
                                 .child(clock(node.created_at)),
@@ -2059,9 +2133,9 @@ fn compacted(t: &Tokens, node: &Node, c: &Compacted, ctx: &RowCtx, line: bool) -
                 .gap(px(10.))
                 .ty(ty::META)
                 .text_color(t.text2)
-                .child(format!(
+                .child(div().min_w_0().text_center().child(format!(
                     "{size}. The agent goes on from a summary; the detail above is no longer in its memory."
-                ))
+                )))
                 .children(details_link(t, node, ctx)),
         )
 }
@@ -2097,6 +2171,7 @@ fn reopened(t: &Tokens, node: &Node, r: &Reopened, line: bool) -> Div {
                     .gap(px(8.))
                     .child(
                         div()
+                            .min_w_0()
                             .semibold()
                             .child(format!("Opened from history in {}", r.slot)),
                     )

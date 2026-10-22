@@ -18,7 +18,7 @@ use gpui::{
 use super::ReviewPane;
 use crate::backend::Command;
 use crate::keymap::CopyFile;
-use crate::theme::{MONO, Tokens, ty};
+use crate::theme::{Tokens, ty};
 use crate::ui::files::file_menu;
 use crate::ui::kit::{Btn, Size, TypeExt as _, clock, icon, spinner};
 use crate::ui::rich::clamped;
@@ -220,6 +220,7 @@ impl ReviewPane {
         let stage: AnyElement = if let Some(err) = &current.error {
             centered(
                 div()
+                    .min_w_0()
                     .ty(ty::META)
                     .text_color(t.danger)
                     .child(format!("Could not show this file: {err}")),
@@ -279,7 +280,16 @@ impl ReviewPane {
                     .justify_center()
                     .gap(px(8.))
                     .child(icon(kind_icon(&f.mime), 32., t.text3))
-                    .child(div().ty(ty::META).text_color(t.text2).child(f.name.clone()))
+                    .child(
+                        div()
+                            .max_w_full()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .ty(ty::META)
+                            .text_color(t.text2)
+                            .child(f.name.clone()),
+                    )
                     .into_any_element(),
             };
             div()
@@ -319,6 +329,7 @@ impl ReviewPane {
                 .items_center()
                 .rounded(px(4.))
                 .ty(ty::META)
+                .whitespace_nowrap()
                 .cursor_pointer()
                 .when(on, |d| d.bg(t.win).text_color(t.text).medium())
                 .when(!on, |d| {
@@ -353,6 +364,7 @@ impl ReviewPane {
                         d.child(
                             div()
                                 .flex()
+                                .flex_none()
                                 .gap(px(2.))
                                 .p(px(2.))
                                 .bg(t.raised)
@@ -503,17 +515,20 @@ fn centered(content: impl IntoElement) -> AnyElement {
         .into_any_element()
 }
 
-/// The Files footer's key hints.
+/// The Files footer's key hints, one paragraph (it wraps in a narrow pane).
 pub(super) fn hints(t: &Tokens) -> gpui::Div {
-    let key = |k: &'static str| div().font_family(MONO).text_color(t.text2).child(k);
-    div()
-        .flex()
-        .child(key("← →"))
-        .child(" files · ")
-        .child(key("Z"))
-        .child(" fit or actual size · ")
-        .child(key("Space"))
-        .child(" Quick Look · ")
-        .child(key("⌘C"))
-        .child(" copy")
+    div().child(crate::ui::kit::keyed(
+        &[
+            "",
+            "← →",
+            " files · ",
+            "Z",
+            " fit or actual size · ",
+            "Space",
+            " Quick Look · ",
+            "⌘C",
+            " copy",
+        ],
+        t.text3,
+    ))
 }

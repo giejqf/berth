@@ -76,6 +76,8 @@ pub struct RepoState {
     pub origins: HashMap<OriginSource, Result<Vec<OriginChoice>, String>>,
     /// Sources being listed now.
     pub origins_loading: HashSet<OriginSource>,
+    /// The flow's width as the window last laid it out.
+    pub flow_width: f32,
     pub connectors: Vec<ConnectorInfo>,
     /// The preset the review pane shows, per workflow.
     pub review_preset: HashMap<String, (DiffPreset, Option<u32>)>,
@@ -207,6 +209,7 @@ impl RepoState {
             comments: HashMap::new(),
             origins: HashMap::new(),
             origins_loading: HashSet::new(),
+            flow_width: 0.,
             connectors,
             review_preset: HashMap::new(),
             model_setting: None,

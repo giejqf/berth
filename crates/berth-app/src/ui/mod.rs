@@ -414,11 +414,13 @@ pub(crate) fn open_repo_window(
 ) {
     let repo_id = snapshot.repo.id.clone();
     let title = format!("{} — Berth", snapshot.repo.name());
-    let mut options = window_options(size(px(1280.), px(800.)), size(px(900.), px(560.)), cx);
+    let min = size(px(repo_window::WINDOW_MIN_W.ceil()), px(560.));
+    let mut options = window_options(size(px(1280.), px(800.)), min, cx);
     if let Some(titlebar) = options.titlebar.as_mut() {
         titlebar.title = Some(title.into());
     }
-    if let Some((bounds, display)) = placement {
+    if let Some((mut bounds, display)) = placement {
+        bounds.size = bounds.size.max(&min);
         options.window_bounds = Some(WindowBounds::Windowed(bounds));
         options.display_id = display;
     }

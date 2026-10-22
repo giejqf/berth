@@ -16,7 +16,7 @@ use gpui::{
 };
 
 use super::RepoState;
-use super::kit::{TypeExt as _, ago, clock, dialog_shadow, dur, now_ms, tokens};
+use super::kit::{TypeExt as _, ago, clock, dialog_shadow, dur, now_ms, shrink, tokens};
 use super::motion;
 use crate::theme::{Tokens, ty};
 
@@ -149,7 +149,13 @@ impl Render for UsageMeter {
                 inner.map(|f| (f, level(&t, f, t.lanes[0]))),
             ))
             .when_some(percent, |d, p| {
-                d.child(div().ty(ty::META).text_color(t.text2).child(p))
+                d.child(
+                    div()
+                        .ty(ty::META)
+                        .text_color(t.text2)
+                        .whitespace_nowrap()
+                        .child(p),
+                )
             });
         div().relative().child(ring).when_some(fade, |d, fade| {
             let card = card(
@@ -260,14 +266,18 @@ fn heading(t: &Tokens, title: &str, right: Option<String>) -> impl IntoElement {
     div()
         .flex()
         .items_center()
+        .gap(px(8.))
         .child(
             div()
                 .flex_1()
+                .min_w_0()
                 .semibold()
                 .text_color(t.text)
                 .child(title.to_owned()),
         )
-        .when_some(right, |d, r| d.child(div().text_color(t.text).child(r)))
+        .when_some(right, |d, r| {
+            d.child(div().flex_none().text_color(t.text).child(r))
+        })
 }
 
 /// A thin bar `fraction` full.
@@ -297,8 +307,14 @@ fn context_section(t: &Tokens, context: Option<&ContextUsage>) -> AnyElement {
         parts = parts.child(
             div()
                 .flex()
-                .child(div().flex_1().child(p.name.clone()))
-                .child(div().text_color(t.text3).child(tokens(p.tokens))),
+                .gap(px(8.))
+                .child(shrink(p.name.clone()))
+                .child(
+                    div()
+                        .flex_none()
+                        .text_color(t.text3)
+                        .child(tokens(p.tokens)),
+                ),
         );
     }
     let compacts = if c.buffer() > 0 {
@@ -397,8 +413,13 @@ fn limit_row(t: &Tokens, w: &QuotaWindow, used: Option<f64>, now: i64) -> impl I
         .child(
             div()
                 .flex()
-                .child(div().flex_1().text_color(t.text).child(window_label(w)))
-                .child(used.map_or_else(|| "—".to_owned(), |u| format!("{u:.0}%"))),
+                .gap(px(8.))
+                .child(shrink(window_label(w)).text_color(t.text))
+                .child(
+                    div()
+                        .flex_none()
+                        .child(used.map_or_else(|| "—".to_owned(), |u| format!("{u:.0}%"))),
+                ),
         )
         .child(bar(t, f, color))
         .when(!note.is_empty(), |d| {

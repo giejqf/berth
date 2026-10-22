@@ -30,6 +30,7 @@ pub fn overlay(
         .flex()
         .items_center()
         .justify_center()
+        .p(px(24.))
         .child(
             div()
                 .id("scrim")
@@ -43,11 +44,20 @@ pub fn overlay(
                     gpui::Styled::opacity,
                 ),
         )
-        .child(div().occlude().child(dialog).with_animation(
-            ("dialog-in", key),
-            motion::animation(motion::BASE),
-            motion::rise,
-        ))
+        // No taller than the window: a dialog's scrolling body gives way.
+        .child(
+            div()
+                .occlude()
+                .flex()
+                .flex_col()
+                .max_h_full()
+                .child(dialog)
+                .with_animation(
+                    ("dialog-in", key),
+                    motion::animation(motion::BASE),
+                    motion::rise,
+                ),
+        )
 }
 
 /// A dismissed dialog fading out as `p` runs 0 → 1. It takes no clicks.
@@ -59,8 +69,16 @@ pub fn fading(t: &Tokens, dialog: AnyElement, p: f32) -> Div {
         .flex()
         .items_center()
         .justify_center()
+        .p(px(24.))
         .child(div().absolute().inset_0().bg(t.scrim).opacity(1. - p))
-        .child(div().opacity(1. - p).child(dialog))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .max_h_full()
+                .opacity(1. - p)
+                .child(dialog),
+        )
         .child(div().id("dialog-fading").absolute().inset_0().occlude())
 }
 

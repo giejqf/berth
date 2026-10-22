@@ -51,6 +51,32 @@ pub fn caption(text: &str, color: Hsla) -> Div {
     row
 }
 
+/// A sentence with keys in it ("Press ", "A", " to answer"): the odd parts
+/// are keys, in mono. One text, so it wraps as a paragraph does; keys as
+/// [`kbd`] boxes in a row would keep each piece on one line.
+pub fn keyed(parts: &[&str], color: Hsla) -> gpui::StyledText {
+    let mut text = String::new();
+    let mut runs = Vec::new();
+    for (i, part) in parts.iter().enumerate().filter(|(_, p)| !p.is_empty()) {
+        text.push_str(part);
+        runs.push(gpui::TextRun {
+            len: part.len(),
+            font: gpui::font(if i % 2 == 1 { MONO } else { crate::theme::SANS }),
+            color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        });
+    }
+    gpui::StyledText::new(text).with_runs(runs)
+}
+
+/// Text that shares a row: it shrinks to what the row leaves it and wraps
+/// there. (A text item without `min_w_0` keeps its one-line width.)
+pub fn shrink(text: impl IntoElement) -> Div {
+    div().flex_1().min_w_0().child(text)
+}
+
 /// Inline keyboard hint in mono ("⌘.", "↩").
 pub fn kbd(text: impl Into<SharedString>) -> Div {
     div().mono().child(text.into())

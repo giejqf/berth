@@ -802,8 +802,12 @@ impl Render for NewWorkflowForm {
                 let _ = close.update(cx, |_, cx| cx.emit(DismissEvent));
             })))
             .child(tabs)
+            // Scrolls when the window is too short for all of it.
             .child(
                 div()
+                    .id("new-workflow-body")
+                    .min_h_0()
+                    .overflow_y_scroll()
                     .flex()
                     .flex_col()
                     .gap(px(14.))
