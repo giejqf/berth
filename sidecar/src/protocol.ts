@@ -261,7 +261,7 @@ path: string, title: string, description?: string, };
 
 export type MessageSlotInput = { 
 /**
- * The slot: its name or title.
+ * The slot: its number ("2", "slot 2"), name or title.
  */
 to: string, 
 /**
@@ -613,5 +613,5 @@ export const TOOLS: Record<ToolName, { terminal: boolean; subagent: boolean; des
   present_artifact: { terminal: false, subagent: false, description: "Show the user a file you made: a screenshot, a screen recording, a rendered chart or page, a report. Save it first, then pass its path and a short title. The app copies it and shows it as a card in the event flow. Non-blocking." },
   present_review: { terminal: true, subagent: false, description: "Present code review findings and wait for the user's decision on each. One finding per issue: its level (high: a bug, data loss or a security hole; mid: worth fixing before merge; low: a nit), a one-line title, the detail (why it matters, what a fix would be), where it is, and what you suggest: fix, dismiss (not worth changing), or decide (a judgment call that is theirs). The user picks for each and the decisions come back as the result: fix what they marked fix, leave the dismissed ones, follow their words on the rest. Ends the round while waiting; the decisions resume it." },
   reply: { terminal: true, subagent: false, description: "End the round with your answer to the user, when you answered a question or discussed something and changed nothing for them to review. The message is Markdown and shows in the flow under their message: answer fully there, since they don't read your other text. Does not end the section. When you changed files, use write_summary instead." },
-  message_slot: { terminal: false, subagent: false, description: "Send a message to the agent in another slot of this repository, when its work needs to know something: a bug you found in the part it builds, an interface you need from it or changed for it, an answer to its message. Name the slot as the user or its message did (its name or title). Its agent reads the message at its next step, or starts on it if it was idle; the user sees it in both slots. Don't fix the other slot's code yourself. Any answer comes back to you as a message. The result says whether it was delivered or is held for the user. Non-blocking; not a terminal tool." },
+  message_slot: { terminal: false, subagent: false, description: "Send a message to the agent in another slot of this repository, when its work needs to know something: a bug you found in the part it builds, an interface you need from it or changed for it, an answer to its message. Name the slot as the user or its message did: its number (\"slot 2\"), name or title. Its agent reads the message at its next step, or starts on it if it was idle; the user sees it in both slots. Don't fix the other slot's code yourself. Any answer comes back to you as a message. The result says whether it was delivered or is held for the user. Non-blocking; not a terminal tool." },
 };

@@ -265,10 +265,10 @@ impl RepoState {
         cx.notify();
     }
 
-    /// Slots in the order the rail shows them: grouped by state, oldest first.
+    /// Slots in the order the rail shows them: grouped by state, then by number.
     pub fn rail_order(&self) -> Vec<&SlotEntry> {
         let mut v: Vec<&SlotEntry> = self.slots.iter().collect();
-        v.sort_by_key(|e| (rail_group(e), e.slot.created_at));
+        v.sort_by_key(|e| (rail_group(e), e.slot.number, e.slot.created_at));
         v
     }
 
@@ -292,12 +292,12 @@ impl RepoState {
         self.select_slot(order[next].clone(), cx);
     }
 
-    /// ⌘1–9: the nth slot in the rail.
-    pub fn select_nth(&mut self, n: usize, cx: &mut Context<'_, Self>) {
-        let id = self.rail_order().get(n).map(|e| e.slot.id.clone());
-        if let Some(id) = id {
-            self.select_slot(id, cx);
-        }
+    /// ⌘1–9: the repo's slot numbered `n`, whichever window shows it.
+    pub fn numbered(&self, n: u32) -> Option<String> {
+        self.repo_slots
+            .iter()
+            .find(|e| e.slot.number == n)
+            .map(|e| e.slot.id.clone())
     }
 
     /// ⌘⇧A: the first slot that needs the user.

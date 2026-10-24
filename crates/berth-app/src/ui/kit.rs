@@ -117,6 +117,32 @@ pub fn dot(size: f32, color: Hsla) -> Div {
     div().size(px(size)).flex_none().rounded_full().bg(color)
 }
 
+// ---- slot numbers ----
+
+/// A slot's number (`Slot::number`) on its tile: `size` square (wider for
+/// two digits), the figure in mono at half that. `on`: the selected slot's.
+pub fn slot_number(t: &Tokens, n: u32, size: f32, on: bool) -> Div {
+    let figure = (size / 2.).round().max(11.);
+    div()
+        .flex_none()
+        .h(px(size))
+        .min_w(px(size))
+        .px(px(3.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px((size / 4.).round()))
+        .border_1()
+        .border_color(if on { t.border_strong } else { t.border })
+        .bg(if on { t.win } else { t.card })
+        .mono()
+        .text_size(px(figure))
+        .line_height(px(figure))
+        .semibold()
+        .text_color(if on { t.text } else { t.text2 })
+        .child(n.to_string())
+}
+
 /// 1×18 divider between header controls.
 pub fn vrule(t: &Tokens) -> Div {
     div().w(px(1.)).h(px(18.)).flex_none().bg(t.border)

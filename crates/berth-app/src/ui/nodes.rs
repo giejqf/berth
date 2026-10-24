@@ -2,7 +2,7 @@
 //! the rail line down to the next row, then the node itself. One function
 //! per node kind; `RowCtx` carries what a row needs to draw and act.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -26,8 +26,8 @@ use gpui_base::motion::MotionReveal;
 use super::answer_card::AnswerCard;
 use super::flow_view::FlowView;
 use super::kit::{
-    Btn, Tone, TypeExt as _, caption, clock, dot, dur, file_chip, icon, link, plural, spinner, tag,
-    tokens,
+    Btn, Tone, TypeExt as _, caption, clock, dot, dur, file_chip, icon, link, plural, slot_number,
+    spinner, tag, tokens,
 };
 use super::motion;
 use super::rich::{self, clamped, overflows, rich};
@@ -60,6 +60,8 @@ pub struct RowCtx {
     pub state: Entity<RepoState>,
     pub backend: BackendHandle,
     pub slots: Vec<SlotEntry>,
+    /// The number of each of the repo's slots, by id (every window's).
+    pub numbers: HashMap<String, u32>,
     pub review_open: bool,
     /// Reviewed section (`Some` while the review pane shows a Section diff).
     pub review_section: Option<u32>,
@@ -899,6 +901,9 @@ fn message(t: &Tokens, node: &Node, m: &SlotMessage, ctx: &RowCtx, line: bool) -
                 } else {
                     "Message from"
                 }))
+                .when_some(ctx.numbers.get(&m.peer_slot_id), |d, &n| {
+                    d.child(div().self_center().child(slot_number(t, n, 18., false)))
+                })
                 .child(
                     div()
                         .min_w_0()

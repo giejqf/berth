@@ -25,6 +25,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0007_workflow_context.sql"),
     include_str!("../migrations/0008_turn_uuids.sql"),
     include_str!("../migrations/0009_message_hops.sql"),
+    include_str!("../migrations/0010_slot_numbers.sql"),
 ];
 
 pub struct Store {
@@ -49,7 +50,7 @@ fn u32_col(v: i64) -> u32 {
     u32::try_from(v).unwrap_or(0)
 }
 
-const SLOT_COLS: &str = "id, repo_id, type, name, state, state_detail, checkout_path, placement, branch, base_ref, created_at, custom_name, model, effort";
+const SLOT_COLS: &str = "id, repo_id, type, name, state, state_detail, checkout_path, placement, branch, base_ref, created_at, custom_name, model, effort, number";
 const WORKFLOW_COLS: &str = "id, slot_id, origin_json, state, claude_session_id, section_no, total_cost_usd, \
                              last_error, created_at, closed_at";
 const ROUND_COLS: &str = "id, workflow_id, section_no, started_at, ended_at, terminal_kind, nudges, cost_usd, duration_ms";
@@ -80,6 +81,7 @@ fn slot_row(r: &Row<'_>) -> rusqlite::Result<(Slot, String)> {
             model: r.get(12)?,
             // An effort this version doesn't know falls back to the default.
             effort: effort.as_deref().and_then(berth_protocol::Effort::parse),
+            number: r.get(14)?,
         },
         state,
     ))
@@ -501,9 +503,14 @@ impl Store {
 
     // ---- slots ----
 
-    pub fn insert_slot(&self, s: &Slot) -> Result<()> {
+    /// Insert slot `s`, numbering it first when it has no number yet: the
+    /// lowest one no other live slot of its repo holds.
+    pub fn insert_slot(&self, s: &mut Slot) -> Result<()> {
+        if s.number == 0 {
+            s.number = self.free_slot_number(&s.repo_id)?;
+        }
         self.conn.execute(
-            &format!("INSERT INTO slots ({SLOT_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"),
+            &format!("INSERT INTO slots ({SLOT_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)"),
             params![
                 s.id,
                 s.repo_id,
@@ -518,10 +525,21 @@ impl Store {
                 s.created_at,
                 s.custom_name,
                 s.model,
-                s.effort.map(berth_protocol::Effort::as_str)
+                s.effort.map(berth_protocol::Effort::as_str),
+                s.number
             ],
         )?;
         Ok(())
+    }
+
+    fn free_slot_number(&self, repo_id: &str) -> Result<u32> {
+        let mut stmt = self.conn.prepare(
+            "SELECT number FROM slots WHERE repo_id = ?1 AND state != 'destroyed' AND number > 0",
+        )?;
+        let taken = stmt
+            .query_map([repo_id], |r| r.get::<_, u32>(0))?
+            .collect::<rusqlite::Result<std::collections::HashSet<u32>>>()?;
+        Ok((1..).find(|n| !taken.contains(n)).unwrap_or(1))
     }
 
     pub fn slot(&self, id: &str) -> Result<Slot> {
@@ -1304,15 +1322,16 @@ impl Store {
             Some(json) => Some(serde_json::from_str(&json)?),
             None => None,
         };
-        let held_message: Option<(i64, String)> = self
+        let held_message: Option<(i64, String, String)> = self
             .conn
             .query_row(
-                "SELECT created_at, json_extract(payload_json, '$.peer_name') FROM nodes \
+                "SELECT created_at, json_extract(payload_json, '$.peer_name'), \
+                 json_extract(payload_json, '$.peer_slot_id') FROM nodes \
                  WHERE workflow_id = ?1 AND kind = 'message' \
                  AND json_extract(payload_json, '$.direction') = 'received' \
                  AND json_extract(payload_json, '$.status') = 'held' ORDER BY seq DESC LIMIT 1",
                 [workflow_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?;
         let rounds: i64 = self.conn.query_row(

@@ -108,7 +108,7 @@ actions!(
     ]
 );
 
-/// ⌘1–9: the nth slot in the rail (0-based).
+/// ⌘1–9: slot n + 1 of the repo, in whichever window has it.
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = berth, no_json)]
 pub struct SelectSlot(pub usize);
@@ -239,7 +239,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     },
     Shortcut {
         keys: "⌘1–9",
-        label: "Jump to the nth slot in the rail",
+        label: "Go to slot 1–9",
         group: "Global",
     },
     Shortcut {

@@ -128,9 +128,9 @@ impl ToolName {
                 "Send a message to the agent in another slot of this repository, when its work \
                  needs to know something: a bug you found in the part it builds, an interface \
                  you need from it or changed for it, an answer to its message. Name the slot as \
-                 the user or its message did (its name or title). Its agent reads the message \
-                 at its next step, or starts on it if it was idle; the user sees it in both \
-                 slots. Don't fix the other slot's code yourself. Any answer comes back to you \
+                 the user or its message did: its number (\"slot 2\"), name or title. Its agent \
+                 reads the message at its next step, or starts on it if it was idle; the user \
+                 sees it in both slots. Don't fix the other slot's code yourself. Any answer comes back to you \
                  as a message. The result says whether it was delivered or is held for the \
                  user. Non-blocking; not a terminal tool."
             }
@@ -210,7 +210,7 @@ pub struct RequestSlotInput {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct MessageSlotInput {
-    /// The slot: its name or title.
+    /// The slot: its number ("2", "slot 2"), name or title.
     pub to: String,
     /// Markdown.
     pub message: String,

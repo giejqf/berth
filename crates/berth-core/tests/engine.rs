@@ -17,7 +17,7 @@ use berth_protocol::{
 fn setup() -> (Store, Engine, String) {
     let store = Store::open_in_memory().unwrap();
     let repo = store.upsert_repo(Path::new("/tmp/repo")).unwrap();
-    let slot = Slot {
+    let mut slot = Slot {
         id: new_id(),
         repo_id: repo.id,
         slot_type: "worktree".into(),
@@ -32,8 +32,9 @@ fn setup() -> (Store, Engine, String) {
         branch: "berth/fix".into(),
         base_ref: "main".into(),
         created_at: now_ms(),
+        number: 0,
     };
-    store.insert_slot(&slot).unwrap();
+    store.insert_slot(&mut slot).unwrap();
     let origin = Origin {
         kind: OriginKind::Thought,
         r#ref: String::new(),
@@ -1220,15 +1221,16 @@ fn a_reply_answers_in_the_flow_without_ending_the_section() {
 
 fn second_slot(store: &Store, of: &str) -> Slot {
     let first = store.slot(of).unwrap();
-    let slot = Slot {
+    let mut slot = Slot {
         id: new_id(),
         name: "other".into(),
         checkout_path: Some("/tmp/other".into()),
         branch: "berth/other".into(),
         created_at: now_ms(),
+        number: 0,
         ..first
     };
-    store.insert_slot(&slot).unwrap();
+    store.insert_slot(&mut slot).unwrap();
     slot
 }
 

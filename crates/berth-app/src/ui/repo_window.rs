@@ -1134,8 +1134,11 @@ impl Render for RepoWindow {
                 this.state.update(cx, |s, cx| s.select_relative(-1, cx));
             }))
             .on_action(cx.listener(|this, a: &SelectSlot, _, cx| {
-                let n = a.0;
-                this.state.update(cx, |s, cx| s.select_nth(n, cx));
+                let s = this.state.read(cx);
+                let repo = s.repo_id().to_owned();
+                if let Some(id) = s.numbered(a.0 as u32 + 1) {
+                    super::windows::reveal_slot(&repo, &id, cx);
+                }
             }))
             .on_action(cx.listener(|this, _: &JumpToNeeding, _, cx| {
                 this.state.update(cx, RepoState::select_needing);

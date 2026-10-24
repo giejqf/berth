@@ -284,7 +284,7 @@ impl Shared {
                 berth_git::default_base_ref(&git).await?,
             )
         };
-        let slot = Slot {
+        let mut slot = Slot {
             id: slot_id,
             repo_id: req.repo_id.clone(),
             slot_type: ty.name.clone(),
@@ -299,10 +299,11 @@ impl Shared {
             branch,
             base_ref,
             created_at: now_ms(),
+            number: 0,
         };
         let wf = {
             let core = self.core();
-            core.store.insert_slot(&slot)?;
+            core.store.insert_slot(&mut slot)?;
             // In the window that asked for it, else the repo's first.
             let window = match &req.window_id {
                 Some(w) => w.clone(),

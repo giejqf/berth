@@ -144,8 +144,8 @@ pub fn session_context(ctx: &SessionContext<'_>) -> String {
     let _ = writeln!(out, "- Repository: {}", ctx.repo_name);
     let _ = writeln!(
         out,
-        "- Slot: {} (type `{}`, agent placement `{}`)",
-        ctx.slot_name, ctx.slot_type, ctx.placement
+        "- Slot {}: {} (type `{}`, agent placement `{}`)",
+        ctx.slot_number, ctx.slot_name, ctx.slot_type, ctx.placement
     );
     if ctx.reused {
         let _ = writeln!(
@@ -171,7 +171,8 @@ pub fn session_context(ctx: &SessionContext<'_>) -> String {
     if !ctx.other_slots.is_empty() {
         let _ = writeln!(
             out,
-            "- Other slots in this repository, each with its own agent (reach them with `message_slot`):"
+            "- Other slots in this repository, each with its own agent (reach them with `message_slot`, \
+             by number or name):"
         );
         for s in ctx.other_slots {
             let _ = writeln!(out, "  - {s}");
@@ -190,6 +191,8 @@ pub fn session_context(ctx: &SessionContext<'_>) -> String {
 pub struct SessionContext<'a> {
     pub repo_name: &'a str,
     pub slot_name: &'a str,
+    /// The slot's number in the repo, as the user sees it in the rail.
+    pub slot_number: u32,
     pub slot_type: &'a str,
     pub placement: &'a str,
     pub branch: &'a str,
@@ -200,7 +203,7 @@ pub struct SessionContext<'a> {
     /// `slot.sh` path when gates must go through `exec` (host placement).
     pub slot_exec: Option<&'a str>,
     /// The repo's other slots when the session starts, one line each
-    /// ("\"Build the API\" (branch `berth/api`)").
+    /// (`messages::slot_line`: "Slot 2: \"Build the API\" (branch `berth/api`)").
     pub other_slots: &'a [String],
 }
 
@@ -394,6 +397,7 @@ mod tests {
         let ctx = |reused| SessionContext {
             repo_name: "demo",
             slot_name: "fix",
+            slot_number: 1,
             slot_type: "worktree",
             placement: "host",
             branch: "berth/fix",
@@ -406,13 +410,16 @@ mod tests {
         let fresh = session_context(&ctx(false));
         assert!(fresh.contains("Work on branch `berth/fix` (based on `main`)."));
         assert!(!fresh.contains("message_slot"));
-        let others = ["\"Build the API\" (branch `berth/api`)".to_owned()];
+        assert!(fresh.contains("- Slot 1: fix (type `worktree`"), "{fresh}");
+        let others = ["Slot 2: \"Build the API\" (branch `berth/api`)".to_owned()];
         let with = session_context(&SessionContext {
             other_slots: &others,
             ..ctx(false)
         });
         assert!(
-            with.contains("`message_slot`):\n  - \"Build the API\" (branch `berth/api`)\n"),
+            with.contains(
+                "by number or name):\n  - Slot 2: \"Build the API\" (branch `berth/api`)\n"
+            ),
             "{with}"
         );
         let reused = session_context(&ctx(true));

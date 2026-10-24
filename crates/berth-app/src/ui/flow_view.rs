@@ -12,16 +12,17 @@ use berth_protocol::{DiffPreset, NodePayload, OutcomeKind, TerminalKind};
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ListAlignment, ListState, ParentElement as _, Render,
-    StatefulInteractiveElement as _, Styled as _, Window, div, list, prelude::FluentBuilder as _,
-    px,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, list,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::menu::DropdownMenu as _;
+use gpui_component::tooltip::Tooltip;
 
 use super::RepoState;
 use super::answer_card::AnswerCard;
 use super::kit::{
-    Btn, Tone, TypeExt as _, chip, icon, minutes, origin_chip, plural, spinner, vrule,
+    Btn, Tone, TypeExt as _, chip, icon, minutes, origin_chip, plural, slot_number, spinner, vrule,
 };
 use super::nodes::{Row, RowCtx, origin_label, render_row};
 use crate::backend::Command;
@@ -470,6 +471,23 @@ impl FlowView {
                     .flex()
                     .items_center()
                     .gap(px(12.))
+                    .when_some(entry, |d, e| {
+                        d.child(
+                            div()
+                                .id("header-slot-number")
+                                .flex_none()
+                                .tooltip({
+                                    let n = e.slot.number;
+                                    let tip = SharedString::from(if (1..=9).contains(&n) {
+                                        format!("Slot {n}  ⌘{n}")
+                                    } else {
+                                        format!("Slot {n}")
+                                    });
+                                    move |w, cx| Tooltip::new(tip.clone()).build(w, cx)
+                                })
+                                .child(slot_number(t, e.slot.number, 22., false)),
+                        )
+                    })
                     .child(
                         div()
                             .flex_1()
@@ -660,6 +678,11 @@ impl Render for FlowView {
             state: self.state.clone(),
             backend: state.backend.clone(),
             slots: state.slots.clone(),
+            numbers: state
+                .repo_slots
+                .iter()
+                .map(|e| (e.slot.id.clone(), e.slot.number))
+                .collect(),
             review_open: state.review_open,
             review_section,
             review_stats,

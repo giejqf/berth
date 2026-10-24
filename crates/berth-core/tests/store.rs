@@ -23,6 +23,7 @@ fn slot(repo_id: &str) -> Slot {
         branch: "berth/add-a-test".into(),
         base_ref: "main".into(),
         created_at: now_ms(),
+        number: 0,
     }
 }
 
@@ -30,8 +31,8 @@ fn slot(repo_id: &str) -> Slot {
 fn a_slot_can_be_renamed_and_unnamed() {
     let store = Store::open_in_memory().unwrap();
     let repo = store.upsert_repo(Path::new("/tmp/repo")).unwrap();
-    let s = slot(&repo.id);
-    store.insert_slot(&s).unwrap();
+    let mut s = slot(&repo.id);
+    store.insert_slot(&mut s).unwrap();
     assert_eq!(store.slot(&s.id).unwrap().custom_name, None);
 
     let renamed = store.set_slot_custom_name(&s.id, Some("tests")).unwrap();
@@ -134,7 +135,7 @@ fn slots_are_grouped_into_windows() {
     let store = Store::open_in_memory().unwrap();
     let repo = store.upsert_repo(Path::new("/tmp/repo")).unwrap();
     let slot = |name: &str, at: i64| {
-        let s = Slot {
+        let mut s = Slot {
             id: new_id(),
             repo_id: repo.id.clone(),
             slot_type: "worktree".into(),
@@ -149,8 +150,9 @@ fn slots_are_grouped_into_windows() {
             branch: format!("berth/{name}"),
             base_ref: "main".into(),
             created_at: at,
+            number: 0,
         };
-        store.insert_slot(&s).unwrap();
+        store.insert_slot(&mut s).unwrap();
         s
     };
     // Slots from before windows join the first window.
@@ -171,4 +173,58 @@ fn slots_are_grouped_into_windows() {
     // A repo without slots still opens one window.
     let other = store.upsert_repo(Path::new("/tmp/other")).unwrap();
     assert_eq!(store.repo_windows(&other.id, "fresh").unwrap(), ["fresh"]);
+}
+
+#[test]
+fn slots_take_the_lowest_free_number_in_their_repo() {
+    let store = Store::open_in_memory().unwrap();
+    let repo = store.upsert_repo(Path::new("/tmp/repo")).unwrap();
+    let other = store.upsert_repo(Path::new("/tmp/other")).unwrap();
+    let add = |repo_id: &str| {
+        let mut s = slot(repo_id);
+        store.insert_slot(&mut s).unwrap();
+        s
+    };
+    let (a, b, c) = (add(&repo.id), add(&repo.id), add(&repo.id));
+    assert_eq!([a.number, b.number, c.number], [1, 2, 3]);
+    assert_eq!(store.slot(&b.id).unwrap().number, 2);
+    // Each repo counts on its own.
+    assert_eq!(add(&other.id).number, 1);
+    // A destroyed slot's number is free again; a failed one keeps its own.
+    store
+        .transition_slot(&b.id, SlotState::Destroying, None)
+        .unwrap();
+    store
+        .transition_slot(&b.id, SlotState::Destroyed, None)
+        .unwrap();
+    assert_eq!(add(&repo.id).number, 2);
+    assert_eq!(add(&repo.id).number, 4);
+}
+
+#[test]
+fn slots_from_before_numbers_are_numbered_in_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("berth.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(include_str!("../migrations/0001_init.sql"))
+            .unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        conn.execute(
+            "INSERT INTO repos (id, path, created_at) VALUES ('r', '/tmp/repo', 0)",
+            [],
+        )
+        .unwrap();
+        for (id, state, at) in [("x", "ready", 3), ("y", "destroyed", 1), ("z", "failed", 2)] {
+            conn.execute(
+                "INSERT INTO slots (id, repo_id, type, name, state, placement, branch, base_ref, created_at)
+                 VALUES (?1, 'r', 'worktree', ?1, ?2, 'host', 'b', 'main', ?3)",
+                rusqlite::params![id, state, at],
+            )
+            .unwrap();
+        }
+    }
+    let store = Store::open(&path).unwrap();
+    let n = |id| store.slot(id).unwrap().number;
+    assert_eq!([n("z"), n("x"), n("y")], [1, 2, 0]);
 }

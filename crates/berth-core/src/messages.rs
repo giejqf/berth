@@ -35,9 +35,10 @@ pub fn slot_name(slot: &Slot, workflow: Option<&Workflow>) -> String {
 }
 
 /// The slot `to` names among the repo's `slots` (each with the workflow it
-/// shows), other than the sender's: by its name, title, slot name or branch,
-/// ignoring case; else the one whose name contains it. `Err` is what the
-/// agent reads: no such slot, or which ones it could mean.
+/// shows), other than the sender's: by its number ("2", "slot 2"), its name,
+/// title, slot name or branch, ignoring case; else the one whose name
+/// contains it. `Err` is what the agent reads: no such slot, or which ones it
+/// could mean.
 pub fn find_slot<'a>(
     slots: &'a [(Slot, Option<Workflow>)],
     from_slot_id: &str,
@@ -62,7 +63,9 @@ pub fn find_slot<'a>(
         .iter()
         .filter(|(s, w)| names(s, w).contains(&want))
         .collect();
-    let found = if exact.is_empty() && !want.is_empty() {
+    let found = if let Some(n) = number(&want) {
+        others.iter().filter(|(s, _)| s.number == n).collect()
+    } else if exact.is_empty() && !want.is_empty() {
         others
             .iter()
             .filter(|(s, w)| names(s, w).iter().any(|n| n.contains(&want)))
@@ -88,17 +91,33 @@ pub fn find_slot<'a>(
     }
 }
 
+/// A slot number as an agent may write it: "2", "#2", "slot 2".
+fn number(want: &str) -> Option<u32> {
+    let n = want.strip_prefix("slot").unwrap_or(want).trim_start();
+    n.strip_prefix('#')
+        .unwrap_or(n)
+        .parse()
+        .ok()
+        .filter(|&n| n > 0)
+}
+
 fn listing(slots: &[(&Slot, &Workflow)]) -> String {
     let mut out = String::new();
     for (s, w) in slots {
-        let _ = writeln!(
-            out,
-            "- \"{}\" (branch `{}`)",
-            slot_name(s, Some(w)),
-            s.branch
-        );
+        let _ = writeln!(out, "- {}", slot_line(s, Some(w)));
     }
     out.trim_end().to_owned()
+}
+
+/// How the agents read a slot: `Slot 2: "Backend" (branch `berth/api`)`.
+#[must_use]
+pub fn slot_line(slot: &Slot, workflow: Option<&Workflow>) -> String {
+    format!(
+        "Slot {}: \"{}\" (branch `{}`)",
+        slot.number,
+        slot_name(slot, workflow),
+        slot.branch
+    )
 }
 
 /// Where a message `hop` long goes in a workflow in `state`; `live`:
@@ -164,6 +183,7 @@ mod tests {
     use super::*;
 
     fn slot(id: &str, name: &str, custom: Option<&str>) -> Slot {
+        let number = u32::from(id.as_bytes()[0] - b'a' + 1);
         Slot {
             id: id.into(),
             repo_id: "r".into(),
@@ -179,6 +199,7 @@ mod tests {
             branch: format!("berth/{name}"),
             base_ref: "origin/main".into(),
             created_at: 0,
+            number,
         }
     }
 
@@ -234,6 +255,15 @@ mod tests {
             find_slot(&slots, "a", "the do").map(|f| &f.0.id),
             Ok(&"c".to_owned())
         );
+        for by_number in ["2", "Slot 2", "slot #2", "#2"] {
+            assert_eq!(
+                find_slot(&slots, "a", by_number).map(|f| &f.0.id),
+                Ok(&"b".to_owned()),
+                "{by_number}"
+            );
+        }
+        let gone = find_slot(&slots, "a", "slot 7").unwrap_err();
+        assert!(gone.contains("- Slot 3: \"Write the docs\""), "{gone}");
         // Not the sender's own slot.
         let own = find_slot(&slots, "a", "frontend").unwrap_err();
         assert!(own.contains("\"Backend\""), "{own}");

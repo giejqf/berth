@@ -43,7 +43,7 @@ If a design decision is not here, it has not been made. Record new decisions her
 | Term | Meaning |
 |---|---|
 | **Repo** | A local git repository. One repo per app window. |
-| **Slot** | An environment where one agent session edits and runs tests. Defined entirely by a user script (§6). Always contains a git checkout. May be a worktree, a container, a VM, or anything the script produces. |
+| **Slot** | An environment where one agent session edits and runs tests. Defined entirely by a user script (§6). Always contains a git checkout. May be a worktree, a container, a VM, or anything the script produces. Numbered within its repo (`slots.number`): the lowest number no other live slot holds, kept for its life; the rail shows it, ⌘1–9 go to it, agents address it ("slot 2"). |
 | **Workflow** | One unit of work from Origin to Outcome, bound to exactly one slot. A slot hosts at most one open workflow at a time; once it closes (or is closed to make room), the next one can start in the same slot, its checkout kept as is (§6.3). |
 | **Round** | One agent turn: from a user prompt (or nudge) until the SDK emits `result`. Every round ends with exactly one terminal tool call (§5.3). |
 | **Section** | A span of rounds ending in a `Summary`. Diffs are computed per section by default. |
@@ -241,7 +241,8 @@ present_artifact { path, title, description? }
 
 message_slot    { to, message }
   → Waits only for the app to route it; not terminal, not available to subagents.
-     Tells another slot's agent something (`to`: its name or title). The result says
+     Tells another slot's agent something (`to`: its number, "slot 2", name or title;
+     the session context lists the other slots by number). The result says
      whether it joined that agent's round, woke it, or is held for the user (ADR 0021).
 
 present_review  { findings: [{ level, title, detail, path?, line?, suggested }], summary? }
@@ -633,7 +634,7 @@ Core tables (see migrations for exact columns):
 ```
 repos            id, path, default_slot_type, created_at
 slots            id, repo_id, type, name, custom_name, state, state_detail, checkout_path, placement, branch,
-                 base_ref, created_at, model, effort, window_id
+                 base_ref, created_at, model, effort, window_id, number
 workflows        id, slot_id, origin_json, state, claude_session_id, section_no, total_cost_usd, last_error,
                  created_at, closed_at, resume_at, opened_at, context_json, resume_drops
 rounds           id, workflow_id, section_no, started_at, ended_at, terminal_kind, nudges, cost_usd, duration_ms,
@@ -757,7 +758,7 @@ settles nothing (ADR 0013).
   **event flow** + composer, right **review pane** (521px; its left edge drags it
   wider or narrower, 400px up to leaving the flow 560px, the same in every window and
   kept in `settings.review_width`; a double click on the edge goes back to 521).
-  The rail collapses to a 57px strip of state dots: by hand (the button next to + in
+  The rail collapses to a 57px strip of slot numbers with their state marks: by hand (the button next to + in
   its header, the one at the top of the strip, or ⌘⇧L), and on its own while the
   review pane is open and leaves the flow less room than at 1400px (under 1400px at
   the pane's own width). The review pane opens automatically on `Summary` and `Outcome`.
@@ -770,12 +771,15 @@ settles nothing (ADR 0013).
   in it is one text (`kit::keyed`), not a row of pieces.
 - The rail groups slots by what they need: **Needs you** (a question, an idle workflow
   awaiting its next prompt, a message held for the user, a failed slot), **Working**, **Ready to review** (idle after
-  a summary), **Done**. Each slot's mark is a dot in its group's color; a busy slot's
-  (its agent working, or the slot being created or destroyed) is the working spinner,
-  in the rail and its collapsed strip alike. The second line says what is happening
+  a summary), **Done**; by number within a group. Each slot's mark is its number on a
+  tile (`kit::slot_number`), with a dot in its group's color at the tile's corner; a busy
+  slot's (its agent working, or the slot being created or destroyed) is the working
+  spinner, in the rail and its collapsed strip alike. The same tile leads the flow
+  header's title, a message's peer and the Reuse a slot list; ⌘1–9 go to that slot,
+  in whichever window has it. The second line says what is happening
   (the live round's current step from `berth_core::activity`, "Asked a question · 40s
   ago", "Review: 5 findings to decide · 1m ago", "Replied · 1m ago", "Message from
-  Frontend · 1m ago", "Committed · 1 follow-up", "Artifact published"; after a reply the slot needs you, not a review); while
+  slot 1 · 1m ago", "Committed · 1 follow-up", "Artifact published"; after a reply the slot needs you, not a review); while
   Claude Code retries a failed API request it says so ("The API is overloaded; trying
   again (2 of 10) in 8s", `api_retry`). The rail's foot is a **Command palette** button
   (⌘K; the ⌘ glyph alone on the collapsed strip). Claude Code, GitHub CLI and Node.js
@@ -932,8 +936,8 @@ settles nothing (ADR 0013).
   slot is shown there instead ("Go to slot"). Sessions stay where the agent ran:
   nothing moves into or out of an `inside` slot but its own workflows.
 - **Messages between slots** (ADR 0021): when one slot's agent tells another's
-  something (`message_slot`), both flows show it: "Message to Backend" in the sender's,
-  "Message from Frontend" in the recipient's, the text as Markdown, what became of it
+  something (`message_slot`), both flows show it: "Message to 2 Backend" in the sender's,
+  "Message from 1 Frontend" in the recipient's (the other slot's number on its tile), the text as Markdown, what became of it
   (started its agent, read while it worked, held for you, sent on or dismissed by you)
   and **Go to slot** (whichever window has it). A held message (the loop guard, a
   closed or not yet started workflow) has **Send to agent** and **Dismiss**, and puts

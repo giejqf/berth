@@ -504,6 +504,7 @@ mod tests {
             branch: "b".into(),
             base_ref: "main".into(),
             created_at: 0,
+            number: 0,
         }
     }
 

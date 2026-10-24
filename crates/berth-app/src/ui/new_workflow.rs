@@ -13,7 +13,7 @@ use gpui_component::input::{InputEvent, InputState, TextareaState};
 use gpui_component::scroll::ScrollableElement as _;
 
 use super::RepoState;
-use super::kit::{Btn, Size, TypeExt as _, field_frame, icon, radio, spinner};
+use super::kit::{Btn, Size, TypeExt as _, field_frame, icon, radio, slot_number, spinner};
 use super::modal;
 use super::sign_in::SignInDialog;
 use crate::backend::{AgentFix, Command, NewWorkflow, OriginChoice, OriginSource};
@@ -733,6 +733,7 @@ impl Render for NewWorkflowForm {
                         Err(_) => d.opacity(0.55),
                     })
                     .child(radio(&t, on, 14.))
+                    .child(slot_number(&t, entry.slot.number, 22., on))
                     .child(
                         div()
                             .flex()

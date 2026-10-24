@@ -124,6 +124,7 @@ impl Shared {
         let system_prompt = prompt::session_context(&prompt::SessionContext {
             repo_name: &repo.name(),
             slot_name: &slot.name,
+            slot_number: slot.number,
             slot_type: &slot.slot_type,
             placement: &slot.placement,
             branch: &slot.branch,
@@ -304,11 +305,7 @@ impl Shared {
             .filter(|s| s.id != slot.id)
             .filter_map(|s| {
                 let wf = core.store.workflows_for_slot(&s.id).ok()?.pop()?;
-                Some(format!(
-                    "\"{}\" (branch `{}`)",
-                    berth_core::messages::slot_name(&s, Some(&wf)),
-                    s.branch
-                ))
+                Some(berth_core::messages::slot_line(&s, Some(&wf)))
             })
             .collect()
     }

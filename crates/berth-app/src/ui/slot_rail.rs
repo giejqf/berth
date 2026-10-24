@@ -10,8 +10,8 @@ use berth_protocol::OutcomeKind;
 use gpui::{
     AnyElement, App, AppContext as _, BoxShadow, Context, Div, Entity, FocusHandle, Focusable,
     FontWeight, Hsla, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _,
-    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, point,
-    prelude::FluentBuilder as _, px,
+    Render, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _, Window,
+    div, point, prelude::FluentBuilder as _, px,
 };
 use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::scroll::ScrollableElement as _;
@@ -19,7 +19,8 @@ use gpui_component::tooltip::Tooltip;
 
 use super::RepoState;
 use super::kit::{
-    Btn, Size, TypeExt as _, ago, caption, count_badge, dot, dur, now_ms, plural, spinner,
+    Btn, Size, TypeExt as _, ago, caption, count_badge, dot, dur, now_ms, plural, slot_number,
+    spinner,
 };
 use super::motion;
 use super::repo_state::{RailGroup, rail_group};
@@ -126,7 +127,13 @@ pub fn rail_lines(entry: &SlotEntry, state: &RepoState) -> (String, String) {
             if f.held_message.is_some()
                 && !matches!(w.state, WorkflowState::Running | WorkflowState::Starting) =>
         {
-            let (at, from) = f.held_message.clone().unwrap_or_default();
+            let (at, name, slot) = f.held_message.clone().unwrap_or_default();
+            // By its number while the slot is there: short, and what the rail shows.
+            let from = state
+                .repo_slots
+                .iter()
+                .find(|e| e.slot.id == slot && e.slot.number > 0)
+                .map_or(name, |e| format!("slot {}", e.slot.number));
             format!("Message from {from} · {}", ago(at))
         }
         (_, Some(w)) => match w.state {
@@ -226,6 +233,36 @@ fn status_dot(t: &Tokens, entry: &SlotEntry, size: f32) -> AnyElement {
         RailGroup::Review => dot(size, t.accent).into_any_element(),
         RailGroup::Done => dot(size, t.done).into_any_element(),
     }
+}
+
+/// A slot's mark: its number on a tile ([`slot_number`]), its status mark
+/// ([`status_dot`], `badge` 8 or 10) at the tile's corner in a ring of the
+/// row's ground, `ground` (and `hover`'s while the row `group` is hovered).
+fn slot_mark(
+    t: &Tokens,
+    entry: &SlotEntry,
+    (tile, badge): (f32, f32),
+    on: bool,
+    ground: Hsla,
+    hover: Option<(SharedString, Hsla)>,
+) -> Div {
+    div()
+        .relative()
+        .flex_none()
+        .child(slot_number(t, entry.slot.number, tile, on))
+        .child(
+            div()
+                .absolute()
+                .right(px(-4.))
+                .bottom(px(-4.))
+                .p(px(2.))
+                .rounded_full()
+                .bg(ground)
+                .when_some(hover, |d, (group, bg)| {
+                    d.group_hover(group, move |s: StyleRefinement| s.bg(bg))
+                })
+                .child(status_dot(t, entry, badge)),
+        )
 }
 
 /// The bottom of the rail: the command palette (⌘K).
@@ -350,14 +387,16 @@ impl Render for SlotRail {
             });
             let arrived = motion::arrival(entry.slot.created_at, motion::BASE, window, cx);
             let drag = slot_drag(entry, &title, state, &t);
+            let group = SharedString::from(format!("slot-row-{id}"));
             let row = div()
                 .id(SharedString::from(format!("slot-{id}")))
+                .group(group.clone())
                 .on_drag(drag, |d, _, _, cx| drag_chip(d, cx))
                 .relative()
                 .flex()
                 .flex_none()
                 .flex_row()
-                .items_start()
+                .items_center()
                 .gap(px(10.))
                 .px(px(8.))
                 .py(px(6.))
@@ -393,16 +432,14 @@ impl Render for SlotRail {
                 .when_some(flash, |d, color| {
                     d.child(div().absolute().inset_0().rounded(px(6.)).bg(color))
                 })
-                .child(
-                    div()
-                        .w(px(16.))
-                        .h(px(18.))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(status_dot(&t, entry, 8.)),
-                )
+                .child(slot_mark(
+                    &t,
+                    entry,
+                    (24., 8.),
+                    is_selected,
+                    if is_selected { t.raised } else { t.rail },
+                    (!is_selected).then_some((group, hover)),
+                ))
                 .child(
                     div()
                         .flex()
@@ -528,7 +565,8 @@ impl Render for SlotRail {
     }
 }
 
-/// The 56px strip: state dots only (review pane open on a narrow window).
+/// The 56px strip: each slot's number and state (review pane open on a
+/// narrow window).
 pub fn collapsed(state: &Entity<RepoState>, t: &Tokens, cx: &App) -> Div {
     let s = state.read(cx);
     let selected = s.selected_slot.clone();
@@ -566,7 +604,7 @@ pub fn collapsed(state: &Entity<RepoState>, t: &Tokens, cx: &App) -> Div {
         let id = entry.slot.id.clone();
         let is_selected = selected.as_deref() == Some(id.as_str());
         let (title, sub) = rail_lines(entry, s);
-        let tip: SharedString = format!("{title} — {sub}").into();
+        let tip: SharedString = format!("Slot {} · {title} — {sub}", entry.slot.number).into();
         let st = state.clone();
         let hover = t.card;
         let drag = slot_drag(entry, &title, s, t);
@@ -588,7 +626,20 @@ pub fn collapsed(state: &Entity<RepoState>, t: &Tokens, cx: &App) -> Div {
                     let id = id.clone();
                     st.update(cx, |s, cx| s.select_slot(id, cx));
                 })
-                .child(status_dot(t, entry, 10.)),
+                .group(SharedString::from(format!("slot-dot-{}", entry.slot.id)))
+                .child(slot_mark(
+                    t,
+                    entry,
+                    (26., 10.),
+                    is_selected,
+                    if is_selected { t.raised } else { t.rail },
+                    (!is_selected).then(|| {
+                        (
+                            SharedString::from(format!("slot-dot-{}", entry.slot.id)),
+                            hover,
+                        )
+                    }),
+                )),
         );
     }
     col.child(footer(t, true))

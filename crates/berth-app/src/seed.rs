@@ -720,7 +720,7 @@ impl Seeder<'_> {
                 base,
             ],
         )?;
-        let slot = Slot {
+        let mut slot = Slot {
             id,
             repo_id: repo_id.to_owned(),
             slot_type: "worktree".into(),
@@ -735,8 +735,9 @@ impl Seeder<'_> {
             branch,
             base_ref: base.to_owned(),
             created_at: created,
+            number: 0,
         };
-        self.store.insert_slot(&slot)?;
+        self.store.insert_slot(&mut slot)?;
         Ok(slot)
     }
 

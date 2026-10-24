@@ -55,7 +55,7 @@ export const shapes = {
     follow_ups: z.array(followUp).optional(),
   },
   message_slot: {
-    to: z.string().min(1).describe("The other slot: its name or title"),
+    to: z.string().min(1).describe("The other slot: its number (\"slot 2\"), name or title"),
     message: z.string().min(1).describe("What its agent needs to know, in Markdown"),
   },
   present_artifact: {

@@ -112,6 +112,11 @@ pub struct Slot {
     pub branch: String,
     pub base_ref: String,
     pub created_at: i64,
+    /// The slot's number in its repo, as the rail shows it: the lowest free
+    /// one when it was made, kept for its life. 0: none (destroyed before
+    /// slots had numbers).
+    #[serde(default)]
+    pub number: u32,
 }
 
 /// Why a slot can't take a new workflow right now (reuse, §6.3).
@@ -408,8 +413,8 @@ pub struct WorkflowFacts {
     pub reply_at: Option<i64>,
     pub outcome: Option<berth_protocol::Outcome>,
     /// The latest message from another slot that waits for the user: when it
-    /// came, and from which slot (ADR 0021).
-    pub held_message: Option<(i64, String)>,
+    /// came, and from which slot: its name then, and its id (ADR 0021).
+    pub held_message: Option<(i64, String, String)>,
     pub rounds: usize,
     pub last_round_at: Option<i64>,
 }
