@@ -292,6 +292,15 @@ pub struct ReviewAnswer {
     pub text: String,
 }
 
+/// What became of a `message_slot` call, as the agent reads it (ADR 0021).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SlotMessageSent {
+    pub request_id: String,
+    /// False when it went nowhere (no such slot): `text` says why.
+    pub ok: bool,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct SlotRequestResolved {
     pub request_id: String,
@@ -321,6 +330,8 @@ pub enum AppToSidecar {
     ReviewAnswer(ReviewAnswer),
     #[serde(rename = "slot_request.resolved")]
     SlotRequestResolved(SlotRequestResolved),
+    #[serde(rename = "slot_message.sent")]
+    SlotMessageSent(SlotMessageSent),
     #[serde(rename = "session.configure")]
     SessionConfigure(SessionConfigure),
     #[serde(rename = "sessions.list")]
@@ -343,6 +354,7 @@ impl AppToSidecar {
             Self::QuestionAnswer(_) => "question.answer",
             Self::ReviewAnswer(_) => "review.answer",
             Self::SlotRequestResolved(_) => "slot_request.resolved",
+            Self::SlotMessageSent(_) => "slot_message.sent",
             Self::SessionConfigure(_) => "session.configure",
             Self::SessionsList(_) => "sessions.list",
             Self::SessionBackground(_) => "session.background",
@@ -460,6 +472,15 @@ pub struct BranchCollected {
     pub tool_calls: u32,
     #[serde(default)]
     pub touched_files: Vec<String>,
+}
+
+/// The agent called `message_slot`: the app routes it and answers with
+/// `slot_message.sent`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SlotMessageRequest {
+    pub request_id: String,
+    pub to: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -684,6 +705,8 @@ pub enum SidecarToApp {
     BranchCollected(BranchCollected),
     #[serde(rename = "slot.request")]
     SlotRequest(SlotRequest),
+    #[serde(rename = "slot.message")]
+    SlotMessage(SlotMessageRequest),
     #[serde(rename = "round.ended")]
     RoundEnded(RoundEnded),
     #[serde(rename = "session.cost")]
@@ -732,6 +755,7 @@ impl SidecarToApp {
             Self::BranchSpawned(_) => "branch.spawned",
             Self::BranchCollected(_) => "branch.collected",
             Self::SlotRequest(_) => "slot.request",
+            Self::SlotMessage(_) => "slot.message",
             Self::RoundEnded(_) => "round.ended",
             Self::SessionCost(_) => "session.cost",
             Self::SessionError(_) => "session.error",

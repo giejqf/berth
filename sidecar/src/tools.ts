@@ -10,6 +10,7 @@ import {
   MCP_SERVER_NAME,
   TOOLS,
   type AskUserInput,
+  type MessageSlotInput,
   type PresentArtifactInput,
   type PresentReviewInput,
   type RecordDecisionInput,
@@ -53,6 +54,10 @@ export const shapes = {
     summary: z.string(),
     follow_ups: z.array(followUp).optional(),
   },
+  message_slot: {
+    to: z.string().min(1).describe("The other slot: its name or title"),
+    message: z.string().min(1).describe("What its agent needs to know, in Markdown"),
+  },
   present_artifact: {
     path: z.string().min(1).describe("The file, absolute or relative to the checkout"),
     title: z.string().min(1).describe("What it shows, in a few words"),
@@ -92,6 +97,7 @@ const schemaMatchesProtocol: {
   request_slot: Same<Infer<typeof shapes.request_slot>, RequestSlotInput>;
   present_artifact: Same<Infer<typeof shapes.present_artifact>, PresentArtifactInput>;
   present_review: Same<Infer<typeof shapes.present_review>, PresentReviewInput>;
+  message_slot: Same<Infer<typeof shapes.message_slot>, MessageSlotInput>;
 } = {
   record_decision: true,
   ask_user: true,
@@ -101,6 +107,7 @@ const schemaMatchesProtocol: {
   request_slot: true,
   present_artifact: true,
   present_review: true,
+  message_slot: true,
 };
 void schemaMatchesProtocol;
 
@@ -121,6 +128,7 @@ export interface ToolHost {
   requestSlot(input: RequestSlotInput, call: CallContext): Promise<ToolOutcome>;
   presentArtifact(input: PresentArtifactInput, call: CallContext): Promise<ToolOutcome>;
   presentReview(input: PresentReviewInput, call: CallContext): Promise<ToolOutcome>;
+  messageSlot(input: MessageSlotInput, call: CallContext): Promise<ToolOutcome>;
 }
 
 /** Fully qualified name the model sees, e.g. `mcp__berth__ask_user`. */
@@ -179,6 +187,9 @@ export function createBerthServer(host: ToolHost): McpSdkServerConfigWithInstanc
       ),
       tool("present_review", TOOLS.present_review.description, shapes.present_review, async (args, extra) =>
         result(await host.presentReview(args, callContext(extra))),
+      ),
+      tool("message_slot", TOOLS.message_slot.description, shapes.message_slot, async (args, extra) =>
+        result(await host.messageSlot(args, callContext(extra))),
       ),
     ],
   });

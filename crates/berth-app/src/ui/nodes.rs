@@ -10,8 +10,9 @@ use berth_core::activity::RoundActivity;
 use berth_core::flow::{FlowItem, Lane, SubagentGroup};
 use berth_core::{BranchState, Node, SlotState, WorkflowState, WorkflowView};
 use berth_protocol::{
-    Artifact, CompactTrigger, Compacted, Decision, FollowUp, NodePayload, Origin, OriginKind,
-    Outcome, OutcomeKind, Prompt, Question, Refusal, Reopened, Reply, Review, Rewind, Summary,
+    Artifact, CompactTrigger, Compacted, Decision, FollowUp, MessageDirection, MessageStatus,
+    NodePayload, Origin, OriginKind, Outcome, OutcomeKind, Prompt, Question, Refusal, Reopened,
+    Reply, Review, Rewind, SlotMessage, Summary,
 };
 use std::f32::consts::FRAC_PI_2;
 
@@ -236,6 +237,7 @@ fn node_row(t: &Tokens, node: &Node, ctx: &RowCtx, line: bool, cx: &mut App) -> 
         NodePayload::Compacted(c) => compacted(t, node, c, ctx, line),
         NodePayload::Refusal(r) => refusal(t, node, r, line),
         NodePayload::Reply(r) => reply(t, node, r, ctx, line),
+        NodePayload::Message(m) => message(t, node, m, ctx, line),
         // Spawn/Collect are folded into their group; never laid out alone.
         NodePayload::SubagentSpawn(_) | NodePayload::CollectResults(_) => div(),
     }
@@ -852,6 +854,177 @@ fn reply(t: &Tokens, node: &Node, r: &Reply, ctx: &RowCtx, line: bool) -> Div {
                 .py(px(10.))
                 .child(header)
                 .child(text),
+        ),
+    )
+}
+
+/// A message between slots' agents (ADR 0021): to or from which slot, what
+/// it says, and what became of it. A held one waits here for the user.
+fn message(t: &Tokens, node: &Node, m: &SlotMessage, ctx: &RowCtx, line: bool) -> Div {
+    let key = format!("more-{}", node.id);
+    let long = overflows(&m.text, ctx.width - 100., 14);
+    let open = ctx.more.contains(&key);
+    let flow = ctx.flow.clone();
+    let sent = m.direction == MessageDirection::Sent;
+    let held = m.status == MessageStatus::Held;
+    // The user acts where it is held; the sender's side only says so.
+    let waits = held && !sent;
+    let peer = m.peer_name.clone();
+    let go = {
+        let state = ctx.state.clone();
+        let slot = m.peer_slot_id.clone();
+        link(
+            SharedString::from(format!("go-{}", node.id)),
+            "Go to slot",
+            t,
+            move |_, _, cx| {
+                let repo = state.read(cx).repo_id().to_owned();
+                super::windows::reveal_slot(&repo, &slot, cx);
+            },
+        )
+    };
+    let mut header = div()
+        .flex()
+        .flex_wrap()
+        .items_baseline()
+        .gap(px(8.))
+        .child(
+            div()
+                .min_w_0()
+                .flex()
+                .items_baseline()
+                .gap(px(5.))
+                .child(div().flex_none().text_color(t.text2).child(if sent {
+                    "Message to"
+                } else {
+                    "Message from"
+                }))
+                .child(
+                    div()
+                        .min_w_0()
+                        .semibold()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(peer),
+                ),
+        )
+        .child(
+            div()
+                .ty(ty::META)
+                .text_color(t.text3)
+                .child(clock(node.created_at)),
+        )
+        .child(div().ml_auto().flex_none().child(go));
+    if long {
+        header = header.child(link(
+            SharedString::from(key.clone()),
+            if open { "Show less" } else { "Show more" },
+            t,
+            move |_, _, cx| {
+                let _ = flow.update(cx, |f, cx| f.toggle(key.clone(), true, cx));
+            },
+        ));
+    }
+    let text: AnyElement = if long && !open {
+        clamped(t, &m.text, t.text, 14)
+    } else {
+        rich(t, &m.text, t.text).into_any_element()
+    };
+    let when = m.settled_at.map(clock).unwrap_or_default();
+    let why = m.held_because.clone().unwrap_or_default();
+    let status = match (m.status, sent) {
+        (MessageStatus::Woke, true) => "Delivered · its agent started on it".to_owned(),
+        (MessageStatus::Woke, false) => "Started this slot's agent".to_owned(),
+        (MessageStatus::Joined, true) => "Delivered · its agent read it while working".to_owned(),
+        (MessageStatus::Joined, false) => "Read by the agent while it worked".to_owned(),
+        (MessageStatus::Held, true) => format!("Held for you there: {why}"),
+        (MessageStatus::Held, false) => format!("Held for you: {why}"),
+        (MessageStatus::Released, _) => format!("Held, then sent on by you · {when}"),
+        (MessageStatus::Dismissed, _) => format!("Dismissed by you · {when}"),
+    };
+    let mut foot = div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(px(10.))
+        .gap_y(px(6.))
+        .pt(px(8.))
+        .border_t_1()
+        .border_color(t.border)
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .ty(ty::META)
+                .text_color(if waits { t.attention } else { t.text3 })
+                .child(status),
+        );
+    if waits {
+        let (wf, id) = (node.workflow_id.clone(), m.message_id.clone());
+        let send = {
+            let backend = ctx.backend.clone();
+            let (wf, id) = (wf.clone(), id.clone());
+            move |_: &gpui::ClickEvent, _: &mut Window, _: &mut App| {
+                backend.send(Command::ReleaseMessage {
+                    workflow_id: wf.clone(),
+                    message_id: id.clone(),
+                });
+            }
+        };
+        let dismiss = {
+            let backend = ctx.backend.clone();
+            move |_: &gpui::ClickEvent, _: &mut Window, _: &mut App| {
+                backend.send(Command::DismissMessage {
+                    workflow_id: wf.clone(),
+                    message_id: id.clone(),
+                });
+            }
+        };
+        foot = foot.child(
+            div()
+                .ml_auto()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(
+                    Btn::new(SharedString::from(format!("dismiss-{}", node.id)))
+                        .label("Dismiss")
+                        .medium()
+                        .on_click(dismiss),
+                )
+                .child(
+                    Btn::new(SharedString::from(format!("send-on-{}", node.id)))
+                        .label("Send to agent")
+                        .medium()
+                        .primary()
+                        .on_click(send),
+                ),
+        );
+    }
+    let (bg, fg) = if waits {
+        (t.attention_soft, t.attention)
+    } else {
+        (t.accent_soft, t.accent)
+    };
+    row(
+        t,
+        glyph(bg, icon(if sent { "send" } else { "mail" }, 14., fg)),
+        line,
+        div().pb(px(if line { 20. } else { 12. })).child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .bg(t.card)
+                .border_1()
+                .border_color(if waits { t.attention } else { t.border })
+                .rounded(px(6.))
+                .px(px(14.))
+                .py(px(10.))
+                .child(header)
+                .child(text)
+                .child(foot),
         ),
     )
 }

@@ -371,6 +371,12 @@ fn route(event: UiEvent, cx: &mut App) {
                 state.update(cx, |s, cx| s.slot_request(workflow_id, request, cx));
             }
         }
+        UiEvent::SlotRequestsGone { workflow_id } => {
+            for state in live_repos(cx) {
+                let wf = workflow_id.clone();
+                state.update(cx, |s, cx| s.slot_requests_gone(wf, cx));
+            }
+        }
         // A terminal starts in the window that shows its slot.
         UiEvent::TerminalSpec {
             repo_id,

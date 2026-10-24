@@ -28,6 +28,7 @@ import type {
   FollowUp,
   FollowUpInput,
   JsonValue,
+  MessageSlotInput,
   PresentArtifactInput,
   PresentReviewInput,
   RecordDecisionInput,
@@ -58,6 +59,7 @@ How to work:
 - Use the connector CLIs described by their skills for external systems (Linear, PostHog, ...).
 - Run the repository's gates (tests, lint, typecheck) before \`write_summary\` when you changed code.
 - When you review code (because the user asked, or a reviewer subagent reported back), present the findings with \`present_review\` rather than listing them in prose or a summary, then act on the decisions it returns: fix what the user marked fix, leave the dismissed ones, follow their words on the rest.
+- Other slots in this repository may be building other parts of the same thing (the backend to your frontend). When their work needs to know something (a bug you found in their part, an interface you need from them or changed for them), tell them with \`message_slot\` rather than changing their code, then carry on with your own work. A turn that starts with "Message from slot" is another slot's agent writing to you: act on it as you would on the user's request, answer with \`message_slot\` when it needs an answer, and end the round as usual.
 - When you make something the user should see (a screenshot, a screen recording, a rendered chart or page, a report), save it to a file and call \`present_artifact\` with its path and a short title. Never paste images or long output into text.
 - Files the user attached are listed at the end of their message, with paths you can read; attached images are also shown to you directly.
 - Subagents may only call \`record_decision\`; they report everything else back to you.`;
@@ -181,6 +183,8 @@ export class Session implements ToolHost {
   private readonly questions = new Map<string, Pending<string>>();
   private readonly reviews = new Map<string, Pending<string>>();
   private readonly slotRequests = new Map<string, Pending<RequestSlotResult>>();
+  /** `message_slot` calls waiting for the app to say where the message went. */
+  private readonly slotMessages = new Map<string, Pending<ToolOutcome>>();
   /** claude.ai artifacts this session published with the Artifact tool:
    * link → title, for an Outcome that names one (ADR 0020). */
   private readonly published = new Map<string, string | undefined>();
@@ -318,6 +322,7 @@ export class Session implements ToolHost {
       p.resolve({ approved: false });
       this.slotRequests.delete(id);
     }
+    this.settleSlotMessages("Interrupted by the user before the app confirmed delivery.");
     try {
       await this.q.interrupt();
     } catch (e) {
@@ -348,6 +353,22 @@ export class Session implements ToolHost {
     }
     this.reviews.delete(reviewId);
     pending.resolve(text);
+  }
+
+  /** The app routed a `message_slot` call: its result is what the agent reads. */
+  resolveSlotMessage(requestId: string, ok: boolean, text: string): void {
+    const pending = this.slotMessages.get(requestId);
+    if (!pending) {
+      this.error(`no pending slot message ${requestId}`, false);
+      return;
+    }
+    this.slotMessages.delete(requestId);
+    pending.resolve(ok ? { ok: true, text } : { ok: false, error: text });
+  }
+
+  private settleSlotMessages(why: string): void {
+    for (const p of this.slotMessages.values()) p.resolve({ ok: false, error: why });
+    this.slotMessages.clear();
   }
 
   resolveSlotRequest(requestId: string, approved: boolean, slotId?: string): void {
@@ -423,6 +444,7 @@ export class Session implements ToolHost {
       }
       for (const p of this.slotRequests.values()) p.resolve({ approved: false });
       this.slotRequests.clear();
+      this.settleSlotMessages("The session ended before the app confirmed delivery.");
     }
   }
 
@@ -1038,6 +1060,16 @@ export class Session implements ToolHost {
       size_bytes: size,
     });
     return { ok: true, text: `Shown to the user as "${input.title}".` };
+  }
+
+  async messageSlot(input: MessageSlotInput, call: CallContext): Promise<ToolOutcome> {
+    if ((await this.attribute(call, input, "message_slot")).inSubagent) {
+      return { ok: false, error: SUBAGENT_TOOL_ERROR };
+    }
+    const requestId = randomUUID();
+    const routed = new Promise<ToolOutcome>((resolve, reject) => this.slotMessages.set(requestId, { resolve, reject }));
+    this.emitter.emit({ type: "slot.message", request_id: requestId, to: input.to, message: input.message });
+    return routed;
   }
 
   async requestSlot(input: RequestSlotInput, call: CallContext): Promise<ToolOutcome> {

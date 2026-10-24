@@ -6,6 +6,7 @@ mod env;
 mod files;
 mod history;
 mod launch;
+mod messages;
 mod review;
 mod session;
 mod slots;
@@ -161,6 +162,8 @@ impl Shared {
             | Command::Interrupt { workflow_id }
             | Command::Background { workflow_id }
             | Command::ResolveSlotRequest { workflow_id, .. }
+            | Command::ReleaseMessage { workflow_id, .. }
+            | Command::DismissMessage { workflow_id, .. }
             | Command::LoadWorkflow { workflow_id }
             | Command::DeleteReviewComment { workflow_id, .. }
             | Command::PostCommentsToPr { workflow_id }
@@ -301,6 +304,14 @@ impl Shared {
                 self.resolve_slot_request(&workflow_id, request, approved)
                     .await
             }
+            Command::ReleaseMessage {
+                workflow_id,
+                message_id,
+            } => self.release_message(&workflow_id, &message_id).await,
+            Command::DismissMessage {
+                workflow_id,
+                message_id,
+            } => self.dismiss_message(&workflow_id, &message_id),
             Command::DestroySlot { slot_id } => self.destroy_slot(&slot_id).await,
             Command::SetSlotAgent {
                 slot_id,

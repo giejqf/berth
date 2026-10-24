@@ -24,6 +24,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0006_slot_window.sql"),
     include_str!("../migrations/0007_workflow_context.sql"),
     include_str!("../migrations/0008_turn_uuids.sql"),
+    include_str!("../migrations/0009_message_hops.sql"),
 ];
 
 pub struct Store {
@@ -823,6 +824,23 @@ impl Store {
         Ok(())
     }
 
+    /// How many agent messages in a row reached round `id` (ADR 0021).
+    pub fn round_hop(&self, id: &str) -> Result<u32> {
+        let hop: i64 = self
+            .conn
+            .query_row("SELECT hop FROM rounds WHERE id = ?1", [id], |r| r.get(0))?;
+        Ok(u32::try_from(hop).unwrap_or(0))
+    }
+
+    /// A message `hop` long woke or joined round `id`: it keeps the highest.
+    pub fn raise_round_hop(&self, id: &str, hop: u32) -> Result<()> {
+        self.conn.execute(
+            "UPDATE rounds SET hop = MAX(hop, ?2) WHERE id = ?1",
+            params![id, hop],
+        )?;
+        Ok(())
+    }
+
     /// Back open after a rewind dropped its Outcome.
     pub fn reopen_workflow(&self, id: &str) -> Result<()> {
         self.conn.execute(
@@ -1226,6 +1244,16 @@ impl Store {
         collect(stmt.query_map([workflow_id], node_row)?, finish_node)
     }
 
+    /// Both sides of a slot-to-slot message: its node in each flow that still
+    /// has it (a rewind may have dropped one).
+    pub fn message_nodes(&self, message_id: &str) -> Result<Vec<Node>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {NODE_COLS} FROM nodes WHERE kind = 'message' \
+             AND json_extract(payload_json, '$.message_id') = ?1 ORDER BY created_at"
+        ))?;
+        collect(stmt.query_map([message_id], node_row)?, finish_node)
+    }
+
     /// What the slot rail says about a workflow without loading its flow.
     pub fn workflow_facts(&self, workflow_id: &str) -> Result<WorkflowFacts> {
         let question_at: Option<i64> = self
@@ -1276,6 +1304,17 @@ impl Store {
             Some(json) => Some(serde_json::from_str(&json)?),
             None => None,
         };
+        let held_message: Option<(i64, String)> = self
+            .conn
+            .query_row(
+                "SELECT created_at, json_extract(payload_json, '$.peer_name') FROM nodes \
+                 WHERE workflow_id = ?1 AND kind = 'message' \
+                 AND json_extract(payload_json, '$.direction') = 'received' \
+                 AND json_extract(payload_json, '$.status') = 'held' ORDER BY seq DESC LIMIT 1",
+                [workflow_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
         let rounds: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM rounds WHERE workflow_id = ?1",
             [workflow_id],
@@ -1292,6 +1331,7 @@ impl Store {
             summary_at,
             reply_at,
             outcome,
+            held_message,
             rounds: usize::try_from(rounds).unwrap_or(0),
             last_round_at,
         })

@@ -133,6 +133,7 @@ impl Shared {
             slot_exec: slot_exec
                 .as_deref()
                 .filter(|_| slot.slot_type != "worktree"),
+            other_slots: &self.other_slots(&slot),
         });
 
         let cmd = if host {
@@ -210,7 +211,13 @@ impl Shared {
     pub(super) fn take_session(&self, workflow_id: &str) -> Option<Arc<Session>> {
         lock(&self.restart_after_round).remove(workflow_id);
         lock(&self.background).remove(workflow_id);
-        lock(&self.sessions).remove(workflow_id)
+        let taken = lock(&self.sessions).remove(workflow_id);
+        if taken.is_some() {
+            self.emit(UiEvent::SlotRequestsGone {
+                workflow_id: workflow_id.to_owned(),
+            });
+        }
+        taken
     }
 
     /// Claude Code signs in as another account: stop every session on this
@@ -286,6 +293,26 @@ impl Shared {
         }
     }
 
+    /// The repo's other slots, as the agent's context lists them (ADR 0021).
+    fn other_slots(&self, slot: &berth_core::Slot) -> Vec<String> {
+        let core = self.core();
+        let Ok(slots) = core.store.live_slots(&slot.repo_id) else {
+            return Vec::new();
+        };
+        slots
+            .into_iter()
+            .filter(|s| s.id != slot.id)
+            .filter_map(|s| {
+                let wf = core.store.workflows_for_slot(&s.id).ok()?.pop()?;
+                Some(format!(
+                    "\"{}\" (branch `{}`)",
+                    berth_core::messages::slot_name(&s, Some(&wf)),
+                    s.branch
+                ))
+            })
+            .collect()
+    }
+
     pub(super) async fn send_prompt(
         self: &Arc<Self>,
         workflow_id: &str,
@@ -341,7 +368,7 @@ impl Shared {
 
     /// A prompt to a closed workflow continues it in its slot: it opens
     /// again in a new section, and the agent resumes the same conversation.
-    async fn continue_closed(self: &Arc<Self>, workflow_id: &str) -> Result<()> {
+    pub(super) async fn continue_closed(self: &Arc<Self>, workflow_id: &str) -> Result<()> {
         let (wf, slot) = {
             let core = self.core();
             let wf = core.store.workflow(workflow_id)?;
@@ -570,6 +597,13 @@ impl Shared {
                             tracing::error!(error = %e, kind = msg.body.type_name(), "apply failed");
                         }
                     }
+                    // A slot request is asked mid-round: once the round is
+                    // over, nothing waits on its dialog.
+                    if round_ended {
+                        self.emit(UiEvent::SlotRequestsGone {
+                            workflow_id: workflow_id.clone(),
+                        });
+                    }
                     // The round that recorded the Outcome is over: a closed
                     // workflow keeps no agent running.
                     let closed = round_ended
@@ -601,6 +635,9 @@ impl Shared {
                     if current {
                         lock(&self.restart_after_round).remove(&workflow_id);
                         lock(&self.background).remove(&workflow_id);
+                        self.emit(UiEvent::SlotRequestsGone {
+                            workflow_id: workflow_id.clone(),
+                        });
                     }
                     if !current {
                         break;
@@ -689,6 +726,12 @@ impl Shared {
                     outcome,
                 } => {
                     tokio::spawn(self.clone().link_outcome(workflow_id, outcome));
+                }
+                Effect::RouteSlotMessage {
+                    workflow_id,
+                    request,
+                } => {
+                    tokio::spawn(self.clone().route_slot_message(workflow_id, request));
                 }
                 Effect::ConfirmSlotRequest {
                     workflow_id,

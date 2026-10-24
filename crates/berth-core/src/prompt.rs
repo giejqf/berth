@@ -168,6 +168,15 @@ pub fn session_context(ctx: &SessionContext<'_>) -> String {
         ctx.origin.kind.label(),
         ctx.origin.title
     );
+    if !ctx.other_slots.is_empty() {
+        let _ = writeln!(
+            out,
+            "- Other slots in this repository, each with its own agent (reach them with `message_slot`):"
+        );
+        for s in ctx.other_slots {
+            let _ = writeln!(out, "  - {s}");
+        }
+    }
     if let Some(exec) = ctx.slot_exec {
         let _ = writeln!(
             out,
@@ -190,6 +199,9 @@ pub struct SessionContext<'a> {
     pub reused: bool,
     /// `slot.sh` path when gates must go through `exec` (host placement).
     pub slot_exec: Option<&'a str>,
+    /// The repo's other slots when the session starts, one line each
+    /// ("\"Build the API\" (branch `berth/api`)").
+    pub other_slots: &'a [String],
 }
 
 /// Origin for "Create slot from this" on a follow-up.
@@ -389,9 +401,20 @@ mod tests {
             origin: &origin,
             reused,
             slot_exec: None,
+            other_slots: &[],
         };
         let fresh = session_context(&ctx(false));
         assert!(fresh.contains("Work on branch `berth/fix` (based on `main`)."));
+        assert!(!fresh.contains("message_slot"));
+        let others = ["\"Build the API\" (branch `berth/api`)".to_owned()];
+        let with = session_context(&SessionContext {
+            other_slots: &others,
+            ..ctx(false)
+        });
+        assert!(
+            with.contains("`message_slot`):\n  - \"Build the API\" (branch `berth/api`)\n"),
+            "{with}"
+        );
         let reused = session_context(&ctx(true));
         assert!(reused.contains("This slot is reused"));
         assert!(reused.contains("`git status`"));

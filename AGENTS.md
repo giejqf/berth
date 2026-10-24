@@ -31,8 +31,9 @@ If a design decision is not here, it has not been made. Record new decisions her
    slot. Isolation is the slot's job, not the permission prompt's.
 7. **One repo per window. Workflows never span slots.** A repo may have several
    windows, each showing a group of its slots; a window never shows another repo's
-   (ADR 0011). Cross-slot continuity happens only through "create slot from
-   follow-up".
+   (ADR 0011). What crosses slots is a follow-up ("create slot from follow-up") or a
+   message between their agents (`message_slot`, ADR 0021): each workflow keeps its
+   own checkout, branch and session, and acts on a message in its own slot.
 8. **License: MIT.** Dependencies must be MIT/Apache-2.0/BSD-compatible.
 
 ---
@@ -49,6 +50,7 @@ If a design decision is not here, it has not been made. Record new decisions her
 | **Origin** | What sparked the workflow: a GitHub issue/PR, a Linear issue, a PostHog error, a user thought, or a follow-up from another workflow. |
 | **Outcome** | How the workflow ends — usually a PR. Workflow is closed after an Outcome. |
 | **Branch** | A subagent's lane in the event flow. Opens at a `SubagentSpawn` node and closes at a `CollectResults` node on the main lane. Depth 1 today (Claude Code subagents cannot spawn subagents); modeled as a tree anyway. |
+| **Message** | What one slot's agent tells another slot's in the same repo (`message_slot`): a bug in its part, an interface it needs. It joins or starts that agent's round, or waits for the user (ADR 0021). |
 | **Finding** | One issue in a code review the agent presents (`present_review`): a level (high, mid, low), a one-line title, the detail, where it is, and a suggested action (fix, dismiss, decide). The user picks the action for each; decide means they say what to do. |
 | **Gate** | Anything the repo wants to run before a PR (tests, lint, typecheck). Not a Berth concept; just commands run through the slot's `exec`. |
 | **Integration** | First-class, app-owned: **GitHub** via `gh`. PR, Issue, Branch, Commit, Comment are typed entities in SQLite. |
@@ -186,6 +188,7 @@ The event flow is the primary UI. It is an ordered list of **nodes** per workflo
 | `Refusal` | Sidecar (`model_refusal_fallback` / `_no_fallback`) | `{ model, fallback_model?, category?, explanation?, subagent }` — the model refused a request; Claude Code went on with its fallback model, or the round stopped (ADR 0016) |
 | `Command` | App (a round that was a slash command Claude Code ran by itself) | `{ command, output }` — what the command printed, markdown (`/context`, `/usage`); ADR 0015 |
 | `Compacted` | Sidecar (from a `compact_boundary`) | `{ trigger: manual \| auto, pre_tokens, post_tokens? }` — Claude Code compacted the conversation (`/compact`, or on its own as the window filled) |
+| `Message` | App (an agent's `message_slot`) | `{ message_id, direction: sent \| received, peer_slot_id, peer_workflow_id, peer_name, text, hop, status: woke \| joined \| held \| released \| dismissed, held_because?, settled_at? }` — one in each slot's flow, same `message_id` (ADR 0021) |
 | `Review` | Agent (`present_review`) | `{ review_id, summary?, findings: [Finding], answered_at? }`, `Finding = { level: low \| mid \| high, title, detail, path?, line?, suggested: fix \| dismiss \| decide, choice?, note? }` — code review findings; `choice` (and `note`, for decide) once the user sent their decisions |
 
 `FollowUp = { id, title, description }`. Each follow-up renders a **"Create slot from
@@ -236,6 +239,11 @@ present_artifact { path, title, description? }
      `path` is absolute or relative to the checkout; the app copies the file out of
      the slot (ADR 0002).
 
+message_slot    { to, message }
+  → Waits only for the app to route it; not terminal, not available to subagents.
+     Tells another slot's agent something (`to`: its name or title). The result says
+     whether it joined that agent's round, woke it, or is held for the user (ADR 0021).
+
 present_review  { findings: [{ level, title, detail, path?, line?, suggested }], summary? }
   → BLOCKS until the app sends review.answer. Terminal, like ask_user; not
      available to subagents. Emits Review node. Returns the user's decisions, one
@@ -249,7 +257,9 @@ exactly one of `ask_user` / `write_summary` / `reply` / `record_outcome` (the us
 only the tools, so an answer goes in `reply`), use `gh` for PRs, end a workflow whose
 result is a page published with Claude Code's `Artifact` tool with kind `claude_artifact`,
 use connector CLIs for external systems, show files it made with `present_artifact`,
-present code review findings with `present_review` and act on the decisions.
+present code review findings with `present_review` and act on the decisions, and tell
+other slots' agents what their work needs to know with `message_slot` rather than
+changing their code (the session context lists them).
 The app appends repo/slot/origin context via
 `session.start.system_prompt` (for host placement with a non-worktree slot it also
 tells the agent to run gates through `"$BERTH_SLOT_SCRIPT" exec -- <cmd>`). Claude
@@ -274,7 +284,10 @@ A round must end with **exactly one** terminal tool call.
   ("Earlier you asked: … My answer: …") on a resumed session; review decisions too
   ("Earlier you presented code review findings. My decisions: …").
 - A turn Claude Code starts by itself (e.g. a background subagent finished) opens an
-  implicit round with the same rules.
+  implicit round with the same rules. So does a message from another slot that wakes an
+  idle agent; one that arrives while the agent works joins its round, as a Prompt does.
+  `rounds.hop` counts agent messages in a row without the user; the third is held for
+  the user, not delivered (ADR 0021).
 - A Prompt sent while a round runs joins that round (ADR 0018): Claude Code folds it
   into the running turn between tool rounds, or runs it right after the turn. A
   `result` without a terminal call while a message still waits (`queued_turn_count >
@@ -624,7 +637,7 @@ slots            id, repo_id, type, name, custom_name, state, state_detail, chec
 workflows        id, slot_id, origin_json, state, claude_session_id, section_no, total_cost_usd, last_error,
                  created_at, closed_at, resume_at, opened_at, context_json, resume_drops
 rounds           id, workflow_id, section_no, started_at, ended_at, terminal_kind, nudges, cost_usd, duration_ms,
-                 turn_uuid
+                 turn_uuid, hop
 branches         id, workflow_id, spawn_round_id, collect_round_id, parent_branch_id, parent_tool_use_id,
                  agent_name, description, parallel_group, status, spawned_at, collected_at, cost_usd,
                  spawn_tree, collect_tree, result_json
@@ -674,6 +687,7 @@ session.interrupt
 session.stop
 question.answer  { question_id, text }
 slot_request.resolved { request_id, approved, slot_id? }
+slot_message.sent { request_id, ok, text }   # where a message_slot call went: the tool's result (ADR 0021)
 sessions.list    { dir }   # no session needed: the repo's Claude Code sessions (ADR 0010)
 session.configure { model, effort }   # mid-session switch; null = default (ADR 0007)
 review.answer    { review_id, text }  # the decisions on a review's findings, as the agent reads them
@@ -690,6 +704,7 @@ node.review      { review_id, summary?, findings: [{ level, title, detail, path?
 branch.spawned   { branch_id, parent_tool_use_id, parent_branch_id?, agent_name, description, prompt, parallel_group? }
 branch.collected { branch_id, result_text, status, duration_ms, cost_usd, tool_calls, touched_files }
 slot.request     { request_id, … }
+slot.message     { request_id, to, message }   # message_slot: the app routes it (ADR 0021)
 round.ended      { terminal_kind, cost_usd, duration_ms, nudges, last_text? }
 session.cost     { total_usd }
 session.error    { message, fatal }
@@ -754,13 +769,13 @@ settles nothing (ADR 0013).
   what must keep its size `flex_none`, rows of buttons wrap, and a sentence with keys
   in it is one text (`kit::keyed`), not a row of pieces.
 - The rail groups slots by what they need: **Needs you** (a question, an idle workflow
-  awaiting its next prompt, a failed slot), **Working**, **Ready to review** (idle after
+  awaiting its next prompt, a message held for the user, a failed slot), **Working**, **Ready to review** (idle after
   a summary), **Done**. Each slot's mark is a dot in its group's color; a busy slot's
   (its agent working, or the slot being created or destroyed) is the working spinner,
   in the rail and its collapsed strip alike. The second line says what is happening
   (the live round's current step from `berth_core::activity`, "Asked a question · 40s
-  ago", "Review: 5 findings to decide · 1m ago", "Replied · 1m ago", "Committed · 1
-  follow-up", "Artifact published"; after a reply the slot needs you, not a review); while
+  ago", "Review: 5 findings to decide · 1m ago", "Replied · 1m ago", "Message from
+  Frontend · 1m ago", "Committed · 1 follow-up", "Artifact published"; after a reply the slot needs you, not a review); while
   Claude Code retries a failed API request it says so ("The API is overloaded; trying
   again (2 of 10) in 8s", `api_retry`). The rail's foot is a **Command palette** button
   (⌘K; the ⌘ glyph alone on the collapsed strip). Claude Code, GitHub CLI and Node.js
@@ -916,6 +931,14 @@ settles nothing (ADR 0013).
   Claude Code finds it from any worktree of the repo. A workflow open in another
   slot is shown there instead ("Go to slot"). Sessions stay where the agent ran:
   nothing moves into or out of an `inside` slot but its own workflows.
+- **Messages between slots** (ADR 0021): when one slot's agent tells another's
+  something (`message_slot`), both flows show it: "Message to Backend" in the sender's,
+  "Message from Frontend" in the recipient's, the text as Markdown, what became of it
+  (started its agent, read while it worked, held for you, sent on or dismissed by you)
+  and **Go to slot** (whichever window has it). A held message (the loop guard, a
+  closed or not yet started workflow) has **Send to agent** and **Dismiss**, and puts
+  its slot under Needs you. `ui/nodes.rs` `message`, `backend/messages.rs`,
+  `berth_core::messages`.
 - **Rewind conversation** (ADR 0009): go back to one of your messages. The dialog
   (`ui/rewind.rs`; R in the flow, on the message at or above the cursor; a message's
   Rewind link, shown on hover; More; ⌘K; the menu bar) lists them newest first with

@@ -84,6 +84,17 @@ pub enum Command {
         request: SlotRequest,
         approved: bool,
     },
+    /// Send a message another slot's agent wrote, held for the user, on to
+    /// this workflow's agent (ADR 0021).
+    ReleaseMessage {
+        workflow_id: String,
+        message_id: String,
+    },
+    /// Leave a held message unsent.
+    DismissMessage {
+        workflow_id: String,
+        message_id: String,
+    },
     DestroySlot {
         slot_id: String,
     },
@@ -561,6 +572,11 @@ pub enum UiEvent {
         repo_id: String,
         workflow_id: String,
         request: SlotRequest,
+    },
+    /// The agent stopped waiting on its `request_slot` calls (its round
+    /// ended, or its sidecar went): their dialogs go unanswered.
+    SlotRequestsGone {
+        workflow_id: String,
     },
     Details {
         workflow_id: String,

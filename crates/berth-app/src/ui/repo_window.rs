@@ -131,7 +131,6 @@ impl RepoWindow {
         cx.subscribe_in(&state, window, Self::on_repo_event)
             .detach();
         cx.observe_in(&state, window, |this, _, window, cx| {
-            this.drop_stale_slot_request(window, cx);
             let shown = this.terminal_slot.clone();
             this.sync_terminal(cx);
             if this.terminal_focused
@@ -538,6 +537,9 @@ impl RepoWindow {
                     .push_back((workflow_id.clone(), request.clone()));
                 self.next_slot_request(window, cx);
             }
+            RepoEvent::SlotRequestsGone { workflow_id } => {
+                self.drop_slot_requests(workflow_id, window, cx);
+            }
         }
     }
 
@@ -548,15 +550,10 @@ impl RepoWindow {
         if self.slot_request.is_some() || self.modal.is_some() {
             return;
         }
-        // Skip requests whose agent stopped waiting while they were queued.
-        let next = loop {
-            match self.queued_requests.pop_front() {
-                Some((wf, req)) if self.agent_running(&wf, cx) => break Some((wf, req)),
-                Some(_) => {}
-                None => break None,
-            }
-        };
-        let Some((wf, req)) = next else {
+        // The backend says when an agent stopped waiting
+        // (`drop_slot_requests`); the window's copy of its state may still be
+        // on its way, so it is no guide.
+        let Some((wf, req)) = self.queued_requests.pop_front() else {
             return;
         };
         let answer = Rc::new(SlotRequestAnswer {
@@ -585,25 +582,16 @@ impl RepoWindow {
         self.slot_request = Some((wf, answer));
     }
 
-    /// The request's agent stopped waiting (its round ended): its dialog goes,
-    /// with nothing to send.
-    fn drop_stale_slot_request(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
-        let Some((wf, answer)) = &self.slot_request else {
-            return;
-        };
-        if !self.agent_running(wf, cx) {
+    /// Workflow `wf`'s agent stopped waiting (its round ended, its sidecar
+    /// went): its requests go, the one on screen too, with nothing to send.
+    fn drop_slot_requests(&mut self, wf: &str, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.queued_requests.retain(|(w, _)| w != wf);
+        if let Some((shown, answer)) = &self.slot_request
+            && shown == wf
+        {
             answer.answered.set(true);
             self.close_modal(window, cx);
         }
-    }
-
-    /// Whether workflow `wf`'s agent is mid-round (so still waiting on a request).
-    fn agent_running(&self, wf: &str, cx: &Context<'_, Self>) -> bool {
-        self.state.read(cx).repo_slots.iter().any(|e| {
-            e.workflow
-                .as_ref()
-                .is_some_and(|w| w.id == wf && w.state == berth_core::WorkflowState::Running)
-        })
     }
 
     /// Show `view` over the window; it closes itself with `DismissEvent`.

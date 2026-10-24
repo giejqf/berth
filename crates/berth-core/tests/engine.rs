@@ -1706,3 +1706,169 @@ fn a_rewind_over_several_turns_declares_none() {
     assert!(store.workflow_resume_at(&wf).unwrap().is_some());
     assert_eq!(store.workflow_resume_drops(&wf).unwrap(), None);
 }
+
+/// A second slot in the same repo, with an idle workflow.
+fn api_workflow(store: &Store, beside: &str) -> String {
+    let slot = second_slot(store, &store.workflow(beside).unwrap().slot_id);
+    let origin = Origin {
+        kind: OriginKind::Thought,
+        r#ref: String::new(),
+        title: "Build the API".into(),
+        body: String::new(),
+        custom_prompt: None,
+        url: None,
+    };
+    let wf = Engine::create_workflow(store, &slot.id, origin).unwrap();
+    store
+        .set_workflow_state(&wf.id, WorkflowState::Idle)
+        .unwrap();
+    wf.id
+}
+
+fn messages(store: &Store, wf: &str) -> Vec<berth_protocol::SlotMessage> {
+    store
+        .nodes(wf)
+        .unwrap()
+        .into_iter()
+        .filter_map(|n| match n.payload {
+            NodePayload::Message(m) => Some(m),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn messages_between_slots_wake_join_and_stop_at_the_guard() {
+    use berth_core::messages::{Delivery, MAX_HOPS, plan};
+    use berth_core::{Recipient, Sender};
+    use berth_protocol::{MessageDirection, MessageStatus};
+
+    let (store, mut engine, front) = setup();
+    let api = api_workflow(&store, &front);
+    engine
+        .submit_prompt(&store, &front, "Build the page", vec![], false)
+        .unwrap();
+
+    // The user's round sends the first message: it wakes the idle agent.
+    let hop = Engine::message_hop(&store, &front).unwrap();
+    assert_eq!(hop, 1);
+    let to = store.workflow(&api).unwrap();
+    let slot_state = store.slot(&to.slot_id).unwrap().state;
+    let delivery = plan(to.state, slot_state, hop, false);
+    assert_eq!(delivery, Delivery::Wake);
+    let from = store.workflow(&front).unwrap();
+    let sender = Sender {
+        workflow: &from,
+        name: "Fix it",
+        branch: "berth/fix",
+    };
+    let posted = engine
+        .post_message(
+            &store,
+            &sender,
+            &Recipient {
+                workflow: &to,
+                name: "Build the API",
+            },
+            "GET /users 500s",
+            hop,
+            &delivery,
+        )
+        .unwrap();
+    let (turn, _) = posted.turn.expect("delivered now");
+    assert!(turn.starts_with("Message from slot \"Fix it\""), "{turn}");
+    assert_eq!(store.workflow(&api).unwrap().state, WorkflowState::Running);
+    let sent = messages(&store, &front);
+    let got = messages(&store, &api);
+    assert_eq!((sent.len(), got.len()), (1, 1));
+    assert_eq!(sent[0].direction, MessageDirection::Sent);
+    assert_eq!(got[0].direction, MessageDirection::Received);
+    assert_eq!(got[0].status, MessageStatus::Woke);
+    assert_eq!(got[0].peer_workflow_id, front);
+    assert_eq!(sent[0].message_id, got[0].message_id);
+
+    // Its answer, from the round the message woke, joins the sender's round.
+    let hop = Engine::message_hop(&store, &api).unwrap();
+    assert_eq!(hop, 2);
+    let to = store.workflow(&front).unwrap();
+    assert_eq!(plan(to.state, SlotState::Ready, hop, true), Delivery::Join);
+    let from = store.workflow(&api).unwrap();
+    let sender = Sender {
+        workflow: &from,
+        name: "Build the API",
+        branch: "berth/api",
+    };
+    engine
+        .post_message(
+            &store,
+            &sender,
+            &Recipient {
+                workflow: &to,
+                name: "Fix it",
+            },
+            "Fixed in 3f2a",
+            hop,
+            &Delivery::Join,
+        )
+        .unwrap();
+    let rounds = store.rounds(&front).unwrap();
+    assert_eq!(rounds.len(), 1, "it joined the running round");
+
+    // A reply to the reply is past the guard: held, and the user decides.
+    let hop = Engine::message_hop(&store, &front).unwrap();
+    assert_eq!(hop, MAX_HOPS + 1);
+    let to = store.workflow(&api).unwrap();
+    let delivery = plan(to.state, SlotState::Ready, hop, true);
+    assert!(matches!(delivery, Delivery::Hold(_)));
+    let from = store.workflow(&front).unwrap();
+    let sender = Sender {
+        workflow: &from,
+        name: "Fix it",
+        branch: "berth/fix",
+    };
+    let held = engine
+        .post_message(
+            &store,
+            &sender,
+            &Recipient {
+                workflow: &to,
+                name: "Build the API",
+            },
+            "Thanks!",
+            hop,
+            &delivery,
+        )
+        .unwrap();
+    assert!(held.turn.is_none());
+    assert_eq!(
+        store
+            .workflow_facts(&api)
+            .unwrap()
+            .held_message
+            .map(|h| h.1),
+        Some("Fix it".to_owned())
+    );
+
+    // Sent on by the user once the agent is idle again: a round of its own,
+    // counting from zero; both sides say so.
+    store.set_workflow_state(&api, WorkflowState::Idle).unwrap();
+    let open = store.open_round(&api).unwrap().unwrap();
+    store
+        .end_round(&open.id, TerminalKind::WriteSummary, 0, 0.0, 1, now_ms())
+        .unwrap();
+    let (turn, _) = engine
+        .release_message(&store, &api, &held.message_id, &Delivery::Wake)
+        .unwrap();
+    assert!(turn.contains("Thanks!"), "{turn}");
+    let round = store.open_round(&api).unwrap().unwrap();
+    assert_eq!(store.round_hop(&round.id).unwrap(), 0);
+    for side in [&front, &api] {
+        let m = messages(&store, side).into_iter().last().unwrap();
+        assert_eq!(m.status, MessageStatus::Released, "{side}");
+    }
+    assert!(store.workflow_facts(&api).unwrap().held_message.is_none());
+    assert!(
+        Engine::dismiss_message(&store, &api, &held.message_id).is_err(),
+        "settled once"
+    );
+}

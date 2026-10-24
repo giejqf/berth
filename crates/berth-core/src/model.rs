@@ -407,6 +407,9 @@ pub struct WorkflowFacts {
     /// not on a review.
     pub reply_at: Option<i64>,
     pub outcome: Option<berth_protocol::Outcome>,
+    /// The latest message from another slot that waits for the user: when it
+    /// came, and from which slot (ADR 0021).
+    pub held_message: Option<(i64, String)>,
     pub rounds: usize,
     pub last_round_at: Option<i64>,
 }

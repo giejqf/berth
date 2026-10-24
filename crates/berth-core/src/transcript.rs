@@ -459,6 +459,11 @@ impl Renderer {
                     .map_or(0, Vec::len);
                 e.summary = format!("{n} {}", if n == 1 { "finding" } else { "findings" });
             }
+            (true, "message_slot") => {
+                e.summary = format!("to {}", s("to"));
+                e = e.body(s("message"), BodyStyle::Prose);
+                used.extend(["to", "message"]);
+            }
             (true, "request_slot") => {
                 e.summary = s("name").to_owned();
                 used.push("name");

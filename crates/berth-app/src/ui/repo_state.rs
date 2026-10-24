@@ -33,6 +33,10 @@ pub enum RepoEvent {
         workflow_id: String,
         request: SlotRequest,
     },
+    /// The workflow's agent stopped waiting on its slot requests.
+    SlotRequestsGone {
+        workflow_id: String,
+    },
     Details {
         /// What the transcript is behind: "Summary", "Latest round".
         subject: String,
@@ -162,6 +166,8 @@ pub fn rail_group(entry: &SlotEntry) -> RailGroup {
     }
     match entry.workflow.as_ref().map(|w| w.state) {
         Some(WorkflowState::Running | WorkflowState::Starting) => RailGroup::Working,
+        // Another slot's message waits on the user (ADR 0021).
+        Some(_) if entry.facts.held_message.is_some() => RailGroup::NeedsYou,
         // After a summary, unless the agent answered something since.
         Some(WorkflowState::Idle)
             if entry.facts.summary_at.is_some() && entry.facts.reply_at.is_none() =>
@@ -550,8 +556,8 @@ impl RepoState {
 
     pub fn set_workflow(&mut self, view: Arc<WorkflowView>, cx: &mut Context<'_, Self>) {
         let id = view.workflow.id.clone();
-        // Keep the slot rail's copy of the workflow current too.
-        for entry in &mut self.slots {
+        // Keep the slot lists' copies of the workflow current too.
+        for entry in self.slots.iter_mut().chain(&mut self.repo_slots) {
             if entry.workflow.as_ref().is_some_and(|w| w.id == id) {
                 entry.workflow = Some(view.workflow.clone());
             }
@@ -574,6 +580,10 @@ impl RepoState {
             workflow_id,
             request,
         });
+    }
+
+    pub fn slot_requests_gone(&mut self, workflow_id: String, cx: &mut Context<'_, Self>) {
+        cx.emit(RepoEvent::SlotRequestsGone { workflow_id });
     }
 
     /// Lists `source` again: issues, PRs and tickets move on between visits.

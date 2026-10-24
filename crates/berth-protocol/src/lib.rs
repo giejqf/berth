@@ -58,6 +58,9 @@ pub fn typescript() -> String {
         Compacted,
         Refusal,
         Reply,
+        MessageDirection,
+        MessageStatus,
+        SlotMessage,
         Decision,
         Summary,
         OutcomeKind,
@@ -79,6 +82,7 @@ pub fn typescript() -> String {
         RequestSlotInput,
         RequestSlotResult,
         PresentArtifactInput,
+        MessageSlotInput,
         FindingInput,
         PresentReviewInput,
         // messages
@@ -97,6 +101,7 @@ pub fn typescript() -> String {
         QuestionAnswer,
         ReviewAnswer,
         SlotRequestResolved,
+        SlotMessageSent,
         AppToSidecar,
         SessionStarted,
         RawEvent,
@@ -110,6 +115,7 @@ pub fn typescript() -> String {
         BranchSpawned,
         BranchCollected,
         SlotRequest,
+        SlotMessageRequest,
         TerminalKind,
         RoundEnded,
         SessionCost,
@@ -506,6 +512,39 @@ mod tests {
             output: "## Context Usage".into(),
         });
         let json = node.payload_json().unwrap();
+        assert_eq!(NodePayload::from_parts(node.kind(), &json).unwrap(), node);
+    }
+
+    #[test]
+    fn slot_messages_on_the_wire() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"id":"m","type":"slot.message","request_id":"r1","to":"backend","message":"The API 500s"}"#,
+        )
+        .unwrap();
+        let m: SidecarMessage = serde_json::from_value(v).unwrap();
+        assert!(matches!(m.body, SidecarToApp::SlotMessage(ref r) if r.to == "backend"));
+        roundtrip_app(&AppMessage {
+            id: "a".into(),
+            body: AppToSidecar::SlotMessageSent(SlotMessageSent {
+                request_id: "r1".into(),
+                ok: true,
+                text: "Delivered".into(),
+            }),
+        });
+        let node = NodePayload::Message(SlotMessage {
+            message_id: "m1".into(),
+            direction: MessageDirection::Received,
+            peer_slot_id: "s1".into(),
+            peer_workflow_id: "w1".into(),
+            peer_name: "Frontend".into(),
+            text: "The API 500s".into(),
+            hop: 1,
+            status: MessageStatus::Held,
+            held_because: Some("loop".into()),
+            settled_at: None,
+        });
+        let json = node.payload_json().unwrap();
+        assert!(json.contains(r#""status":"held""#), "{json}");
         assert_eq!(NodePayload::from_parts(node.kind(), &json).unwrap(), node);
     }
 

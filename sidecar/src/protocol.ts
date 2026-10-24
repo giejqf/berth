@@ -163,6 +163,37 @@ subagent: boolean, };
 
 export type Reply = { message: string, };
 
+export type MessageDirection = "sent" | "received";
+
+export type MessageStatus = "woke" | "joined" | "held" | "released" | "dismissed";
+
+export type SlotMessage = { message_id: string, direction: MessageDirection, 
+/**
+ * The other side: the slot it went to, or came from, and its workflow.
+ */
+peer_slot_id: string, peer_workflow_id: string, 
+/**
+ * The other slot's name when it was sent.
+ */
+peer_name: string, 
+/**
+ * Markdown, as the agent wrote it.
+ */
+text: string, 
+/**
+ * How many agent messages in a row led to it without the user; one
+ * past the limit is held (the loop guard).
+ */
+hop: number, status: MessageStatus, 
+/**
+ * Why it is held, said to the user.
+ */
+held_because?: string, 
+/**
+ * When the user released or dismissed it.
+ */
+settled_at?: number, };
+
 export type Decision = { title: string, rationale: string, affects: Array<string>, reversible: boolean, };
 
 export type Summary = { done: Array<string>, remaining: Array<string>, follow_ups: Array<FollowUp>, notes?: string, };
@@ -196,11 +227,11 @@ export type Artifact = { artifact_id: string, title: string, description?: strin
  */
 error?: string, };
 
-export type NodeKind = "origin" | "prompt" | "question" | "decision" | "summary" | "outcome" | "subagent_spawn" | "collect_results" | "artifact" | "review" | "rewind" | "reopened" | "command" | "compacted" | "refusal" | "reply";
+export type NodeKind = "origin" | "prompt" | "question" | "decision" | "summary" | "outcome" | "subagent_spawn" | "collect_results" | "artifact" | "review" | "rewind" | "reopened" | "command" | "compacted" | "refusal" | "reply" | "message";
 
-export type NodePayload = { "kind": "origin", "payload": Origin } | { "kind": "prompt", "payload": Prompt } | { "kind": "question", "payload": Question } | { "kind": "decision", "payload": Decision } | { "kind": "summary", "payload": Summary } | { "kind": "outcome", "payload": Outcome } | { "kind": "subagent_spawn", "payload": SubagentSpawn } | { "kind": "collect_results", "payload": CollectResults } | { "kind": "artifact", "payload": Artifact } | { "kind": "review", "payload": Review } | { "kind": "rewind", "payload": Rewind } | { "kind": "reopened", "payload": Reopened } | { "kind": "command", "payload": Command } | { "kind": "compacted", "payload": Compacted } | { "kind": "refusal", "payload": Refusal } | { "kind": "reply", "payload": Reply };
+export type NodePayload = { "kind": "origin", "payload": Origin } | { "kind": "prompt", "payload": Prompt } | { "kind": "question", "payload": Question } | { "kind": "decision", "payload": Decision } | { "kind": "summary", "payload": Summary } | { "kind": "outcome", "payload": Outcome } | { "kind": "subagent_spawn", "payload": SubagentSpawn } | { "kind": "collect_results", "payload": CollectResults } | { "kind": "artifact", "payload": Artifact } | { "kind": "review", "payload": Review } | { "kind": "rewind", "payload": Rewind } | { "kind": "reopened", "payload": Reopened } | { "kind": "command", "payload": Command } | { "kind": "compacted", "payload": Compacted } | { "kind": "refusal", "payload": Refusal } | { "kind": "reply", "payload": Reply } | { "kind": "message", "payload": SlotMessage };
 
-export type ToolName = "record_decision" | "ask_user" | "write_summary" | "record_outcome" | "request_slot" | "present_artifact" | "present_review" | "reply";
+export type ToolName = "record_decision" | "ask_user" | "write_summary" | "record_outcome" | "request_slot" | "present_artifact" | "present_review" | "reply" | "message_slot";
 
 export type FollowUpInput = { id?: string, title: string, description: string, };
 
@@ -227,6 +258,16 @@ export type PresentArtifactInput = {
  * Path to the file, absolute or relative to the checkout.
  */
 path: string, title: string, description?: string, };
+
+export type MessageSlotInput = { 
+/**
+ * The slot: its name or title.
+ */
+to: string, 
+/**
+ * Markdown.
+ */
+message: string, };
 
 export type FindingInput = { level: FindingLevel, title: string, detail: string, path?: string, line?: number, suggested: FindingAction, };
 
@@ -342,7 +383,13 @@ export type ReviewAnswer = { review_id: string, text: string, };
 
 export type SlotRequestResolved = { request_id: string, approved: boolean, slot_id?: string, };
 
-export type AppToSidecar = { "type": "session.start" } & SessionStart | { "type": "session.resume" } & SessionResume | { "type": "session.turn" } & SessionTurn | { "type": "session.interrupt" } | { "type": "session.stop" } | { "type": "question.answer" } & QuestionAnswer | { "type": "review.answer" } & ReviewAnswer | { "type": "slot_request.resolved" } & SlotRequestResolved | { "type": "session.configure" } & SessionConfigure | { "type": "sessions.list" } & SessionsList | { "type": "session.background" } & SessionBackground | { "type": "sessions.rename" } & SessionsRename;
+export type SlotMessageSent = { request_id: string, 
+/**
+ * False when it went nowhere (no such slot): `text` says why.
+ */
+ok: boolean, text: string, };
+
+export type AppToSidecar = { "type": "session.start" } & SessionStart | { "type": "session.resume" } & SessionResume | { "type": "session.turn" } & SessionTurn | { "type": "session.interrupt" } | { "type": "session.stop" } | { "type": "question.answer" } & QuestionAnswer | { "type": "review.answer" } & ReviewAnswer | { "type": "slot_request.resolved" } & SlotRequestResolved | { "type": "slot_message.sent" } & SlotMessageSent | { "type": "session.configure" } & SessionConfigure | { "type": "sessions.list" } & SessionsList | { "type": "session.background" } & SessionBackground | { "type": "sessions.rename" } & SessionsRename;
 
 export type SessionStarted = { claude_session_id: string, };
 
@@ -396,6 +443,8 @@ parent_branch_id?: string, agent_name: string, description: string, prompt: stri
 export type BranchCollected = { branch_id: string, result_text: string, status: BranchStatus, duration_ms: number, cost_usd?: number, tool_calls: number, touched_files: Array<string>, };
 
 export type SlotRequest = { request_id: string, name: string, purpose: string, from_follow_up?: string, };
+
+export type SlotMessageRequest = { request_id: string, to: string, message: string, };
 
 export type TerminalKind = "write_summary" | "record_outcome" | "unterminated" | "interrupted" | "error" | "command" | "reply";
 
@@ -547,11 +596,11 @@ provider?: string, };
 
 export type SessionError = { message: string, fatal: boolean, };
 
-export type SidecarToApp = { "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.reply" } & NodeReply | { "type": "node.artifact" } & NodeArtifact | { "type": "node.review" } & NodeReview | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels | { "type": "sessions.listed" } & SessionsListed | { "type": "session.context" } & SessionContext | { "type": "session.quota" } & SessionQuota | { "type": "node.compacted" } & NodeCompacted | { "type": "session.commands" } & SessionCommands | { "type": "branch.progress" } & BranchProgress | { "type": "node.refusal" } & NodeRefusal | { "type": "session.suggestion" } & SessionSuggestion | { "type": "session.tasks" } & SessionTasks | { "type": "session.account" } & SessionAccount | { "type": "sessions.renamed" } & SessionsRenamed;
+export type SidecarToApp = { "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.reply" } & NodeReply | { "type": "node.artifact" } & NodeArtifact | { "type": "node.review" } & NodeReview | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "slot.message" } & SlotMessageRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels | { "type": "sessions.listed" } & SessionsListed | { "type": "session.context" } & SessionContext | { "type": "session.quota" } & SessionQuota | { "type": "node.compacted" } & NodeCompacted | { "type": "session.commands" } & SessionCommands | { "type": "branch.progress" } & BranchProgress | { "type": "node.refusal" } & NodeRefusal | { "type": "session.suggestion" } & SessionSuggestion | { "type": "session.tasks" } & SessionTasks | { "type": "session.account" } & SessionAccount | { "type": "sessions.renamed" } & SessionsRenamed;
 
-export type AppMessage = { id: string, } & ({ "type": "session.start" } & SessionStart | { "type": "session.resume" } & SessionResume | { "type": "session.turn" } & SessionTurn | { "type": "session.interrupt" } | { "type": "session.stop" } | { "type": "question.answer" } & QuestionAnswer | { "type": "review.answer" } & ReviewAnswer | { "type": "slot_request.resolved" } & SlotRequestResolved | { "type": "session.configure" } & SessionConfigure | { "type": "sessions.list" } & SessionsList | { "type": "session.background" } & SessionBackground | { "type": "sessions.rename" } & SessionsRename);
+export type AppMessage = { id: string, } & ({ "type": "session.start" } & SessionStart | { "type": "session.resume" } & SessionResume | { "type": "session.turn" } & SessionTurn | { "type": "session.interrupt" } | { "type": "session.stop" } | { "type": "question.answer" } & QuestionAnswer | { "type": "review.answer" } & ReviewAnswer | { "type": "slot_request.resolved" } & SlotRequestResolved | { "type": "slot_message.sent" } & SlotMessageSent | { "type": "session.configure" } & SessionConfigure | { "type": "sessions.list" } & SessionsList | { "type": "session.background" } & SessionBackground | { "type": "sessions.rename" } & SessionsRename);
 
-export type SidecarMessage = { id: string, reply_to?: string, } & ({ "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.reply" } & NodeReply | { "type": "node.artifact" } & NodeArtifact | { "type": "node.review" } & NodeReview | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels | { "type": "sessions.listed" } & SessionsListed | { "type": "session.context" } & SessionContext | { "type": "session.quota" } & SessionQuota | { "type": "node.compacted" } & NodeCompacted | { "type": "session.commands" } & SessionCommands | { "type": "branch.progress" } & BranchProgress | { "type": "node.refusal" } & NodeRefusal | { "type": "session.suggestion" } & SessionSuggestion | { "type": "session.tasks" } & SessionTasks | { "type": "session.account" } & SessionAccount | { "type": "sessions.renamed" } & SessionsRenamed);
+export type SidecarMessage = { id: string, reply_to?: string, } & ({ "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.reply" } & NodeReply | { "type": "node.artifact" } & NodeArtifact | { "type": "node.review" } & NodeReview | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "slot.message" } & SlotMessageRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels | { "type": "sessions.listed" } & SessionsListed | { "type": "session.context" } & SessionContext | { "type": "session.quota" } & SessionQuota | { "type": "node.compacted" } & NodeCompacted | { "type": "session.commands" } & SessionCommands | { "type": "branch.progress" } & BranchProgress | { "type": "node.refusal" } & NodeRefusal | { "type": "session.suggestion" } & SessionSuggestion | { "type": "session.tasks" } & SessionTasks | { "type": "session.account" } & SessionAccount | { "type": "sessions.renamed" } & SessionsRenamed);
 
 export const MCP_SERVER_NAME = "berth" as const;
 
@@ -564,4 +613,5 @@ export const TOOLS: Record<ToolName, { terminal: boolean; subagent: boolean; des
   present_artifact: { terminal: false, subagent: false, description: "Show the user a file you made: a screenshot, a screen recording, a rendered chart or page, a report. Save it first, then pass its path and a short title. The app copies it and shows it as a card in the event flow. Non-blocking." },
   present_review: { terminal: true, subagent: false, description: "Present code review findings and wait for the user's decision on each. One finding per issue: its level (high: a bug, data loss or a security hole; mid: worth fixing before merge; low: a nit), a one-line title, the detail (why it matters, what a fix would be), where it is, and what you suggest: fix, dismiss (not worth changing), or decide (a judgment call that is theirs). The user picks for each and the decisions come back as the result: fix what they marked fix, leave the dismissed ones, follow their words on the rest. Ends the round while waiting; the decisions resume it." },
   reply: { terminal: true, subagent: false, description: "End the round with your answer to the user, when you answered a question or discussed something and changed nothing for them to review. The message is Markdown and shows in the flow under their message: answer fully there, since they don't read your other text. Does not end the section. When you changed files, use write_summary instead." },
+  message_slot: { terminal: false, subagent: false, description: "Send a message to the agent in another slot of this repository, when its work needs to know something: a bug you found in the part it builds, an interface you need from it or changed for it, an answer to its message. Name the slot as the user or its message did (its name or title). Its agent reads the message at its next step, or starts on it if it was idle; the user sees it in both slots. Don't fix the other slot's code yourself. Any answer comes back to you as a message. The result says whether it was delivered or is held for the user. Non-blocking; not a terminal tool." },
 };

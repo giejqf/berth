@@ -394,6 +394,7 @@ fn glyph(t: &Tokens, e: &TranscriptEntry) -> (&'static str, Hsla) {
                 "present_artifact" => "paperclip",
                 "present_review" => "findings",
                 "request_slot" => "plus",
+                "message_slot" => "send",
                 _ => "wrench",
             },
             t.text2,

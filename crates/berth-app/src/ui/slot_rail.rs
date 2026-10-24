@@ -122,6 +122,13 @@ pub fn rail_lines(entry: &SlotEntry, state: &RepoState) -> (String, String) {
                 .map(|d| format!(" · {}", d.lines().next().unwrap_or(d)))
                 .unwrap_or_default()
         ),
+        (_, Some(w))
+            if f.held_message.is_some()
+                && !matches!(w.state, WorkflowState::Running | WorkflowState::Starting) =>
+        {
+            let (at, from) = f.held_message.clone().unwrap_or_default();
+            format!("Message from {from} · {}", ago(at))
+        }
         (_, Some(w)) => match w.state {
             WorkflowState::AwaitingAnswer => match (f.review, f.question_at) {
                 (Some((at, n)), _) => format!(

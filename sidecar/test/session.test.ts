@@ -192,6 +192,48 @@ describe("round termination (§5.3)", () => {
   });
 });
 
+describe("message_slot (ADR 0021)", () => {
+  it("asks the app to route it and returns what the app says", async () => {
+    const { emitter, session } = setup();
+    session.turn("tell the backend");
+    const pending = session.messageSlot({ to: "backend", message: "The API 500s on /users" }, {});
+    await flush();
+    const asked = emitter.ofType("slot.message")[0];
+    expect(asked).toMatchObject({ to: "backend", message: "The API 500s on /users" });
+    session.resolveSlotMessage(asked?.request_id ?? "", true, "Delivered to backend.");
+    expect(await pending).toEqual({ ok: true, text: "Delivered to backend." });
+  });
+
+  it("reports a refusal as a tool error", async () => {
+    const { emitter, session } = setup();
+    session.turn("go");
+    const pending = session.messageSlot({ to: "nope", message: "hi" }, {});
+    await flush();
+    session.resolveSlotMessage(emitter.ofType("slot.message")[0]?.request_id ?? "", false, "No slot named nope.");
+    expect(await pending).toEqual({ ok: false, error: "No slot named nope." });
+  });
+
+  it("does not wait past an interrupt", async () => {
+    const { session } = setup();
+    session.turn("go");
+    const pending = session.messageSlot({ to: "backend", message: "hi" }, {});
+    await flush();
+    await session.interrupt();
+    expect(await pending).toMatchObject({ ok: false });
+  });
+
+  it("is refused inside a subagent", async () => {
+    const { emitter, session, q } = setup();
+    session.turn("go");
+    q.send(sdk.toolUse("agent-1", "Agent", { description: "d", prompt: "p" }));
+    q.send(sdk.toolUse("m1", MCP("message_slot"), { to: "b", message: "x" }, "agent-1"));
+    await flush();
+    const r = await session.messageSlot({ to: "b", message: "x" }, { toolUseId: "m1" });
+    expect(r).toEqual({ ok: false, error: SUBAGENT_TOOL_ERROR });
+    expect(emitter.ofType("slot.message")).toHaveLength(0);
+  });
+});
+
 describe("claude artifact outcome (ADR 0020)", () => {
   it("takes the title from the Artifact tool's publish", async () => {
     const { emitter, session, q } = setup();

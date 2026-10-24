@@ -494,6 +494,58 @@ pub struct Reply {
     pub message: String,
 }
 
+/// Which side of a slot-to-slot message a flow shows (ADR 0021).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageDirection {
+    Sent,
+    Received,
+}
+
+/// Where a slot-to-slot message stands. Both sides show the same.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageStatus {
+    /// It started the recipient's agent, in a round of its own.
+    Woke,
+    /// It joined the round the recipient's agent was in.
+    Joined,
+    /// It waits for the user in the recipient's slot.
+    Held,
+    /// The user sent it on to the agent after it was held.
+    Released,
+    /// The user dismissed it.
+    Dismissed,
+}
+
+/// A message one slot's agent sent another's (`message_slot`, ADR 0021).
+/// The sender's flow and the recipient's each have a node for it, with the
+/// same `message_id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SlotMessage {
+    pub message_id: String,
+    pub direction: MessageDirection,
+    /// The other side: the slot it went to, or came from, and its workflow.
+    pub peer_slot_id: String,
+    pub peer_workflow_id: String,
+    /// The other slot's name when it was sent.
+    pub peer_name: String,
+    /// Markdown, as the agent wrote it.
+    pub text: String,
+    /// How many agent messages in a row led to it without the user; one
+    /// past the limit is held (the loop guard).
+    pub hop: u32,
+    pub status: MessageStatus,
+    /// Why it is held, said to the user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub held_because: Option<String>,
+    /// When the user released or dismissed it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub settled_at: Option<i64>,
+}
+
 /// Node discriminant; matches the `nodes.kind` column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -514,10 +566,11 @@ pub enum NodeKind {
     Compacted,
     Refusal,
     Reply,
+    Message,
 }
 
 impl NodeKind {
-    pub const ALL: [NodeKind; 16] = [
+    pub const ALL: [NodeKind; 17] = [
         Self::Origin,
         Self::Prompt,
         Self::Question,
@@ -534,6 +587,7 @@ impl NodeKind {
         Self::Compacted,
         Self::Refusal,
         Self::Reply,
+        Self::Message,
     ];
 
     #[must_use]
@@ -555,6 +609,7 @@ impl NodeKind {
             Self::Compacted => "compacted",
             Self::Refusal => "refusal",
             Self::Reply => "reply",
+            Self::Message => "message",
         }
     }
 
@@ -586,6 +641,7 @@ pub enum NodePayload {
     Compacted(Compacted),
     Refusal(Refusal),
     Reply(Reply),
+    Message(SlotMessage),
 }
 
 impl NodePayload {
@@ -608,6 +664,7 @@ impl NodePayload {
             Self::Compacted(_) => NodeKind::Compacted,
             Self::Refusal(_) => NodeKind::Refusal,
             Self::Reply(_) => NodeKind::Reply,
+            Self::Message(_) => NodeKind::Message,
         }
     }
 
@@ -630,6 +687,7 @@ impl NodePayload {
             Self::Compacted(p) => serde_json::to_string(p),
             Self::Refusal(p) => serde_json::to_string(p),
             Self::Reply(p) => serde_json::to_string(p),
+            Self::Message(p) => serde_json::to_string(p),
         }
     }
 
@@ -652,6 +710,7 @@ impl NodePayload {
             NodeKind::Compacted => Self::Compacted(serde_json::from_str(json)?),
             NodeKind::Refusal => Self::Refusal(serde_json::from_str(json)?),
             NodeKind::Reply => Self::Reply(serde_json::from_str(json)?),
+            NodeKind::Message => Self::Message(serde_json::from_str(json)?),
         })
     }
 }

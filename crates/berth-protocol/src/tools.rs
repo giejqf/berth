@@ -22,10 +22,11 @@ pub enum ToolName {
     PresentArtifact,
     PresentReview,
     Reply,
+    MessageSlot,
 }
 
 impl ToolName {
-    pub const ALL: [ToolName; 8] = [
+    pub const ALL: [ToolName; 9] = [
         Self::RecordDecision,
         Self::AskUser,
         Self::WriteSummary,
@@ -34,6 +35,7 @@ impl ToolName {
         Self::PresentArtifact,
         Self::PresentReview,
         Self::Reply,
+        Self::MessageSlot,
     ];
 
     #[must_use]
@@ -47,6 +49,7 @@ impl ToolName {
             Self::PresentArtifact => "present_artifact",
             Self::PresentReview => "present_review",
             Self::Reply => "reply",
+            Self::MessageSlot => "message_slot",
         }
     }
 
@@ -121,6 +124,16 @@ impl ToolName {
                  they don't read your other text. Does not end the section. When you changed \
                  files, use write_summary instead."
             }
+            Self::MessageSlot => {
+                "Send a message to the agent in another slot of this repository, when its work \
+                 needs to know something: a bug you found in the part it builds, an interface \
+                 you need from it or changed for it, an answer to its message. Name the slot as \
+                 the user or its message did (its name or title). Its agent reads the message \
+                 at its next step, or starts on it if it was idle; the user sees it in both \
+                 slots. Don't fix the other slot's code yourself. Any answer comes back to you \
+                 as a message. The result says whether it was delivered or is held for the \
+                 user. Non-blocking; not a terminal tool."
+            }
         }
     }
 }
@@ -193,6 +206,14 @@ pub struct RequestSlotInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub from_follow_up: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct MessageSlotInput {
+    /// The slot: its name or title.
+    pub to: String,
+    /// Markdown.
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

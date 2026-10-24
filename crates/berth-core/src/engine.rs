@@ -7,14 +7,16 @@
 use std::collections::{HashMap, HashSet};
 
 use berth_protocol::{
-    BranchStatus, CollectResults, Decision, Finding, FindingAction, NodePayload, Origin, Outcome,
-    Prompt, Question, Reopened, Review, ReviewComment, Rewind, SidecarToApp, SlotRequest,
-    SubagentSpawn, Summary, TerminalKind,
+    BranchStatus, CollectResults, Decision, Finding, FindingAction, MessageDirection,
+    MessageStatus, NodePayload, Origin, Outcome, Prompt, Question, Reopened, Review, ReviewComment,
+    Rewind, SidecarToApp, SlotMessage, SlotMessageRequest, SlotRequest, SubagentSpawn, Summary,
+    TerminalKind,
 };
 
 use crate::activity::RoundActivity;
 use crate::error::{CoreError, Result};
 use crate::ids::{new_id, now_ms};
+use crate::messages::{Delivery, message_turn};
 use crate::model::{Branch, BranchState, Node, Slot, SnapshotKind, Workflow, WorkflowState};
 use crate::prompt::{answer_as_turn, review_as_turn, review_decisions, serialize_prompt};
 use crate::store::{NewRawEvent, Store};
@@ -54,6 +56,12 @@ pub enum Effect {
         node_id: String,
         slot_path: String,
         size_bytes: u64,
+    },
+    /// Route the agent's `message_slot` to another slot of the repo
+    /// (ADR 0021), then answer it with `slot_message.sent`.
+    RouteSlotMessage {
+        workflow_id: String,
+        request: SlotMessageRequest,
     },
     /// Ask the user to approve `request_slot`.
     ConfirmSlotRequest {
@@ -103,6 +111,30 @@ pub struct Submission {
     pub turn_text: String,
     /// The user message's uuid in Claude Code's transcript (ADR 0016).
     pub turn_uuid: String,
+}
+
+/// A message posted from one slot to another (ADR 0021).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Posted {
+    pub message_id: String,
+    /// What to send the recipient's agent now, `(text, uuid)`: `None` while
+    /// it is held for the user.
+    pub turn: Option<(String, String)>,
+}
+
+/// The sending side of a message: its workflow, and its slot's name and
+/// branch as the recipient reads them.
+pub struct Sender<'a> {
+    pub workflow: &'a Workflow,
+    pub name: &'a str,
+    pub branch: &'a str,
+}
+
+/// The receiving side: its workflow, and its slot's name as the sender's
+/// flow shows it.
+pub struct Recipient<'a> {
+    pub workflow: &'a Workflow,
+    pub name: &'a str,
 }
 
 /// What a rewind leaves for the user: the message that was rewound, to edit
@@ -666,6 +698,185 @@ impl Engine {
         })
     }
 
+    /// How many agent messages in a row a message sent now from
+    /// `workflow_id` makes: one more than reached its round.
+    pub fn message_hop(store: &Store, workflow_id: &str) -> Result<u32> {
+        Ok(match store.open_round(workflow_id)? {
+            Some(round) => store.round_hop(&round.id)? + 1,
+            None => 1,
+        })
+    }
+
+    /// Record a message from `from` to `to` in both flows, and deliver it as `delivery` says: into the
+    /// recipient's open round, a new one, or held for the user.
+    pub fn post_message(
+        &mut self,
+        store: &Store,
+        from: &Sender<'_>,
+        to: &Recipient<'_>,
+        text: &str,
+        hop: u32,
+        delivery: &Delivery,
+    ) -> Result<Posted> {
+        let (status, held_because) = match delivery {
+            Delivery::Join => (MessageStatus::Joined, None),
+            Delivery::Wake => (MessageStatus::Woke, None),
+            Delivery::Hold(why) => (MessageStatus::Held, Some(why.clone())),
+        };
+        let sent = SlotMessage {
+            message_id: new_id(),
+            direction: MessageDirection::Sent,
+            peer_slot_id: to.workflow.slot_id.clone(),
+            peer_workflow_id: to.workflow.id.clone(),
+            peer_name: to.name.to_owned(),
+            text: text.trim().to_owned(),
+            hop,
+            status,
+            held_because,
+            settled_at: None,
+        };
+        let round = store.open_round(&from.workflow.id)?;
+        store.insert_node(
+            &from.workflow.id,
+            round.as_ref().map(|r| r.id.as_str()),
+            None,
+            NodePayload::Message(sent.clone()),
+            None,
+        )?;
+        let received = SlotMessage {
+            direction: MessageDirection::Received,
+            peer_slot_id: from.workflow.slot_id.clone(),
+            peer_workflow_id: from.workflow.id.clone(),
+            peer_name: from.name.to_owned(),
+            ..sent.clone()
+        };
+        let turn = message_turn(from.name, from.branch, text);
+        let turn = self.receive(store, &to.workflow.id, Some(received), hop, delivery, turn)?;
+        Ok(Posted {
+            message_id: sent.message_id,
+            turn,
+        })
+    }
+
+    /// Put a received message (`node`, unless it is already in the flow) in
+    /// workflow `workflow_id` and return the turn to send, if it reaches the
+    /// agent now.
+    fn receive(
+        &mut self,
+        store: &Store,
+        workflow_id: &str,
+        node: Option<SlotMessage>,
+        hop: u32,
+        delivery: &Delivery,
+        turn: String,
+    ) -> Result<Option<(String, String)>> {
+        let open = match delivery {
+            Delivery::Hold(_) => {
+                if let Some(m) = node {
+                    store.insert_node(workflow_id, None, None, NodePayload::Message(m), None)?;
+                }
+                return Ok(None);
+            }
+            Delivery::Join => store.open_round(workflow_id)?,
+            Delivery::Wake => None,
+        };
+        let uuid = uuid::Uuid::new_v4().to_string();
+        let round = match open {
+            Some(round) => round,
+            None => {
+                let wf = store.workflow(workflow_id)?;
+                let round = store.insert_round(workflow_id, wf.section_no, now_ms())?;
+                store.set_round_turn(&round.id, &uuid)?;
+                round
+            }
+        };
+        store.raise_round_hop(&round.id, hop)?;
+        if let Some(m) = node {
+            store.insert_node(
+                workflow_id,
+                Some(&round.id),
+                None,
+                NodePayload::Message(m),
+                None,
+            )?;
+        }
+        // A woken agent works; one that waits on an answer still does.
+        if store.workflow(workflow_id)?.state == WorkflowState::Idle {
+            store.set_workflow_state(workflow_id, WorkflowState::Running)?;
+            store.set_workflow_error(workflow_id, None)?;
+        }
+        let live = self.live(workflow_id);
+        if let Some(latest) = live.latest_raw {
+            live.lane_cursor.insert(None, latest);
+        }
+        Ok(Some((turn, uuid)))
+    }
+
+    /// The held message `message_id` in workflow `workflow_id`, received.
+    fn held_message(store: &Store, workflow_id: &str, message_id: &str) -> Result<SlotMessage> {
+        store
+            .message_nodes(message_id)?
+            .into_iter()
+            .find_map(|n| match n.payload {
+                NodePayload::Message(m)
+                    if n.workflow_id == workflow_id
+                        && m.direction == MessageDirection::Received =>
+                {
+                    Some(m)
+                }
+                _ => None,
+            })
+            .filter(|m| m.status == MessageStatus::Held)
+            .ok_or_else(|| {
+                CoreError::InvalidTransition(format!("message {message_id} is not held here"))
+            })
+    }
+
+    /// The user sends a held message on to the agent (`delivery`: where it
+    /// goes now). A chain the user carried on counts from zero again.
+    pub fn release_message(
+        &mut self,
+        store: &Store,
+        workflow_id: &str,
+        message_id: &str,
+        delivery: &Delivery,
+    ) -> Result<(String, String)> {
+        let m = Self::held_message(store, workflow_id, message_id)?;
+        if let Delivery::Hold(why) = delivery {
+            return Err(CoreError::InvalidTransition(format!(
+                "The message can't reach the agent now: {why}."
+            )));
+        }
+        let branch = store
+            .slot(&m.peer_slot_id)
+            .map(|s| s.branch)
+            .unwrap_or_default();
+        let turn = message_turn(&m.peer_name, &branch, &m.text);
+        let turn = self
+            .receive(store, workflow_id, None, 0, delivery, turn)?
+            .ok_or_else(|| CoreError::InvalidTransition("the message is still held".to_owned()))?;
+        Self::settle_message(store, message_id, MessageStatus::Released)?;
+        Ok(turn)
+    }
+
+    /// The user dismisses a held message: its agent never gets it.
+    pub fn dismiss_message(store: &Store, workflow_id: &str, message_id: &str) -> Result<()> {
+        Self::held_message(store, workflow_id, message_id)?;
+        Self::settle_message(store, message_id, MessageStatus::Dismissed)
+    }
+
+    /// Both sides of a held message say what the user did with it.
+    fn settle_message(store: &Store, message_id: &str, status: MessageStatus) -> Result<()> {
+        for node in store.message_nodes(message_id)? {
+            if let NodePayload::Message(mut m) = node.payload {
+                m.status = status;
+                m.settled_at = Some(now_ms());
+                store.update_node_payload(&node.id, &NodePayload::Message(m))?;
+            }
+        }
+        Ok(())
+    }
+
     /// Open the workflow's first round, driven by its Origin (no Prompt node:
     /// the Origin node already shows what was asked). Returns the turn text.
     pub fn begin_origin_round(&mut self, store: &Store, workflow_id: &str) -> Result<String> {
@@ -1011,6 +1222,12 @@ impl Engine {
                     });
                     fx.push(Effect::FlowChanged { workflow_id: wf_id });
                 }
+            }
+            SidecarToApp::SlotMessage(r) => {
+                fx.push(Effect::RouteSlotMessage {
+                    workflow_id: wf_id,
+                    request: r.clone(),
+                });
             }
             SidecarToApp::SlotRequest(r) => {
                 fx.push(Effect::ConfirmSlotRequest {

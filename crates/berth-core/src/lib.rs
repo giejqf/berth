@@ -10,6 +10,7 @@ pub mod error;
 pub mod files;
 pub mod flow;
 pub mod ids;
+pub mod messages;
 pub mod model;
 pub mod paths;
 pub mod prompt;
@@ -17,7 +18,7 @@ pub mod store;
 pub mod transcript;
 pub mod usage;
 
-pub use engine::{AnswerDelivery, Effect, Engine, Rewound, Submission};
+pub use engine::{AnswerDelivery, Effect, Engine, Posted, Recipient, Rewound, Sender, Submission};
 pub use error::{CoreError, Result};
 pub use model::*;
 pub use store::{NewRawEvent, NewReviewComment, Store};
