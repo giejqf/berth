@@ -34,7 +34,8 @@ pub enum RepoEvent {
         request: SlotRequest,
     },
     Details {
-        title: String,
+        /// What the transcript is behind: "Summary", "Latest round".
+        subject: String,
         entries: Vec<TranscriptEntry>,
     },
     Toast {
@@ -678,15 +679,21 @@ impl RepoState {
                 entries,
                 ..
             } if self.knows(&workflow_id) => {
-                let title = self
+                let subject = self
                     .views
                     .get(&workflow_id)
                     .and_then(|v| v.nodes.iter().find(|n| n.id == node_id))
                     .map_or_else(
-                        || "Transcript".to_owned(),
-                        |n| format!("Transcript — {}", n.payload.kind().as_str()),
+                        || "Latest round".to_owned(),
+                        |n| {
+                            let kind = n.payload.kind().as_str().replace('_', " ");
+                            let mut chars = kind.chars();
+                            chars.next().map_or_else(String::new, |c| {
+                                c.to_uppercase().chain(chars).collect()
+                            })
+                        },
                     );
-                cx.emit(RepoEvent::Details { title, entries });
+                cx.emit(RepoEvent::Details { subject, entries });
             }
             UiEvent::Connectors(connectors) => {
                 self.connectors = connectors;

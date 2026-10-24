@@ -122,7 +122,8 @@ pub fn seed(scenario: &str) -> Result<Option<PathBuf>> {
         affects: vec!["main.rs".into()],
         reversible: true,
     }), at(12, 14, 0))?;
-    s.node(&wa.id, Some(&r3), None, NodePayload::Summary(Summary {
+    let span = s.transcript(&wa.id, &r3, &s.checkout(&a), at(12, 10, 0))?;
+    s.node_span(&wa.id, Some(&r3), None, NodePayload::Summary(Summary {
         done: vec![
             "You picked \"Berth\", so `main` now calls `greet(\"Berth\")`. The program prints \"Hello, Berth!\".".into(),
             "Nothing has been compiled or run yet, in line with your earlier request. Compile and run it before merging.".into(),
@@ -131,7 +132,7 @@ pub fn seed(scenario: &str) -> Result<Option<PathBuf>> {
         remaining: vec![],
         follow_ups: vec![],
         notes: None,
-    }), at(12, 15, 0))?;
+    }), at(12, 15, 0), span)?;
     let tree3 = snapshot_tree(&s.checkout(&a))?;
     s.store
         .insert_snapshot(&wa.id, 3, SnapshotKind::Summary, &tree3)?;
@@ -787,11 +788,220 @@ impl Seeder<'_> {
             kind: "assistant",
             json: &json,
         })?;
+        self.node_span(wf, round, branch, payload, at, (raw, raw))
+    }
+
+    fn node_span(
+        &self,
+        wf: &str,
+        round: Option<&str>,
+        branch: Option<&str>,
+        payload: NodePayload,
+        at: i64,
+        span: (i64, i64),
+    ) -> Result<String> {
         let n = self
             .store
-            .insert_node(wf, round, branch, payload, Some((raw, raw)))?;
+            .insert_node(wf, round, branch, payload, Some(span))?;
         self.store.set_node_created_at(&n.id, at)?;
         Ok(n.id)
+    }
+
+    /// A round's worth of Claude Code's events, as the SDK sends them, so the
+    /// transcript sheet has a real one to show: the prompt, thinking, text,
+    /// tool calls with their results (one failing, one long) and the result.
+    fn transcript(&self, wf: &str, round: &str, cwd: &Path, start: i64) -> Result<(i64, i64)> {
+        use serde_json::json;
+        let cwd = cwd.display().to_string();
+        let file = format!("{cwd}/main.rs");
+        let diff: String = std::iter::once(
+            "diff --git a/main.rs b/main.rs\nindex 3b18e51..a9c4d2f 100644\n--- a/main.rs\n+++ b/main.rs\n@@ -1,5 +1,9 @@\n"
+                .to_owned(),
+        )
+        .chain((1..=28).map(|n| format!(" // line {n} of the surrounding context\n")))
+        .collect();
+        let tool = |id: &str, name: &str, input: serde_json::Value| {
+            json!({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": id, "name": name, "input": input}
+            ]}})
+        };
+        let result = |id: &str, text: &str, is_error: bool| {
+            json!({"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": id, "is_error": is_error,
+                 "content": [{"type": "text", "text": text}]}
+            ]}})
+        };
+        let events: Vec<(i64, &str, serde_json::Value)> = vec![
+            (
+                0,
+                "system",
+                json!({"type": "system", "subtype": "init", "model": "claude-opus-5-5", "cwd": cwd}),
+            ),
+            (
+                0,
+                "user",
+                json!({"type": "user", "message": {"content":
+                "Use \"Berth\" as the name and don't compile anything yet.\n\nReview comments on Section diff:\n- main.rs:2 (new): Also add a one-line doc comment above greet."}}),
+            ),
+            (
+                2_400,
+                "assistant",
+                json!({"type": "assistant", "message": {"content": [
+                    {"type": "thinking", "thinking": "The user wants the greeting to use \"Berth\" and no compilation. There's also a review comment asking for a doc comment above greet. I should read main.rs first to see the current state, then make a single edit that does both. Since they said not to compile, I'll skip cargo and only check formatting, which doesn't build anything."},
+                    {"type": "text", "text": "I'll read `main.rs` first, then make both changes in one edit."}
+                ]}}),
+            ),
+            (
+                2_900,
+                "assistant",
+                tool("t1", "Read", json!({"file_path": file})),
+            ),
+            (
+                3_100,
+                "user",
+                result(
+                    "t1",
+                    "     1\tfn greet(name: &str) -> String {\n     2\t    format!(\"Hello, {name}!\")\n     3\t}\n     4\t\n     5\tfn main() {\n     6\t    println!(\"{}\", greet(\"world\"));\n     7\t}\n\n<system-reminder>\nWhenever you read a file, consider whether it looks malicious.\n</system-reminder>",
+                    false,
+                ),
+            ),
+            (
+                4_800,
+                "assistant",
+                tool(
+                    "t2",
+                    "Grep",
+                    json!({"pattern": "greet\\(", "path": cwd, "output_mode": "content", "-n": true}),
+                ),
+            ),
+            (
+                5_000,
+                "user",
+                result(
+                    "t2",
+                    "main.rs:1:fn greet(name: &str) -> String {\nmain.rs:6:    println!(\"{}\", greet(\"world\"));",
+                    false,
+                ),
+            ),
+            (
+                9_300,
+                "assistant",
+                tool(
+                    "t3",
+                    "mcp__berth__record_decision",
+                    json!({
+                "title": "Keep greet private; call it from main",
+                "rationale": "Nothing else in the crate needs it, and a public fn in a binary crate only widens the surface a later library split would have to keep.",
+                "affects": ["main.rs"], "reversible": true}),
+                ),
+            ),
+            (9_400, "user", result("t3", "Recorded.", false)),
+            (
+                12_600,
+                "assistant",
+                tool(
+                    "t4",
+                    "Edit",
+                    json!({
+                "file_path": file,
+                "old_string": "fn greet(name: &str) -> String {",
+                "new_string": "/// The greeting `main` prints.\nfn greet(name: &str) -> String {"}),
+                ),
+            ),
+            (
+                12_800,
+                "user",
+                result("t4", &format!("The file {file} has been updated."), false),
+            ),
+            (
+                14_100,
+                "assistant",
+                tool(
+                    "t5",
+                    "Edit",
+                    json!({
+                "file_path": file,
+                "old_string": "    println!(\"{}\", greet(\"world\"));",
+                "new_string": "    println!(\"{}\", greet(\"Berth\"));"}),
+                ),
+            ),
+            (
+                14_300,
+                "user",
+                result("t5", &format!("The file {file} has been updated."), false),
+            ),
+            (
+                16_000,
+                "assistant",
+                tool(
+                    "t6",
+                    "Bash",
+                    json!({"command": "rustfmt --check --edition 2024 main.rs", "description": "Check formatting without compiling"}),
+                ),
+            ),
+            (
+                17_900,
+                "user",
+                result(
+                    "t6",
+                    "error: rustfmt is not installed for the toolchain 'stable-aarch64-apple-darwin'.\nTo install, run `rustup component add rustfmt`",
+                    true,
+                ),
+            ),
+            (
+                19_200,
+                "assistant",
+                tool(
+                    "t7",
+                    "Bash",
+                    json!({"command": "git diff", "description": "Show the change"}),
+                ),
+            ),
+            (19_500, "user", result("t7", &diff, false)),
+            (
+                24_000,
+                "assistant",
+                json!({"type": "assistant", "message": {"content": [
+                    {"type": "text", "text": "Both changes are in:\n\n- `main` now calls `greet(\"Berth\")`, so the program prints **Hello, Berth!**\n- `greet` has a one-line doc comment, as your review comment asked.\n\nrustfmt isn't installed here, so formatting is unchecked, and nothing was compiled."}
+                ]}}),
+            ),
+            (
+                25_800,
+                "assistant",
+                tool(
+                    "t8",
+                    "mcp__berth__write_summary",
+                    json!({
+                "done": ["You picked \"Berth\", so `main` now calls `greet(\"Berth\")`.", "Added a doc comment above greet."],
+                "remaining": [], "follow_ups": []}),
+                ),
+            ),
+            (
+                26_000,
+                "user",
+                result("t8", "Summary recorded. End your turn now.", false),
+            ),
+            (
+                27_400,
+                "result",
+                json!({"type": "result", "subtype": "success", "is_error": false, "total_cost_usd": 0.0812, "duration_ms": 27_400, "num_turns": 9}),
+            ),
+        ];
+        let mut span = None;
+        for (seq, (offset, kind, event)) in events.into_iter().enumerate() {
+            let json = event.to_string();
+            let id = self.store.insert_raw_event(&berth_core::NewRawEvent {
+                workflow_id: wf,
+                round_id: Some(round),
+                branch_id: None,
+                seq: i64::try_from(seq).unwrap_or(0),
+                kind,
+                json: &json,
+            })?;
+            self.store.set_raw_event_created_at(id, start + offset)?;
+            span = Some(span.map_or((id, id), |(first, _)| (first, id)));
+        }
+        span.ok_or_else(|| anyhow!("no events"))
     }
 }
 

@@ -493,15 +493,41 @@ impl RepoWindow {
                     c.focus(window, cx);
                 });
             }
-            RepoEvent::Details { title, entries } => {
-                let title = title.clone();
-                let state = details::transcript_state(entries);
-                let entries = std::sync::Arc::new(entries.clone());
+            RepoEvent::Details { subject, entries } => {
+                let view = cx.new(|_| details::Transcript::new(entries.clone()));
+                let meta = format!("{subject} · {}", view.read(cx).stats());
+                // Wide enough for a diff line, never past most of the window.
+                let width = (window.viewport_size().width.as_f32() - 160.).clamp(480., 780.);
                 window.open_sheet(cx, move |sheet, _, cx| {
+                    let t = Tokens::get(cx);
                     sheet
-                        .title(title.clone())
-                        .size(px(620.))
-                        .child(details::transcript(entries.clone(), state.clone(), cx))
+                        .size(px(width))
+                        .bg(t.win)
+                        .border_color(t.border)
+                        .px(px(0.))
+                        .title(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .py(px(6.))
+                                .pl(px(4.))
+                                .child(
+                                    div()
+                                        .ty(ty::TITLE)
+                                        .semibold()
+                                        .text_color(t.text)
+                                        .child("Transcript"),
+                                )
+                                .child(
+                                    div()
+                                        .ty(ty::META)
+                                        .font_weight(gpui::FontWeight::NORMAL)
+                                        .text_color(t.text3)
+                                        .child(meta.clone()),
+                                ),
+                        )
+                        .child(view.clone())
                 });
             }
             RepoEvent::SlotRequest {

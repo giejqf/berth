@@ -1337,6 +1337,15 @@ impl Store {
         Ok(self.conn.last_insert_rowid())
     }
 
+    /// Backdate a raw event (fixtures).
+    pub fn set_raw_event_created_at(&self, id: i64, created_at: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE raw_events SET created_at = ?2 WHERE id = ?1",
+            params![id, created_at],
+        )?;
+        Ok(())
+    }
+
     /// Raw events in `[first, last]`, optionally restricted to one lane
     /// (`Some(None)` = main lane, `Some(Some(id))` = that branch).
     /// The `[first, last]` raw event ids of a round, if it recorded any.

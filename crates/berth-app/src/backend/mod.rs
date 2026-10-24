@@ -520,6 +520,12 @@ impl Shared {
         }
     }
 
+    /// The checkout a workflow's agent works in, as the agent sees it.
+    fn checkout_of(&self, core: &Core, workflow_id: &str) -> Option<String> {
+        let wf = core.store.workflow(workflow_id).ok()?;
+        core.store.slot(&wf.slot_id).ok()?.checkout_path
+    }
+
     fn load_details(&self, workflow_id: &str, node_id: &str) -> Result<()> {
         let raw = {
             let core = self.core();
@@ -531,10 +537,19 @@ impl Shared {
                 berth_protocol::NodePayload::CollectResults(c) => Some(c.branch_id.clone()),
                 _ => node.branch_id.clone(),
             };
-            core.store
-                .raw_events(workflow_id, first, last, Some(lane.as_deref()))?
+            let raw = core
+                .store
+                .raw_events(workflow_id, first, last, Some(lane.as_deref()))?;
+            (raw, self.checkout_of(&core, workflow_id), lane.is_some())
         };
-        let entries = berth_core::transcript::render(&raw);
+        let (raw, cwd, subagent) = raw;
+        let entries = berth_core::transcript::render(
+            &raw,
+            berth_core::transcript::Context {
+                cwd: cwd.as_deref(),
+                subagent,
+            },
+        );
         self.emit(UiEvent::Details {
             workflow_id: workflow_id.to_owned(),
             node_id: node_id.to_owned(),
@@ -559,13 +574,22 @@ impl Shared {
             let Some((first, last)) = core.store.round_raw_span(&round.id)? else {
                 return Err(anyhow!("this round has no recorded transcript yet"));
             };
-            core.store
-                .raw_events(workflow_id, first, last, Some(None))?
+            let raw = core
+                .store
+                .raw_events(workflow_id, first, last, Some(None))?;
+            (raw, self.checkout_of(&core, workflow_id))
         };
+        let (raw, cwd) = raw;
         self.emit(UiEvent::Details {
             workflow_id: workflow_id.to_owned(),
             node_id: String::new(),
-            entries: berth_core::transcript::render(&raw),
+            entries: berth_core::transcript::render(
+                &raw,
+                berth_core::transcript::Context {
+                    cwd: cwd.as_deref(),
+                    subagent: false,
+                },
+            ),
         });
         Ok(())
     }

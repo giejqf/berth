@@ -172,6 +172,10 @@ pub mod ty {
     pub const BODY: (f32, f32) = (13., 18.);
     pub const META: (f32, f32) = (12., 16.);
     pub const CAPTION: (f32, f32) = (11., 14.);
+    /// Long reading (the transcript sheet): prose a step up from BODY, and
+    /// mono to sit beside it.
+    pub const READ: (f32, f32) = (14., 22.);
+    pub const READ_MONO: (f32, f32) = (12.5, 19.);
 }
 
 /// The user's appearance choice (Settings › Appearance).

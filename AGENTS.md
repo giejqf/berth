@@ -640,7 +640,14 @@ settings         key, value          # last_repo, recent_repos, model, models, q
 Timestamps are unix epoch milliseconds. `nodes.raw_first/raw_last` are `raw_events.id`
 values; "show details" reads that span filtered to the node's lane (a CollectResults
 node shows its branch's transcript). It shows in a sheet as a virtualized list
-(`ui/details.rs`): a round's transcript can run to hundreds of entries.
+(`ui/details.rs`): a round's transcript can run to hundreds of entries. It reads as
+a timeline in the reading sizes (`ty::READ` 14/22, mono 12.5/19): messages as
+Markdown, thinking folded to three lines, and each tool call one line (what it ran
+or touched, how long it took) that opens to its arguments, an edit as removed and
+added lines, and its output (14 lines, then "Show all"). Failed calls open
+themselves; All | Messages | Tools filter it. `berth_core::transcript` pairs each
+call with its result, writes paths relative to the checkout and drops Claude Code's
+`<system-reminder>` asides.
 
 `workflows.claude_session_id` enables resume after app restart
 (`session.resume`). `raw_events` is append-only and is what "show details" reads.
