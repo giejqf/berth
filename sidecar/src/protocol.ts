@@ -167,13 +167,18 @@ export type Decision = { title: string, rationale: string, affects: Array<string
 
 export type Summary = { done: Array<string>, remaining: Array<string>, follow_ups: Array<FollowUp>, notes?: string, };
 
-export type OutcomeKind = "pr" | "commit" | "branch" | "none";
+export type OutcomeKind = "pr" | "commit" | "branch" | "claude_artifact" | "none";
 
 export type Outcome = { kind: OutcomeKind, 
 /**
- * PR URL/number, commit SHA, or branch name. Empty for `none`.
+ * PR URL/number, commit SHA, branch name, or the Claude artifact's
+ * claude.ai link. Empty for `none`.
  */
-ref: string, summary: string, follow_ups: Array<FollowUp>, };
+ref: string, summary: string, follow_ups: Array<FollowUp>, 
+/**
+ * A Claude artifact's title, from the Artifact tool's publish result.
+ */
+title?: string, };
 
 export type SubagentSpawn = { branch_id: string, agent_name: string, description: string, prompt: string, parallel_group?: string, };
 
@@ -359,9 +364,14 @@ export type NodeSummary = { done: Array<string>, remaining: Array<string>, follo
 
 export type NodeOutcome = { kind: OutcomeKind, 
 /**
- * PR URL/number, commit SHA, or branch name. Empty for `none`.
+ * PR URL/number, commit SHA, branch name, or the Claude artifact's
+ * claude.ai link. Empty for `none`.
  */
-ref: string, summary: string, follow_ups: Array<FollowUp>, };
+ref: string, summary: string, follow_ups: Array<FollowUp>, 
+/**
+ * A Claude artifact's title, from the Artifact tool's publish result.
+ */
+title?: string, };
 
 export type NodeReply = { message: string, };
 
@@ -549,7 +559,7 @@ export const TOOLS: Record<ToolName, { terminal: boolean; subagent: boolean; des
   record_decision: { terminal: false, subagent: true, description: "Announce a decision the moment you make it: an approach chosen, a trade-off accepted, a convention adopted. One decision per call. Non-blocking." },
   ask_user: { terminal: true, subagent: false, description: "Ask the user a question and wait for the answer. Use when you are blocked on a choice that is genuinely theirs. Offer `options` when the answer is one of a few choices; write each as \"Short label — one-line consequence\". Ends the round while waiting; the answer resumes it." },
   write_summary: { terminal: true, subagent: false, description: "End the round with a summary of what was done and what remains. Ends the current section; the user reviews the section diff next. List follow-ups that deserve their own workflow." },
-  record_outcome: { terminal: true, subagent: false, description: "Record how the workflow ended (usually the PR you opened with `gh`). Ends the workflow. Use kind=pr with the PR URL as ref." },
+  record_outcome: { terminal: true, subagent: false, description: "Record how the workflow ended (usually the PR you opened with `gh`). Ends the workflow. Use kind=pr with the PR URL as ref. When the result is a page you published with the Artifact tool, use kind=claude_artifact with its claude.ai link as ref." },
   request_slot: { terminal: false, subagent: false, description: "Ask the app to create a new slot with its own workflow (for example to pursue a follow-up in parallel). The user must approve. The current workflow continues here." },
   present_artifact: { terminal: false, subagent: false, description: "Show the user a file you made: a screenshot, a screen recording, a rendered chart or page, a report. Save it first, then pass its path and a short title. The app copies it and shows it as a card in the event flow. Non-blocking." },
   present_review: { terminal: true, subagent: false, description: "Present code review findings and wait for the user's decision on each. One finding per issue: its level (high: a bug, data loss or a security hole; mid: worth fixing before merge; low: a nit), a one-line title, the detail (why it matters, what a fix would be), where it is, and what you suggest: fix, dismiss (not worth changing), or decide (a judgment call that is theirs). The user picks for each and the decisions come back as the result: fix what they marked fix, leave the dismissed ones, follow their words on the rest. Ends the round while waiting; the decisions resume it." },

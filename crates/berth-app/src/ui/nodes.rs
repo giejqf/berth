@@ -1649,6 +1649,7 @@ fn outcome(t: &Tokens, node: &Node, o: &Outcome, ctx: &RowCtx, line: bool) -> Di
         OutcomeKind::Pr => "pr",
         OutcomeKind::Commit => "commit",
         OutcomeKind::Branch => "branch",
+        OutcomeKind::ClaudeArtifact => "Claude artifact",
         OutcomeKind::None => "none",
     };
     let mut meta = div()
@@ -1660,8 +1661,16 @@ fn outcome(t: &Tokens, node: &Node, o: &Outcome, ctx: &RowCtx, line: bool) -> Di
         .ty(ty::META)
         .text_color(t.text2);
     if !o.r#ref.is_empty() {
+        // An artifact goes by its title; a link only when it has none.
+        let title = o
+            .title
+            .clone()
+            .filter(|_| o.kind == OutcomeKind::ClaudeArtifact);
         let shown = match o.kind {
             OutcomeKind::Commit => o.r#ref.chars().take(7).collect::<String>(),
+            OutcomeKind::ClaudeArtifact => title
+                .clone()
+                .unwrap_or_else(|| o.r#ref.trim_start_matches("https://").to_owned()),
             _ => o.r#ref.clone(),
         };
         // A long branch name or PR URL ends in an ellipsis.
@@ -1672,10 +1681,10 @@ fn outcome(t: &Tokens, node: &Node, o: &Outcome, ctx: &RowCtx, line: bool) -> Di
                 .items_center()
                 .gap(px(6.))
                 .child(icon(
-                    if o.kind == OutcomeKind::Commit {
-                        "commit"
-                    } else {
-                        "pr"
+                    match o.kind {
+                        OutcomeKind::Commit => "commit",
+                        OutcomeKind::ClaudeArtifact => "app-window",
+                        _ => "pr",
                     },
                     14.,
                     t.text2,
@@ -1686,7 +1695,7 @@ fn outcome(t: &Tokens, node: &Node, o: &Outcome, ctx: &RowCtx, line: bool) -> Di
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .text_ellipsis()
-                        .font_family(MONO)
+                        .when(title.is_none(), |d| d.font_family(MONO))
                         .child(shown),
                 ),
         );
@@ -1720,6 +1729,21 @@ fn outcome(t: &Tokens, node: &Node, o: &Outcome, ctx: &RowCtx, line: bool) -> Di
                 cx.open_url(&r);
             }));
         }
+        OutcomeKind::ClaudeArtifact if r.starts_with("https://") => {
+            let copied = r.clone();
+            links = links
+                .child(link("copy-link", "Copy link", t, move |_, _, cx| {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(copied.clone()));
+                }))
+                .child(link(
+                    "open-artifact",
+                    "Open artifact",
+                    t,
+                    move |_, _, cx| {
+                        cx.open_url(&r);
+                    },
+                ));
+        }
         _ => {}
     }
     meta = meta.child(links);
@@ -1742,7 +1766,18 @@ fn outcome(t: &Tokens, node: &Node, o: &Outcome, ctx: &RowCtx, line: bool) -> Di
     }
     row(
         t,
-        glyph(t.done, icon("pr-bold", 14., t.on_done)),
+        glyph(
+            t.done,
+            icon(
+                if o.kind == OutcomeKind::ClaudeArtifact {
+                    "app-window-bold"
+                } else {
+                    "pr-bold"
+                },
+                14.,
+                t.on_done,
+            ),
+        ),
         line,
         div().pb(px(16.)).child(
             div()

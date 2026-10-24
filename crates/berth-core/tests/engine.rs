@@ -539,6 +539,7 @@ fn branches_spawn_collect_and_cancel_at_outcome() {
                     r#ref: "https://github.com/o/r/pull/7".into(),
                     summary: "done".into(),
                     follow_ups: vec![],
+                    title: None,
                 },
             }),
         )
@@ -1062,6 +1063,7 @@ fn rewinding_past_an_outcome_reopens_the_workflow() {
                     r#ref: "https://github.com/o/r/pull/1".into(),
                     summary: "s".into(),
                     follow_ups: vec![],
+                    title: None,
                 },
             }),
         )
@@ -1092,6 +1094,7 @@ fn writing_to_a_closed_workflow_continues_it_in_its_slot() {
                     r#ref: "https://github.com/o/r/pull/1".into(),
                     summary: "s".into(),
                     follow_ups: vec![],
+                    title: None,
                 },
             }),
         )
@@ -1258,6 +1261,7 @@ fn a_closed_workflow_opens_in_another_slot_and_says_where() {
                     r#ref: "abc".into(),
                     summary: "s".into(),
                     follow_ups: vec![],
+                    title: None,
                 },
             }),
         )

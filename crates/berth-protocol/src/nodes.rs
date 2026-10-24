@@ -407,6 +407,8 @@ pub enum OutcomeKind {
     Pr,
     Commit,
     Branch,
+    /// A page published to claude.ai with Claude Code's Artifact tool (ADR 0020).
+    ClaudeArtifact,
     None,
 }
 
@@ -417,6 +419,7 @@ impl OutcomeKind {
             Self::Pr => "pr",
             Self::Commit => "commit",
             Self::Branch => "branch",
+            Self::ClaudeArtifact => "claude_artifact",
             Self::None => "none",
         }
     }
@@ -425,12 +428,17 @@ impl OutcomeKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct Outcome {
     pub kind: OutcomeKind,
-    /// PR URL/number, commit SHA, or branch name. Empty for `none`.
+    /// PR URL/number, commit SHA, branch name, or the Claude artifact's
+    /// claude.ai link. Empty for `none`.
     #[serde(default)]
     pub r#ref: String,
     pub summary: String,
     #[serde(default)]
     pub follow_ups: Vec<FollowUp>,
+    /// A Claude artifact's title, from the Artifact tool's publish result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

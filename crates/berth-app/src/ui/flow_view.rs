@@ -373,6 +373,7 @@ impl FlowView {
                         _ => "Done · PR".to_owned(),
                     },
                     Some((OutcomeKind::Branch, _)) => "Done · branch".to_owned(),
+                    Some((OutcomeKind::ClaudeArtifact, _)) => "Done · artifact".to_owned(),
                     _ => "Done".to_owned(),
                 };
                 chip(t, Tone::Done, what)

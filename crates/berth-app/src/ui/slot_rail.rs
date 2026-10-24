@@ -158,6 +158,7 @@ pub fn rail_lines(entry: &SlotEntry, state: &RepoState) -> (String, String) {
                         _ => "PR opened".to_owned(),
                     },
                     Some((OutcomeKind::Branch, _)) => "Branch ready".to_owned(),
+                    Some((OutcomeKind::ClaudeArtifact, _)) => "Artifact published".to_owned(),
                     Some((OutcomeKind::None, _)) | None => "Closed".to_owned(),
                 };
                 let n = f.outcome.as_ref().map_or(0, |o| o.follow_ups.len());

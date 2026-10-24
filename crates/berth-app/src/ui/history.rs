@@ -103,6 +103,7 @@ fn meta(entry: &HistoryEntry, repo: &str) -> String {
                     }
                     Some(OutcomeKind::Commit) => "Done · committed".to_owned(),
                     Some(OutcomeKind::Branch) => "Done · branch".to_owned(),
+                    Some(OutcomeKind::ClaudeArtifact) => "Done · artifact".to_owned(),
                     Some(OutcomeKind::None) | None => "Closed".to_owned(),
                 },
                 WorkflowState::AwaitingAnswer => "Waiting on you".to_owned(),

@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { silentLogger } from "../src/log.js";
 import type { SessionStart } from "../src/protocol.js";
-import { MAX_NUDGES, NUDGE_TEXT, SUBAGENT_TOOL_ERROR, Session } from "../src/session.js";
+import { MAX_NUDGES, NUDGE_TEXT, SUBAGENT_TOOL_ERROR, Session, artifactLink } from "../src/session.js";
 import { RecordingEmitter, fakeQueryFn, flush, sdk } from "./fakes.js";
 
 const START: SessionStart = {
@@ -189,6 +189,62 @@ describe("round termination (§5.3)", () => {
     q.send(sdk.result(0.1, "error_during_execution"));
     await flush();
     expect(emitter.ofType("round.ended")[0]?.terminal_kind).toBe("error");
+  });
+});
+
+describe("claude artifact outcome (ADR 0020)", () => {
+  it("takes the title from the Artifact tool's publish", async () => {
+    const { emitter, session, q } = setup();
+    session.turn("publish a dashboard");
+    q.send(sdk.toolUse("a1", "Artifact", { file_path: "dash.html" }));
+    q.send(
+      sdk.toolResult("a1", "Published", {
+        url: "https://claude.ai/code/artifact/5f3e",
+        path: "dash.html",
+        title: "Release dashboard",
+      }),
+    );
+    // Listing artifacts names none as published.
+    q.send(sdk.toolUse("a2", "Artifact", { action: "list" }));
+    q.send(sdk.toolResult("a2", "[]", { artifacts: [{ title: "Old", url: "https://claude.ai/artifact/old" }] }));
+    await flush();
+    const r = await session.recordOutcome(
+      { kind: "claude_artifact", ref: "claude.ai/code/artifact/5f3e/", summary: "Published it" },
+      {},
+    );
+    expect(r.ok).toBe(true);
+    expect(emitter.ofType("node.outcome")[0]).toMatchObject({
+      kind: "claude_artifact",
+      ref: "https://claude.ai/code/artifact/5f3e",
+      title: "Release dashboard",
+    });
+  });
+
+  it("refuses a ref that is not an artifact link, and the round can still end", async () => {
+    const { emitter, session } = setup();
+    session.turn("go");
+    const bad = await session.recordOutcome(
+      { kind: "claude_artifact", ref: "https://claude.ai/chat/123", summary: "s" },
+      {},
+    );
+    expect(bad).toMatchObject({ ok: false });
+    const good = await session.recordOutcome(
+      { kind: "claude_artifact", ref: "https://claude.ai/artifact/abc", summary: "s" },
+      {},
+    );
+    expect(good.ok).toBe(true);
+    const outcome = emitter.ofType("node.outcome");
+    expect(outcome).toHaveLength(1);
+    expect(outcome[0]).not.toHaveProperty("title");
+  });
+
+  it("reads artifact links in one form", () => {
+    expect(artifactLink("https://claude.ai/artifact/abc?x=1#y")).toBe("https://claude.ai/artifact/abc");
+    expect(artifactLink(" claude.ai/code/artifact/u-1 ")).toBe("https://claude.ai/code/artifact/u-1");
+    expect(artifactLink("http://claude.ai/artifact/abc")).toBeUndefined();
+    expect(artifactLink("https://evil.example/artifact/abc")).toBeUndefined();
+    expect(artifactLink("https://claude.ai/artifact/abc/edit")).toBeUndefined();
+    expect(artifactLink("")).toBeUndefined();
   });
 });
 

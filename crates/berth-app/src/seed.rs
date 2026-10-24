@@ -3,6 +3,7 @@
 //! real git worktrees; the flow is written straight into the store.
 //!
 //! Scenarios: `question` (default), `working`, `review`, `comments`, `done`,
+//! `artifact` (`done`, the first workflow ending in a Claude artifact),
 //! `findings` (the third slot waits on decisions about a code review),
 //! `usage-api` (`question`, signed in with an API key: no plan limits),
 //! `commands` (the third slot ran `/context` and `/compact`), `empty`
@@ -65,7 +66,9 @@ pub fn seed(scenario: &str) -> Result<Option<PathBuf>> {
     )?;
     let base_tree = git_out(&repo_dir, &["rev-parse", "main^{tree}"])?;
     write_greeting(&s.checkout(&a))?;
-    let done = scenario == "done";
+    // `artifact` is `done` with the workflow ending in a Claude artifact.
+    let artifact = scenario == "artifact";
+    let done = scenario == "done" || artifact;
     let wa = s.workflow(
         &a,
         "Add a greeting function",
@@ -107,7 +110,7 @@ pub fn seed(scenario: &str) -> Result<Option<PathBuf>> {
         None,
         NodePayload::Prompt(Prompt {
             text: "Use \"Berth\" as the name and don't compile anything yet.".into(),
-            review_comments: if matches!(scenario, "comments" | "done") {
+            review_comments: if matches!(scenario, "comments" | "done" | "artifact") {
                 vec![sent_comment]
             } else {
                 vec![]
@@ -141,7 +144,7 @@ pub fn seed(scenario: &str) -> Result<Option<PathBuf>> {
     s.store.set_section_no(&wa.id, 4)?;
     s.store.set_workflow_state(&wa.id, WorkflowState::Idle)?;
     let mut pending_comment: Option<String> = None;
-    if matches!(scenario, "comments" | "done") {
+    if matches!(scenario, "comments" | "done" | "artifact") {
         let sent = s.store.insert_review_comment(&NewReviewComment {
             workflow_id: wa.id.clone(),
             from_snapshot: base_tree.clone(),
@@ -175,7 +178,11 @@ pub fn seed(scenario: &str) -> Result<Option<PathBuf>> {
             body: "Prefer a named constant for the greeting text.".into(),
         };
         let p4 = s.node(&wa.id, Some(&r4), None, NodePayload::Prompt(Prompt {
-            text: "Address the review comment, then commit everything on this branch and finish the workflow with record_outcome kind=commit. Include exactly one follow-up suggesting a unit test for greet.".into(),
+            text: if artifact {
+                "Address the review comment, then publish a one-page tour of greet as a Claude artifact and finish the workflow with it. Include exactly one follow-up suggesting a unit test for greet."
+            } else {
+                "Address the review comment, then commit everything on this branch and finish the workflow with record_outcome kind=commit. Include exactly one follow-up suggesting a unit test for greet."
+            }.into(),
             review_comments: vec![comment],
             attachments: vec![],
         }), at(12, 16, 0))?;
@@ -188,10 +195,26 @@ pub fn seed(scenario: &str) -> Result<Option<PathBuf>> {
             affects: vec!["main.rs".into()],
             reversible: true,
         }), at(12, 19, 0))?;
+        let (kind, r#ref, summary, title) = if artifact {
+            (
+                OutcomeKind::ClaudeArtifact,
+                "https://claude.ai/code/artifact/5f3e9c1a-7b2d-4e8f-a6c0-91d4b3e2f871".into(),
+                "Published a one-page tour of `greet`: what it returns, where `main` calls it, and the `GREETING` constant your comment asked for. Nothing is committed; the page is the deliverable.".into(),
+                Some("Greeting function tour".to_owned()),
+            )
+        } else {
+            (
+                OutcomeKind::Commit,
+                "ae1d438".into(),
+                "Added `greet(name: &str) -> String` to main.rs with a one-line doc comment, as the review asked. `main` now prints `greet(\"Berth\")`. All of this is committed on the branch; it has not been compiled or run, as you asked.".into(),
+                None,
+            )
+        };
         s.node(&wa.id, Some(&r4), None, NodePayload::Outcome(Outcome {
-            kind: OutcomeKind::Commit,
-            r#ref: "ae1d438".into(),
-            summary: "Added `greet(name: &str) -> String` to main.rs with a one-line doc comment, as the review asked. `main` now prints `greet(\"Berth\")`. All of this is committed on the branch; it has not been compiled or run, as you asked.".into(),
+            kind,
+            r#ref,
+            summary,
+            title,
             follow_ups: vec![FollowUp {
                 id: "fu-test".into(),
                 title: "Add a unit test for greet".into(),

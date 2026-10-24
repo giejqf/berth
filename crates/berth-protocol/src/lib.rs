@@ -297,9 +297,20 @@ mod tests {
                     r#ref: "https://github.com/o/r/pull/1".into(),
                     summary: "done".into(),
                     follow_ups: vec![],
+                    title: None,
                 },
             }),
         });
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"id":"f","type":"node.outcome","kind":"claude_artifact","ref":"https://claude.ai/artifact/abc","summary":"s","title":"Q3 dashboard"}"#,
+        )
+        .unwrap();
+        let m: SidecarMessage = serde_json::from_value(v).unwrap();
+        let SidecarToApp::NodeOutcome(o) = m.body else {
+            panic!("not an outcome");
+        };
+        assert_eq!(o.outcome.kind, OutcomeKind::ClaudeArtifact);
+        assert_eq!(o.outcome.title.as_deref(), Some("Q3 dashboard"));
         let v: serde_json::Value = serde_json::from_str(
             r#"{"id":"e","type":"round.ended","terminal_kind":"write_summary","cost_usd":0.5,"duration_ms":10,"nudges":0}"#,
         )
@@ -548,8 +559,10 @@ mod tests {
             r#ref: String::new(),
             summary: "s".into(),
             follow_ups: vec![],
+            title: None,
         });
         let json = p.payload_json().unwrap();
+        assert!(!json.contains("title"), "{json}");
         assert!(json.contains(r#""ref":"""#), "{json}");
         assert_eq!(NodePayload::from_parts(p.kind(), &json).unwrap(), p);
         for k in NodeKind::ALL {

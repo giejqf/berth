@@ -176,7 +176,7 @@ The event flow is the primary UI. It is an ordered list of **nodes** per workflo
 | `Question` | Agent (`ask_user`) or user (free-text question in a Prompt is just a Prompt) | `{ question, options?, allow_free_text, answer?, answered_at? }` |
 | `Decision` | Agent (`record_decision`) | `{ title, rationale, affects: [path], reversible }` |
 | `Summary` | Agent (`write_summary`) | `{ done: [string], remaining: [string], follow_ups: [FollowUp], notes? }` — **ends a section** |
-| `Outcome` | Agent (`record_outcome`) | `{ kind: pr \| commit \| branch \| none, ref, summary, follow_ups: [FollowUp] }` — **ends the workflow** |
+| `Outcome` | Agent (`record_outcome`) | `{ kind: pr \| commit \| branch \| claude_artifact \| none, ref, summary, follow_ups: [FollowUp], title? }` — **ends the workflow**; `claude_artifact`: a page the agent published to claude.ai with Claude Code's `Artifact` tool, `ref` its link, `title` from the publish (ADR 0020) |
 | `SubagentSpawn` | Sidecar (from an `Agent` tool_use) | `{ branch_id, agent_name, description, prompt, parallel_group? }` — opens a branch |
 | `CollectResults` | Sidecar (from that tool_use's result) | `{ branch_id, result_text, duration_ms, cost_usd, tool_calls, touched_files: [path], status: ok \| error \| cancelled }` — closes the branch |
 | `Artifact` | Agent (`present_artifact`) | `{ artifact_id, title, description?, file: FileRef, error? }` — a file the agent made for the user (screenshot, recording, rendered page) |
@@ -220,6 +220,8 @@ reply           { message }
 
 record_outcome  { kind, ref, summary, follow_ups?: FollowUp[] }
   → Terminal. Ends the workflow. App links `ref` to a GitHub entity if kind = pr.
+     kind = claude_artifact: `ref` must be a claude.ai artifact link (else a tool
+     error); the sidecar adds the title from the Artifact tool's publish (ADR 0020).
 
 request_slot    { name, purpose, from_follow_up?: string }
   → BLOCKS until the app sends slot_request.resolved. Not terminal.
@@ -244,7 +246,8 @@ present_review  { findings: [{ level, title, detail, path?, line?, suggested }],
 The agent's system prompt (sidecar `src/session.ts`, `BERTH_SYSTEM_PROMPT`) instructs:
 announce decisions as you make them, never narrate file edits, end every round with
 exactly one of `ask_user` / `write_summary` / `reply` / `record_outcome` (the user reads
-only the tools, so an answer goes in `reply`), use `gh` for PRs,
+only the tools, so an answer goes in `reply`), use `gh` for PRs, end a workflow whose
+result is a page published with Claude Code's `Artifact` tool with kind `claude_artifact`,
 use connector CLIs for external systems, show files it made with `present_artifact`,
 present code review findings with `present_review` and act on the decisions.
 The app appends repo/slot/origin context via
@@ -681,7 +684,7 @@ review.answer    { review_id, text }  # the decisions on a review's findings, as
 session.started  { claude_session_id }
 raw.event        { seq, kind, json, branch_id? }   # every SDK message, verbatim
 node.decision    { …, branch_id? }   node.question { question_id, … }
-node.summary     { … }               node.outcome  { … }
+node.summary     { … }               node.outcome  { …, title? }   # title: a Claude artifact's (ADR 0020)
 node.artifact    { artifact_id, path, title, description?, size_bytes }
 node.review      { review_id, summary?, findings: [{ level, title, detail, path?, line?, suggested }] }
 branch.spawned   { branch_id, parent_tool_use_id, parent_branch_id?, agent_name, description, prompt, parallel_group? }
@@ -757,7 +760,7 @@ settles nothing (ADR 0013).
   in the rail and its collapsed strip alike. The second line says what is happening
   (the live round's current step from `berth_core::activity`, "Asked a question · 40s
   ago", "Review: 5 findings to decide · 1m ago", "Replied · 1m ago", "Committed · 1
-  follow-up"; after a reply the slot needs you, not a review); while
+  follow-up", "Artifact published"; after a reply the slot needs you, not a review); while
   Claude Code retries a failed API request it says so ("The API is overloaded; trying
   again (2 of 10) in 8s", `api_retry`). The rail's foot is a **Command palette** button
   (⌘K; the ⌘ glyph alone on the collapsed strip). Claude Code, GitHub CLI and Node.js
@@ -957,7 +960,7 @@ settles nothing (ADR 0013).
   activity, `berth_core::activity`).
 - Feature `devtools` (dev only): `BERTH_DEV_SCRIPT` drives the live UI and
   `BERTH_DEV_SHOTS` receives window screenshots (see `src/devtools.rs`).
-  `BERTH_DEV_SEED=question|working|review|comments|done|findings|usage-api|commands|empty|welcome` seeds the
+  `BERTH_DEV_SEED=question|working|review|comments|done|artifact|findings|usage-api|commands|empty|welcome` seeds the
   design's scenario into a fresh `BERTH_HOME` (`src/seed.rs`), so screenshots line up
   with the design artboards. Use it to check UI changes without a human.
   `BERTH_DEV_SLOW_MOTION=<factor>` stretches every animation so a shot can catch

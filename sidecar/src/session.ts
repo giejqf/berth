@@ -54,12 +54,34 @@ How to work:
 - The user reads only the berth tools' content, not your other text. When they ask you something, the answer goes in \`reply\` (or in \`write_summary\`'s notes when you also changed files), complete and in Markdown.
 - Ask questions only through \`ask_user\`, never through AskUserQuestion or plain text.
 - Use \`gh\` for GitHub. Open PRs with \`gh pr create\`, then call \`record_outcome\` with kind "pr" and the PR URL as ref.
+- When the workflow's result is a page you published with Claude Code's \`Artifact\` tool rather than code to merge, end it with \`record_outcome\` kind "claude_artifact" and the claude.ai link the publish returned as ref. (\`present_artifact\` only shows the user a file; it publishes nothing.)
 - Use the connector CLIs described by their skills for external systems (Linear, PostHog, ...).
 - Run the repository's gates (tests, lint, typecheck) before \`write_summary\` when you changed code.
 - When you review code (because the user asked, or a reviewer subagent reported back), present the findings with \`present_review\` rather than listing them in prose or a summary, then act on the decisions it returns: fix what the user marked fix, leave the dismissed ones, follow their words on the rest.
 - When you make something the user should see (a screenshot, a screen recording, a rendered chart or page, a report), save it to a file and call \`present_artifact\` with its path and a short title. Never paste images or long output into text.
 - Files the user attached are listed at the end of their message, with paths you can read; attached images are also shown to you directly.
 - Subagents may only call \`record_decision\`; they report everything else back to you.`;
+
+/** Claude Code's tool that publishes pages to claude.ai. */
+const ARTIFACT_TOOL = "Artifact";
+const ARTIFACT_REF_ERROR =
+  "For kind claude_artifact, ref must be the artifact's claude.ai link (https://claude.ai/artifact/… or https://claude.ai/code/artifact/…), as the Artifact tool's publish returned it.";
+
+/** A claude.ai artifact link in one form (https, no query, no trailing
+ * slash), or undefined when `ref` is not one. */
+export function artifactLink(ref: string): string | undefined {
+  const raw = ref.trim();
+  let url: URL;
+  try {
+    url = new URL(/^claude\.ai\//.test(raw) ? `https://${raw}` : raw);
+  } catch {
+    return undefined;
+  }
+  const path = url.pathname.replace(/\/+$/, "");
+  if (url.protocol !== "https:" || url.hostname !== "claude.ai") return undefined;
+  if (!/^\/(code\/)?artifact\/[^/]+$/.test(path)) return undefined;
+  return `https://claude.ai${path}`;
+}
 
 export const NUDGE_TEXT = "End this round with ask_user, write_summary, reply, or record_outcome.";
 export const MAX_NUDGES = 2;
@@ -159,6 +181,9 @@ export class Session implements ToolHost {
   private readonly questions = new Map<string, Pending<string>>();
   private readonly reviews = new Map<string, Pending<string>>();
   private readonly slotRequests = new Map<string, Pending<RequestSlotResult>>();
+  /** claude.ai artifacts this session published with the Artifact tool:
+   * link → title, for an Outcome that names one (ADR 0020). */
+  private readonly published = new Map<string, string | undefined>();
 
   private q?: AgentQuery;
   private consuming?: Promise<void>;
@@ -688,6 +713,9 @@ export class Session implements ToolHost {
     for (const raw of content) {
       const block = raw as { type?: unknown; tool_use_id?: unknown; content?: unknown; is_error?: boolean };
       if (block.type !== "tool_result" || typeof block.tool_use_id !== "string") continue;
+      if (!block.is_error && this.toolUses.get(block.tool_use_id)?.name === ARTIFACT_TOOL) {
+        this.notePublish(toolUseResult);
+      }
       const branch = this.branches.get(block.tool_use_id);
       if (!branch || branch.collected) continue;
       const r = agentResult(block, toolUseResult);
@@ -705,6 +733,14 @@ export class Session implements ToolHost {
         }),
       });
     }
+  }
+
+  /** A publish result carries the page's link and title; other actions don't. */
+  private notePublish(result: unknown): void {
+    if (typeof result !== "object" || result === null) return;
+    const { url, path, title } = result as { url?: unknown; path?: unknown; title?: unknown };
+    if (typeof url !== "string" || typeof path !== "string") return;
+    this.published.set(artifactLink(url) ?? url, typeof title === "string" && title.trim() ? title : undefined);
   }
 
   private onTaskNotification(msg: {
@@ -959,14 +995,23 @@ export class Session implements ToolHost {
     if ((await this.attribute(call, input, "record_outcome")).inSubagent) {
       return { ok: false, error: SUBAGENT_TOOL_ERROR };
     }
+    let ref = input.ref;
+    let title: string | undefined;
+    if (input.kind === "claude_artifact") {
+      const link = artifactLink(ref) ?? (this.published.has(ref.trim()) ? ref.trim() : undefined);
+      if (!link) return { ok: false, error: ARTIFACT_REF_ERROR };
+      ref = link;
+      title = this.published.get(link);
+    }
     const rejected = this.claimTerminal("record_outcome");
     if (rejected) return { ok: false, error: rejected };
     this.emitter.emit({
       type: "node.outcome",
       kind: input.kind,
-      ref: input.ref,
+      ref,
       summary: input.summary,
       follow_ups: this.followUps(input.follow_ups),
+      ...(title ? { title } : {}),
     });
     return { ok: true, text: "Outcome recorded; the workflow is complete. End your turn now." };
   }

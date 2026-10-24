@@ -90,7 +90,9 @@ impl ToolName {
             }
             Self::RecordOutcome => {
                 "Record how the workflow ended (usually the PR you opened with `gh`). Ends the \
-                 workflow. Use kind=pr with the PR URL as ref."
+                 workflow. Use kind=pr with the PR URL as ref. When the result is a page you \
+                 published with the Artifact tool, use kind=claude_artifact with its claude.ai \
+                 link as ref."
             }
             Self::RequestSlot => {
                 "Ask the app to create a new slot with its own workflow (for example to pursue a \

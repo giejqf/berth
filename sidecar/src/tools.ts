@@ -48,8 +48,8 @@ export const shapes = {
     notes: z.string().optional(),
   },
   record_outcome: {
-    kind: z.enum(["pr", "commit", "branch", "none"]),
-    ref: z.string().describe("PR URL, commit SHA, or branch name; empty for none"),
+    kind: z.enum(["pr", "commit", "branch", "claude_artifact", "none"]),
+    ref: z.string().describe("PR URL, commit SHA, branch name, or the Claude artifact's claude.ai link; empty for none"),
     summary: z.string(),
     follow_ups: z.array(followUp).optional(),
   },
