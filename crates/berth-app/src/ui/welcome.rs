@@ -210,7 +210,7 @@ impl Render for Welcome {
             .min_w_0()
             .child(
                 img(ImageSource::Image(self.logo.clone()))
-                    .w(px(72.))
+                    .w(px(66.))
                     .h(px(84.))
                     .object_fit(ObjectFit::Contain),
             )

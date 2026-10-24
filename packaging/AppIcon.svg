@@ -1,16 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1024 1024" width="1024" height="1024">
   <title>Berth</title>
   <!-- macOS app icon on Apple's 1024 grid: an 824 rounded square with its
-       shadow, the mark (crates/berth-app/assets/logo.svg) glowing on Berth's
-       dark ground. Rendered by `scripts/icon.sh`. -->
+       shadow, the mark (crates/berth-app/assets/logo.svg) glowing on a navy
+       ground. Rendered by `scripts/icon.sh`. -->
   <defs>
     <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#32302f"/>
-      <stop offset="1" stop-color="#1b1d1e"/>
+      <stop offset="0" stop-color="#263042"/>
+      <stop offset="1" stop-color="#0a1124"/>
     </linearGradient>
     <radialGradient id="light" cx="0.5" cy="0.45" r="0.6">
-      <stop offset="0" stop-color="#5edbee" stop-opacity="0.14"/>
-      <stop offset="1" stop-color="#5edbee" stop-opacity="0"/>
+      <stop offset="0" stop-color="#3aa8f0" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="#3aa8f0" stop-opacity="0"/>
     </radialGradient>
     <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#ffffff" stop-opacity="0.16"/>
@@ -26,9 +26,9 @@
   <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#ground)" filter="url(#shadow)"/>
   <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#light)"/>
   <rect x="102" y="102" width="820" height="820" rx="183" fill="none" stroke="url(#edge)" stroke-width="4"/>
-  <!-- The mark, 520 tall, centered on its own box (8.8,9.8)-(191.3,225.3). -->
-  <g transform="translate(270.6 228.4) scale(2.413)">
-    <image href="../crates/berth-app/assets/logo.svg" width="199" height="233" opacity="0.55" filter="url(#bloom)"/>
-    <image href="../crates/berth-app/assets/logo.svg" width="199" height="233"/>
+  <!-- The mark, 600 tall, centered on its own box (54,35)-(486,585). -->
+  <g transform="translate(272 206.5) scale(1.0909)">
+    <image href="../crates/berth-app/assets/logo.svg" width="440" height="560" opacity="0.5" filter="url(#bloom)"/>
+    <image href="../crates/berth-app/assets/logo.svg" width="440" height="560"/>
   </g>
 </svg>

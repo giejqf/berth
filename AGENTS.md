@@ -109,7 +109,7 @@ berth/
 │   │     src/ui/terminal/       the terminal panel: PTY + grid (alacritty_terminal), keys, colors
 │   │     assets/icons/berth/    the design's Lucide glyphs at their stroke widths (ISC)
 │   │     assets/fonts/          IBM Plex Sans + JetBrains Mono (OFL)
-│   │     assets/logo.svg        the mark, the source of the app icon; assets/logo.png
+│   │     assets/logo.svg        the mark, the source of the app icon; assets/logo.png (Welcome)
 │   ├── berth-core/              domain model, workflow state machine, SQLite store
 │   ├── berth-protocol/          serde types for app<->sidecar messages; ts-rs exports
 │   ├── berth-sidecar-client/    spawn/supervise sidecar, NDJSON framing, request ids
@@ -1080,10 +1080,12 @@ owns it? what node type does it produce?
   Info.plist, the icon and a hard link; identifier `com.berth.app.dev`), so macOS
   shows Berth's name and icon. The app still finds its sidecar, connectors and slot
   types in the workspace: it uses `Contents/Resources/…` only where they exist.
-- The icon comes from SVG: `crates/berth-app/assets/logo.svg` is the mark
-  (traced from the original logo.png), `packaging/AppIcon.svg` sets it on Apple's
-  1024 grid, and `scripts/icon.sh` renders it with `berth-svg` + `iconutil`. No
-  generated image is checked in.
+- The icon comes from SVG: `crates/berth-app/assets/logo.svg` is the mark (five
+  strands braided over an open ring), `packaging/AppIcon.svg` sets it glowing on a
+  navy ground on Apple's 1024 grid, and `scripts/icon.sh` renders it with `berth-svg`
+  + `iconutil`. The one generated image checked in is `assets/logo.png`, the
+  Welcome window's (`berth-svg png crates/berth-app/assets/logo.svg
+  crates/berth-app/assets/logo.png 220`).
 - `scripts/dmg.sh` (`just dmg`) lays out the disk image with
   [dmgbuild](https://github.com/dmgbuild/dmgbuild), which writes the window's
   .DS_Store itself, so it needs no Finder and runs on CI. It is installed in
