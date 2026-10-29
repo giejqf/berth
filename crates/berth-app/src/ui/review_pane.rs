@@ -10,10 +10,10 @@ use std::sync::Arc;
 
 use berth_protocol::DiffPreset;
 use gpui::{
-    AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
-    KeyContext, ParentElement as _, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
-    relative,
+    AnyElement, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement as _,
+    IntoElement, KeyContext, ListSizingBehavior, ParentElement as _, Render, ScrollHandle,
+    ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _,
+    UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px, relative, uniform_list,
 };
 use gpui_component::input::{InputEvent, InputState};
 
@@ -49,7 +49,7 @@ pub struct ReviewPane {
     full_image: Option<std::path::PathBuf>,
     strip: ScrollHandle,
     /// The diff's file list, and the file it last scrolled into view.
-    file_rows: ScrollHandle,
+    file_rows: UniformListScrollHandle,
     file_row_shown: Option<usize>,
     findings: Entity<FindingsView>,
 }
@@ -94,7 +94,7 @@ impl ReviewPane {
             actual_size: false,
             full_image: None,
             strip: ScrollHandle::new(),
-            file_rows: ScrollHandle::new(),
+            file_rows: UniformListScrollHandle::new(),
             file_row_shown: None,
             findings,
         };
@@ -229,6 +229,93 @@ impl ReviewPane {
             self.diff.update(cx, DiffView::refresh_comments);
         }
         cx.notify();
+    }
+
+    /// The file list's rows in `range`: path, the comments not sent yet, +/−.
+    fn file_rows(
+        &self,
+        range: std::ops::Range<usize>,
+        cx: &mut Context<'_, Self>,
+    ) -> Vec<AnyElement> {
+        let t = Tokens::get(cx);
+        let diff = self.diff.read(cx);
+        let (files, current_file) = (diff.shared_diff(), diff.current_file());
+        let state = self.state.read(cx);
+        let comments = state
+            .selected_workflow_id()
+            .and_then(|w| state.comments.get(&w).cloned())
+            .unwrap_or_default();
+        let last = files.files.len().saturating_sub(1);
+        range
+            .filter_map(|i| files.files.get(i).map(|f| (i, f)))
+            .map(|(i, f)| {
+                let path = f.display_path().to_owned();
+                let unsent = comments
+                    .iter()
+                    .filter(|c| c.path == path && c.sent_in_node.is_none())
+                    .count();
+                let active = current_file == Some(i);
+                let hover = t.raised;
+                let row = div()
+                    .id(SharedString::from(format!("file-row-{i}")))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .h(px(26.))
+                    .px(px(8.))
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .font_family(MONO)
+                    .text_size(px(12.))
+                    .when(active, |d| d.bg(t.raised).text_color(t.text))
+                    .when(!active, |d| {
+                        d.text_color(t.text2).hover(move |s| s.bg(hover))
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.diff.update(cx, |d, cx| d.reveal_file(i, cx));
+                    }))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .child(path),
+                    )
+                    .when(unsent > 0, |d| {
+                        d.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .font_family(crate::theme::SANS)
+                                .text_color(t.text2)
+                                .child(dot(6., t.attention))
+                                .child(unsent.to_string()),
+                        )
+                    })
+                    .child(
+                        div()
+                            .ml_auto()
+                            .text_color(t.done)
+                            .child(format!("+{}", f.additions())),
+                    )
+                    .child(
+                        div()
+                            .text_color(if f.deletions() == 0 {
+                                t.text3
+                            } else {
+                                t.danger
+                            })
+                            .child(format!("−{}", f.deletions())),
+                    );
+                // Rows 1px apart (a uniform list has no gap of its own).
+                div()
+                    .when(i < last, |d| d.pb(px(1.)))
+                    .child(row)
+                    .into_any_element()
+            })
+            .collect()
     }
 
     fn post(&mut self, cx: &mut Context<'_, Self>) {
@@ -562,18 +649,19 @@ impl Render for ReviewPane {
         if current_file != self.file_row_shown {
             self.file_row_shown = current_file;
             if let Some(i) = current_file {
-                self.file_rows.scroll_to_item(i);
+                self.file_rows.scroll_to_item(i, ScrollStrategy::Nearest);
             }
         }
-        let mut file_rows = div()
-            .id("file-rows")
-            .flex()
-            .flex_col()
-            .gap(px(1.))
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .track_scroll(&self.file_rows);
+        // Only the rows in view are built: a large change has many files.
+        let file_rows = uniform_list(
+            "file-rows",
+            files.len(),
+            cx.processor(|this, range, _, cx| this.file_rows(range, cx)),
+        )
+        .track_scroll(&self.file_rows)
+        .with_sizing_behavior(ListSizingBehavior::Infer)
+        .flex_1()
+        .min_h_0();
         let file_list = div()
             .flex()
             .flex_col()
@@ -645,71 +733,6 @@ impl Render for ReviewPane {
                         )
                     }),
             );
-        for (i, f) in files.iter().enumerate() {
-            let path = f.display_path().to_owned();
-            let comments = all_comments
-                .iter()
-                .filter(|c| c.path == path && c.sent_in_node.is_none())
-                .count();
-            let active = current_file == Some(i);
-            let hover = t.raised;
-            file_rows = file_rows.child(
-                div()
-                    .id(SharedString::from(format!("file-row-{i}")))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .h(px(26.))
-                    .px(px(8.))
-                    .rounded(px(4.))
-                    .cursor_pointer()
-                    .font_family(MONO)
-                    .text_size(px(12.))
-                    .when(active, |d| d.bg(t.raised).text_color(t.text))
-                    .when(!active, |d| {
-                        d.text_color(t.text2).hover(move |s| s.bg(hover))
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.diff.update(cx, |d, cx| d.reveal_file(i, cx));
-                    }))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .child(path),
-                    )
-                    .when(comments > 0, |d| {
-                        d.child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(4.))
-                                .font_family(crate::theme::SANS)
-                                .text_color(t.text2)
-                                .child(dot(6., t.attention))
-                                .child(comments.to_string()),
-                        )
-                    })
-                    .child(
-                        div()
-                            .ml_auto()
-                            .text_color(t.done)
-                            .child(format!("+{}", f.additions())),
-                    )
-                    .child(
-                        div()
-                            .text_color(if f.deletions() == 0 {
-                                t.text3
-                            } else {
-                                t.danger
-                            })
-                            .child(format!("−{}", f.deletions())),
-                    ),
-            );
-        }
-
         // ---- body ----
         let body = if let Some(files) = files_body {
             files

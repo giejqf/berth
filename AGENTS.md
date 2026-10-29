@@ -993,7 +993,11 @@ settles nothing (ADR 0013).
 - Performance budget: 60 fps while streaming; event flow must virtualize; diff view
   must handle 10k-line diffs without jank. The flow is a GPUI `list` that splices only
   changed rows; raw events never touch the view (only nodes and the distilled round
-  activity, `berth_core::activity`).
+  activity, `berth_core::activity`). A list that can run long builds only the rows in
+  view: Open from history and the details sheet (`list`: rows differ in height; History
+  measures again only rows whose note line came or went), New workflow's origins, the
+  Changes file list and Rewind (`uniform_list`: one row height, the gap the row's own
+  padding). Lists bounded by the app (⌘K, slash commands, the rail) stay plain.
 - Feature `devtools` (dev only): `BERTH_DEV_SCRIPT` drives the live UI and
   `BERTH_DEV_SHOTS` receives window screenshots (see `src/devtools.rs`).
   `BERTH_DEV_SEED=question|working|review|comments|done|artifact|findings|usage-api|commands|empty|welcome` seeds the

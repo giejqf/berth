@@ -2,14 +2,17 @@
 //! workflows and Claude Code's own sessions for the repo and its worktrees,
 //! newest first. Opening one moves it into the selected slot, where it goes on.
 
+use std::rc::Rc;
+
 use berth_core::{SlotState, WorkflowState};
 use berth_protocol::OutcomeKind;
 use berth_slot::Placement;
 use gpui::{
-    App, AppContext as _, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, ScrollHandle,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
-    prelude::FluentBuilder as _, px,
+    AnyElement, App, AppContext as _, Context, DismissEvent, Entity, EventEmitter, FocusHandle,
+    Focusable, Hsla, InteractiveElement as _, IntoElement, KeyDownEvent, ListAlignment,
+    ListSizingBehavior, ListState, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, div, list, prelude::FluentBuilder as _,
+    px,
 };
 use gpui_component::input::{InputEvent, InputState};
 
@@ -25,7 +28,21 @@ pub struct HistoryDialog {
     state: Entity<RepoState>,
     query: Entity<InputState>,
     selected: usize,
-    scroll: ScrollHandle,
+    /// Only the rows in view are built: a repo's history can run long.
+    list: ListState,
+    /// The rows as last drawn, and which of them carry a note (a third line).
+    rows: Rc<Vec<Row>>,
+    noted: Vec<bool>,
+}
+
+/// One entry as its row shows it.
+struct Row {
+    title: String,
+    meta: String,
+    glyph: &'static str,
+    note: Option<(String, Hsla)>,
+    blocked: bool,
+    last_active: i64,
 }
 
 impl EventEmitter<DismissEvent> for HistoryDialog {}
@@ -163,7 +180,9 @@ impl HistoryDialog {
             state,
             query,
             selected: 0,
-            scroll: ScrollHandle::new(),
+            list: ListState::new(0, ListAlignment::Top, px(400.)),
+            rows: Rc::default(),
+            noted: Vec::new(),
         }
     }
 
@@ -194,8 +213,81 @@ impl HistoryDialog {
             .selected
             .saturating_add_signed(delta)
             .min(n.saturating_sub(1));
-        self.scroll.scroll_to_item(self.selected);
+        self.list.scroll_to_reveal_item(self.selected);
         cx.notify();
+    }
+
+    /// Row `i` as last computed, 2px apart.
+    fn row(&self, i: usize, cx: &mut Context<'_, Self>) -> AnyElement {
+        let Some(r) = self.rows.get(i) else {
+            return div().into_any_element();
+        };
+        let t = Tokens::get(cx);
+        let on = i == self.selected.min(self.rows.len().saturating_sub(1));
+        let hover = t.raised;
+        let row = div()
+            .id(SharedString::from(format!("history-{i}")))
+            .flex()
+            .items_start()
+            .gap(px(10.))
+            .px(px(10.))
+            .py(px(8.))
+            .rounded(px(6.))
+            .cursor_pointer()
+            .when(on, |d| d.bg(t.raised))
+            .when(!on, |d| d.hover(move |s| s.bg(hover)))
+            .when(r.blocked, |d| d.opacity(0.55))
+            .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, _, cx| {
+                this.selected = i;
+                cx.notify();
+                if ev.click_count() >= 2 {
+                    this.open(cx);
+                }
+            }))
+            .child(div().pt(px(2.)).child(icon(r.glyph, 14., t.text2)))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .medium()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .child(r.title.clone()),
+                    )
+                    .child(
+                        div()
+                            .ty(ty::META)
+                            .text_color(t.text2)
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .child(r.meta.clone()),
+                    )
+                    .children(
+                        r.note
+                            .clone()
+                            .map(|(text, color)| div().ty(ty::META).text_color(color).child(text)),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .ty(ty::META)
+                    .text_color(t.text3)
+                    .child(ago(r.last_active)),
+            );
+        // The list's own inset (a list pads only above and below).
+        div()
+            .px(px(6.))
+            .when(i + 1 < self.rows.len(), |d| d.pb(px(2.)))
+            .child(row)
+            .into_any_element()
     }
 
     fn open(&mut self, cx: &mut Context<'_, Self>) {
@@ -265,88 +357,53 @@ impl Render for HistoryDialog {
             .and_then(|t| t.slot.reuse(t.workflow.as_ref()).ok())
             .unwrap_or(false);
 
-        let mut list = div()
-            .id("history-list")
-            .track_scroll(&self.scroll)
-            .flex()
-            .flex_col()
-            .gap(px(2.))
-            .max_h(px(380.))
-            .overflow_y_scroll()
-            .px(px(6.))
-            .py(px(6.));
-        for (i, e) in entries.iter().enumerate() {
-            let on = i == selected;
-            let what = target.as_ref().map(|t| opens(e, t));
-            let glyph = match &e.workflow {
-                Some(w) => origin_icon(w.workflow.origin.kind),
-                None => "terminal",
-            };
-            let note = match &what {
-                Some(Opens::AlreadyHere) => Some(("Shown here".to_owned(), t.text3)),
-                Some(Opens::GoTo { slot, .. }) => Some((format!("Open in {slot} ↗"), t.accent)),
-                Some(Opens::Blocked(why)) => Some((why.clone(), t.text3)),
-                _ => None,
-            };
-            let hover = t.raised;
-            list = list.child(
-                div()
-                    .id(SharedString::from(format!("history-{i}")))
-                    .flex()
-                    .items_start()
-                    .gap(px(10.))
-                    .px(px(10.))
-                    .py(px(8.))
-                    .rounded(px(6.))
-                    .cursor_pointer()
-                    .when(on, |d| d.bg(t.raised))
-                    .when(!on, |d| d.hover(move |s| s.bg(hover)))
-                    .when(matches!(what, Some(Opens::Blocked(_))), |d| d.opacity(0.55))
-                    .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, _, cx| {
-                        this.selected = i;
-                        cx.notify();
-                        if ev.click_count() >= 2 {
-                            this.open(cx);
+        let rows: Vec<Row> = entries
+            .iter()
+            .map(|e| {
+                let what = target.as_ref().map(|t| opens(e, t));
+                Row {
+                    title: e.title.clone(),
+                    meta: meta(e, &repo),
+                    glyph: match &e.workflow {
+                        Some(w) => origin_icon(w.workflow.origin.kind),
+                        None => "terminal",
+                    },
+                    note: match &what {
+                        Some(Opens::AlreadyHere) => Some(("Shown here".to_owned(), t.text3)),
+                        Some(Opens::GoTo { slot, .. }) => {
+                            Some((format!("Open in {slot} ↗"), t.accent))
                         }
-                    }))
-                    .child(div().pt(px(2.)).child(icon(glyph, 14., t.text2)))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.))
-                            .flex_1()
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .medium()
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .whitespace_nowrap()
-                                    .child(e.title.clone()),
-                            )
-                            .child(
-                                div()
-                                    .ty(ty::META)
-                                    .text_color(t.text2)
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .whitespace_nowrap()
-                                    .child(meta(e, &repo)),
-                            )
-                            .children(note.map(|(text, color)| {
-                                div().ty(ty::META).text_color(color).child(text)
-                            })),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .ty(ty::META)
-                            .text_color(t.text3)
-                            .child(ago(e.last_active)),
-                    ),
-            );
+                        Some(Opens::Blocked(why)) => Some((why.clone(), t.text3)),
+                        _ => None,
+                    },
+                    blocked: matches!(what, Some(Opens::Blocked(_))),
+                    last_active: e.last_active,
+                }
+            })
+            .collect();
+        // Measured again only where a row's height may have changed.
+        let noted: Vec<bool> = rows.iter().map(|r| r.note.is_some()).collect();
+        if noted.len() == self.noted.len() {
+            for (i, _) in noted
+                .iter()
+                .zip(&self.noted)
+                .enumerate()
+                .filter(|(_, (a, b))| a != b)
+            {
+                self.list.splice(i..i + 1, 1);
+            }
+        } else {
+            self.list.reset(noted.len());
         }
+        self.noted = noted;
+        self.rows = Rc::new(rows);
+        let list = list(
+            self.list.clone(),
+            cx.processor(|this, ix: usize, _, cx| this.row(ix, cx)),
+        )
+        .with_sizing_behavior(ListSizingBehavior::Infer)
+        .max_h(px(380.))
+        .py(px(6.));
 
         let body = if loading {
             div()

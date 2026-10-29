@@ -3,14 +3,16 @@
 //! message comes back to the composer to edit and send again. Files stay as
 //! they are.
 
+use std::ops::Range;
 use std::sync::Arc;
 
 use berth_core::{WorkflowState, WorkflowView};
 use berth_protocol::NodePayload;
 use gpui::{
     App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, InteractiveElement as _,
-    IntoElement, KeyDownEvent, ParentElement as _, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
+    IntoElement, KeyDownEvent, ListSizingBehavior, ParentElement as _, Render, ScrollStrategy,
+    SharedString, StatefulInteractiveElement as _, Styled as _, UniformListScrollHandle, Window,
+    div, prelude::FluentBuilder as _, px, uniform_list,
 };
 
 use super::kit::{Btn, Size, TypeExt as _, clock, plural, radio};
@@ -41,7 +43,7 @@ pub struct RewindDialog {
     selected: usize,
     /// The agent is working: rewinding waits for an interrupt.
     working: bool,
-    scroll: ScrollHandle,
+    scroll: UniformListScrollHandle,
 }
 
 impl EventEmitter<DismissEvent> for RewindDialog {}
@@ -150,8 +152,8 @@ impl RewindDialog {
         let selected = node_id
             .and_then(|id| points.iter().position(|p| p.node_id == id))
             .unwrap_or(0);
-        let scroll = ScrollHandle::new();
-        scroll.scroll_to_item(selected);
+        let scroll = UniformListScrollHandle::new();
+        scroll.scroll_to_item(selected, ScrollStrategy::Nearest);
         Self {
             workflow_id: view.workflow.id.clone(),
             backend,
@@ -166,46 +168,21 @@ impl RewindDialog {
     fn step(&mut self, delta: isize, cx: &mut Context<'_, Self>) {
         let last = self.points.len().saturating_sub(1);
         self.selected = self.selected.saturating_add_signed(delta).min(last);
-        self.scroll.scroll_to_item(self.selected);
+        self.scroll
+            .scroll_to_item(self.selected, ScrollStrategy::Nearest);
         cx.notify();
     }
 
-    fn rewind(&mut self, cx: &mut Context<'_, Self>) {
-        if self.working {
-            return;
-        }
-        if let Some(p) = self.points.get(self.selected) {
-            self.backend.send(Command::Rewind {
-                workflow_id: self.workflow_id.clone(),
-                node_id: p.node_id.clone(),
-            });
-            cx.emit(DismissEvent);
-        }
-    }
-}
-
-impl Focusable for RewindDialog {
-    fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus.clone()
-    }
-}
-
-impl Render for RewindDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
+    /// The rows in `range`, each the same height (the gap is its own padding).
+    fn rows(&self, range: Range<usize>, cx: &mut Context<'_, Self>) -> Vec<gpui::AnyElement> {
         let t = Tokens::get(cx);
-        let mut list = div()
-            .id("rewind-points")
-            .track_scroll(&self.scroll)
-            .max_h(px(300.))
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .gap(px(6.));
-        for (i, p) in self.points.iter().enumerate() {
-            let on = i == self.selected;
-            let hover = t.border_strong;
-            list = list.child(
-                div()
+        let last = self.points.len().saturating_sub(1);
+        range
+            .filter_map(|i| self.points.get(i).map(|p| (i, p)))
+            .map(|(i, p)| {
+                let on = i == self.selected;
+                let hover = t.border_strong;
+                let row = div()
                     .id(SharedString::from(format!("rewind-{i}")))
                     .flex()
                     .items_start()
@@ -247,9 +224,47 @@ impl Render for RewindDialog {
                                     .whitespace_nowrap()
                                     .child(p.text.clone()),
                             ),
-                    ),
-            );
+                    );
+                div()
+                    .pb(px(if i == last { 0. } else { 6. }))
+                    .child(row)
+                    .into_any_element()
+            })
+            .collect()
+    }
+
+    fn rewind(&mut self, cx: &mut Context<'_, Self>) {
+        if self.working {
+            return;
         }
+        if let Some(p) = self.points.get(self.selected) {
+            self.backend.send(Command::Rewind {
+                workflow_id: self.workflow_id.clone(),
+                node_id: p.node_id.clone(),
+            });
+            cx.emit(DismissEvent);
+        }
+    }
+}
+
+impl Focusable for RewindDialog {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl Render for RewindDialog {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
+        let t = Tokens::get(cx);
+        // Only the rows in view are built: a long workflow has many messages.
+        let list = uniform_list(
+            "rewind-points",
+            self.points.len(),
+            cx.processor(|this, range: Range<usize>, _, cx| this.rows(range, cx)),
+        )
+        .track_scroll(&self.scroll)
+        .with_sizing_behavior(ListSizingBehavior::Infer)
+        .max_h(px(300.));
         let explain = match self.points.get(self.selected) {
             _ if self.working => div()
                 .text_color(t.danger)

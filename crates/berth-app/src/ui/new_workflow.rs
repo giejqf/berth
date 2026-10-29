@@ -2,15 +2,19 @@
 //! items), optional instructions for every round, and where it runs: a new slot
 //! of some type, or an existing slot reused as it is (§6.3).
 
+use std::ops::Range;
+use std::rc::Rc;
+
 use berth_protocol::{Origin, OriginKind};
 use gpui::{
-    App, AppContext as _, ClickEvent, Context, DismissEvent, Entity, EventEmitter, FocusHandle,
-    Focusable, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _,
-    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
-    prelude::FluentBuilder as _, px,
+    AnyElement, App, AppContext as _, ClickEvent, Context, DismissEvent, Entity, EventEmitter,
+    FocusHandle, Focusable, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
+    ListSizingBehavior, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
+    Styled as _, UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px,
+    uniform_list,
 };
 use gpui_component::input::{InputEvent, InputState, TextareaState};
-use gpui_component::scroll::ScrollableElement as _;
+use gpui_component::scroll::Scrollbar;
 
 use super::RepoState;
 use super::kit::{Btn, Size, TypeExt as _, icon, input_frame, radio, slot_number, spinner};
@@ -34,6 +38,10 @@ pub struct NewWorkflowForm {
     custom: Entity<TextareaState>,
     search: Entity<InputState>,
     selected: Option<OriginChoice>,
+    /// The listed origins the search leaves, as last drawn; only the rows
+    /// in view are built (a source can list hundreds).
+    shown: Rc<Vec<OriginChoice>>,
+    origin_scroll: UniformListScrollHandle,
     slot_type: Option<String>,
     /// `Some` to reuse a slot (`Some(None)`: none picked yet) instead of
     /// creating one.
@@ -106,6 +114,8 @@ impl NewWorkflowForm {
             custom,
             search,
             selected: None,
+            shown: Rc::default(),
+            origin_scroll: UniformListScrollHandle::new(),
             slot_type,
             reuse: None,
             submitted: false,
@@ -256,6 +266,119 @@ impl NewWorkflowForm {
             }
             Source::List(_) => self.selected.clone().map(|c| c.into_origin(custom)),
         }
+    }
+
+    /// The listed origins in `range`: ref, title (a PostHog error's message
+    /// instead of its id), and a link out, 2px apart.
+    fn origin_rows(&self, range: Range<usize>, cx: &mut Context<'_, Self>) -> Vec<AnyElement> {
+        let t = Tokens::get(cx);
+        let last = self.shown.len().saturating_sub(1);
+        range
+            .filter_map(|i| self.shown.get(i).map(|item| (i, item)))
+            .map(|(i, item)| {
+                let selected = self
+                    .selected
+                    .as_ref()
+                    .is_some_and(|s| s.r#ref == item.r#ref);
+                let choice = item.clone();
+                let hover = t.raised;
+                let group = SharedString::from(format!("origin-{i}"));
+                // PostHog refs are issue ids: show the error's message instead.
+                let error = item.kind == OriginKind::Posthog;
+                let preview = error
+                    .then(|| item.body.lines().next().unwrap_or_default().to_owned())
+                    .filter(|p| !p.trim().is_empty());
+                let row = div()
+                    .id(group.clone())
+                    .group(group.clone())
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(px(10.))
+                    .min_h(px(32.))
+                    .px(px(10.))
+                    .rounded(px(6.))
+                    .border_1()
+                    .cursor_pointer()
+                    .when(selected, |d| d.border_color(t.accent).bg(t.accent_soft))
+                    .when(!selected, |d| {
+                        d.border_color(gpui::transparent_black())
+                            .hover(move |s| s.bg(hover))
+                    })
+                    .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                        this.selected = Some(choice.clone());
+                        if e.click_count() >= 2 {
+                            this.submit(window, cx);
+                        }
+                        cx.notify();
+                    }))
+                    .when(!error, |d| {
+                        d.child(
+                            div()
+                                .min_w(px(56.))
+                                .flex_none()
+                                .whitespace_nowrap()
+                                .font_family(MONO)
+                                .ty(ty::META)
+                                .text_color(t.text3)
+                                .child(item.r#ref.clone()),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .items_baseline()
+                            .gap(px(8.))
+                            .whitespace_nowrap()
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(item.title.clone()),
+                            )
+                            .when_some(preview, |d, p| {
+                                d.child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .ty(ty::META)
+                                        .text_color(t.text3)
+                                        .child(p),
+                                )
+                            }),
+                    )
+                    .when_some(item.url.clone(), |d, url| {
+                        // Shown on hover and on the selected row.
+                        d.child(
+                            div()
+                                .flex_none()
+                                .when(!selected, |d| {
+                                    d.opacity(0.).group_hover(group.clone(), |s| s.opacity(1.))
+                                })
+                                .child(
+                                    Btn::new(SharedString::from(format!("origin-open-{i}")))
+                                        .ghost()
+                                        .size(Size::S22)
+                                        .icon("external-link", 14.)
+                                        .tooltip(super::nodes::open_origin_label(item.kind))
+                                        .on_click(move |_, _, cx| {
+                                            cx.stop_propagation();
+                                            cx.open_url(&url);
+                                        }),
+                                ),
+                        )
+                    });
+                div()
+                    .when(i < last, |d| d.pb(px(2.)))
+                    .child(row)
+                    .into_any_element()
+            })
+            .collect()
     }
 
     fn submit(&mut self, _window: &mut Window, cx: &mut Context<'_, Self>) {
@@ -454,14 +577,7 @@ impl Render for NewWorkflowForm {
                         .child(e.clone())
                         .into_any_element(),
                     Some(Ok(items)) => {
-                        let mut col = div()
-                            .id("origin-list")
-                            .flex()
-                            .flex_col()
-                            .max_h(px(220.))
-                            .overflow_y_scrollbar()
-                            .gap(px(2.));
-                        let filtered: Vec<&OriginChoice> = items
+                        let filtered: Vec<OriginChoice> = items
                             .iter()
                             .filter(|i| {
                                 // What the row shows: a PostHog row shows the message, not the id.
@@ -474,126 +590,41 @@ impl Render for NewWorkflowForm {
                                     || i.title.to_lowercase().contains(&query)
                                     || shown.to_lowercase().contains(&query)
                             })
+                            .cloned()
                             .collect();
-                        if filtered.is_empty() {
-                            col = col.child(
-                                div()
-                                    .p(px(12.))
-                                    .ty(ty::META)
-                                    .text_color(t.text3)
-                                    .child("Nothing here."),
-                            );
-                        }
-                        for (i, item) in filtered.into_iter().enumerate() {
-                            let selected = self
-                                .selected
-                                .as_ref()
-                                .is_some_and(|s| s.r#ref == item.r#ref);
-                            let choice = item.clone();
-                            let hover = t.raised;
-                            let group = SharedString::from(format!("origin-{i}"));
-                            // PostHog refs are issue ids: show the error's message instead.
-                            let error = item.kind == OriginKind::Posthog;
-                            let preview = error
-                                .then(|| item.body.lines().next().unwrap_or_default().to_owned())
-                                .filter(|p| !p.trim().is_empty());
-                            col = col.child(
-                                div()
-                                    .id(group.clone())
-                                    .group(group.clone())
-                                    .flex()
-                                    .flex_none()
-                                    .items_center()
-                                    .gap(px(10.))
-                                    .min_h(px(32.))
-                                    .px(px(10.))
-                                    .rounded(px(6.))
-                                    .border_1()
-                                    .cursor_pointer()
-                                    .when(selected, |d| d.border_color(t.accent).bg(t.accent_soft))
-                                    .when(!selected, |d| {
-                                        d.border_color(gpui::transparent_black())
-                                            .hover(move |s| s.bg(hover))
-                                    })
-                                    .on_click(cx.listener(
-                                        move |this, e: &ClickEvent, window, cx| {
-                                            this.selected = Some(choice.clone());
-                                            if e.click_count() >= 2 {
-                                                this.submit(window, cx);
-                                            }
-                                            cx.notify();
-                                        },
-                                    ))
-                                    .when(!error, |d| {
-                                        d.child(
-                                            div()
-                                                .min_w(px(56.))
-                                                .flex_none()
-                                                .whitespace_nowrap()
-                                                .font_family(MONO)
-                                                .ty(ty::META)
-                                                .text_color(t.text3)
-                                                .child(item.r#ref.clone()),
-                                        )
-                                    })
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .flex()
-                                            .items_baseline()
-                                            .gap(px(8.))
-                                            .whitespace_nowrap()
-                                            .child(
-                                                div()
-                                                    .min_w_0()
-                                                    .overflow_hidden()
-                                                    .text_ellipsis()
-                                                    .child(item.title.clone()),
-                                            )
-                                            .when_some(preview, |d, p| {
-                                                d.child(
-                                                    div()
-                                                        .flex_1()
-                                                        .min_w_0()
-                                                        .overflow_hidden()
-                                                        .text_ellipsis()
-                                                        .ty(ty::META)
-                                                        .text_color(t.text3)
-                                                        .child(p),
-                                                )
-                                            }),
+                        let n = filtered.len();
+                        self.shown = Rc::new(filtered);
+                        if n == 0 {
+                            div()
+                                .p(px(12.))
+                                .ty(ty::META)
+                                .text_color(t.text3)
+                                .child("Nothing here.")
+                                .into_any_element()
+                        } else {
+                            div()
+                                .relative()
+                                .child(
+                                    uniform_list(
+                                        "origin-list",
+                                        n,
+                                        cx.processor(|this, range, _, cx| {
+                                            this.origin_rows(range, cx)
+                                        }),
                                     )
-                                    .when_some(item.url.clone(), |d, url| {
-                                        // Shown on hover and on the selected row.
-                                        d.child(
-                                            div()
-                                                .flex_none()
-                                                .when(!selected, |d| {
-                                                    d.opacity(0.).group_hover(group.clone(), |s| {
-                                                        s.opacity(1.)
-                                                    })
-                                                })
-                                                .child(
-                                                    Btn::new(SharedString::from(format!(
-                                                        "origin-open-{i}"
-                                                    )))
-                                                    .ghost()
-                                                    .size(Size::S22)
-                                                    .icon("external-link", 14.)
-                                                    .tooltip(super::nodes::open_origin_label(
-                                                        item.kind,
-                                                    ))
-                                                    .on_click(move |_, _, cx| {
-                                                        cx.stop_propagation();
-                                                        cx.open_url(&url);
-                                                    }),
-                                                ),
-                                        )
-                                    }),
-                            );
+                                    .track_scroll(&self.origin_scroll)
+                                    .with_sizing_behavior(ListSizingBehavior::Infer)
+                                    .max_h(px(220.)),
+                                )
+                                .child(
+                                    div().absolute().inset_0().child(
+                                        Scrollbar::vertical(&self.origin_scroll)
+                                            .id("origin-scrollbar")
+                                            .viewport_from_layout(),
+                                    ),
+                                )
+                                .into_any_element()
                         }
-                        col.into_any_element()
                     }
                 };
                 div()
