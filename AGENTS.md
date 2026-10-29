@@ -959,7 +959,16 @@ settles nothing (ADR 0013).
 - Dialogs (New workflow, Settings, ⌘K, confirmations) are drawn by the app
   (`ui/modal.rs`): scrim, 10px radius, one soft shadow, ⌘↩ confirms, esc closes.
   None is taller than the window less 24px around it: a long one's body scrolls
-  between its header and footer.
+  between its header and footer. A scrim and a hover card (`occlude`) keep what
+  lies under them from hovering, setting the cursor or taking clicks.
+- **Cursors**: the pointing hand on whatever acts on a click (buttons, rows, tabs,
+  links; Component's buttons too, which show the arrow on their own), never on a
+  disabled one. The I-beam over text you can select (`ui/select.rs`) and over a
+  field's whole box, its padding too (`kit::input_frame`: a click anywhere in it
+  goes to the field); in a terminal, the arrow while its program takes the mouse
+  (shift brings the I-beam back). A resize edge keeps its cursor for the whole drag.
+  A dragged slot shows the arrow; the rail's Slots header an open hand, closed
+  while dragged (GPUI holds a dragged element's base cursor across the window).
 - Theme tokens in `berth-app/src/theme.rs`; light/dark follow the system unless
   Settings › Appearance picks one (setting `theme`). Views use `ui/kit.rs` primitives
   and never invent sizes or colors.

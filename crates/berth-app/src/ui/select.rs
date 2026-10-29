@@ -10,9 +10,9 @@ use std::cell::Cell;
 use std::ops::Range;
 
 use gpui::{
-    App, BorderStyle, Bounds, Corners, Edges, Element, ElementId, GlobalElementId, Hitbox,
-    HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, PaintQuad, Pixels, Point,
-    SharedString, StyledText, TextRun, Window, transparent_black,
+    App, BorderStyle, Bounds, Corners, CursorStyle, Edges, Element, ElementId, GlobalElementId,
+    Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, PaintQuad, Pixels,
+    Point, SharedString, StyledText, TextRun, Window, transparent_black,
 };
 use gpui_base::{TextSelection, TextSelectionHandle, TextSelectionRegistration, TextSelectionRun};
 
@@ -129,10 +129,12 @@ impl Element for Selectable {
         inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         handle: &mut Self::RequestLayoutState,
-        _: &mut Self::PrepaintState,
+        hitbox: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
+        // Text you can select shows the I-beam, as it does across macOS.
+        window.set_cursor_style(CursorStyle::IBeam, hitbox);
         let layout = self.styled.layout().clone();
         let before = TextSelection::selected_text(window, cx);
         let projection = handle.update_runs(

@@ -11,10 +11,11 @@ use std::time::{Duration, Instant};
 
 use berth_protocol::DiffPreset;
 use gpui::{
-    AnyView, App, AppContext as _, Context, DismissEvent, DragMoveEvent, Entity, EntityId,
-    EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, SharedString,
-    Styled as _, Subscription, Window, div, point, prelude::FluentBuilder as _, px,
+    AnyView, App, AppContext as _, Context, CursorStyle, DismissEvent, DragMoveEvent, Entity,
+    EntityId, EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render,
+    SharedString, Styled as _, Subscription, Window, canvas, div, point,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_component::notification::Notification;
 use gpui_component::{TitleBar, WindowExt as _};
@@ -399,6 +400,7 @@ impl RepoWindow {
         };
         if e.pressed_button != Some(MouseButton::Left) {
             self.terminal_drag = None;
+            cx.notify();
             return;
         }
         self.terminal_height = clamp_terminal(h + (y - e.position.y), window);
@@ -936,6 +938,11 @@ impl Render for RepoWindow {
         }
         let t = Tokens::get(cx);
         let drop_hint = super::windows::hint_for(&self.state.read(cx).window_id, cx);
+        let resizing = if self.terminal_drag.is_some() {
+            Some(CursorStyle::ResizeRow)
+        } else {
+            self.review_drag.map(|_| CursorStyle::ResizeColumn)
+        };
         let state = self.state.read(cx);
         let has_slots = !state.slots.is_empty();
         let has_workflow = state.selected_view().is_some();
@@ -1234,7 +1241,10 @@ impl Render for RepoWindow {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
-                    this.terminal_drag = None;
+                    // Drawn again without the resize cursor.
+                    if this.terminal_drag.take().is_some() {
+                        cx.notify();
+                    }
                     this.end_review_drag(cx);
                 }),
             )
@@ -1394,6 +1404,20 @@ impl Render for RepoWindow {
             )
             .when_some(drop_hint, |d, (label, target)| {
                 d.child(drop_overlay(&t, label, target))
+            })
+            // A resize keeps its cursor wherever the pointer goes, not just
+            // over the thin edge it started on.
+            .when_some(resizing, |d, style| {
+                d.child(
+                    canvas(
+                        |_, _, _| (),
+                        move |_, (), window, _| {
+                            window.set_window_cursor_style(style);
+                        },
+                    )
+                    .absolute()
+                    .size_full(),
+                )
             })
             .when_some(closing, |d, (view, p)| {
                 d.child(modal::fading(&t, view.into_any_element(), p))

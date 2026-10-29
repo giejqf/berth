@@ -437,7 +437,7 @@ impl Render for HistoryDialog {
                     .px(px(20.))
                     .pt(px(12.))
                     .child(
-                        super::kit::field_frame(&t, true, false)
+                        super::kit::input_frame(&t, true, false, self.query.read(cx).focus_handle(cx))
                             .h(px(34.))
                             .px(px(10.))
                             .items_center()

@@ -610,6 +610,20 @@ pub fn field_frame(t: &Tokens, focused: bool, error: bool) -> Div {
         .when(focused && !error, |d| d.shadow(vec![ring(t)]))
 }
 
+/// [`field_frame`] around one field (`field` its focus): the I-beam over all
+/// of it, its padding too, and a click anywhere in it goes to the field, as
+/// in a native text field.
+pub fn input_frame(t: &Tokens, focused: bool, error: bool, field: gpui::FocusHandle) -> Div {
+    field_frame(t, focused, error).cursor_text().on_mouse_down(
+        gpui::MouseButton::Left,
+        move |_, window, cx| {
+            window.focus(&field, cx);
+            // Else a focusable parent takes it back on the same press.
+            window.prevent_default();
+        },
+    )
+}
+
 /// The 2px accent-soft focus ring (box-shadow 0 0 0 2px).
 pub fn ring(t: &Tokens) -> BoxShadow {
     BoxShadow {

@@ -13,7 +13,7 @@ use gpui_component::input::{InputEvent, InputState, TextareaState};
 use gpui_component::scroll::ScrollableElement as _;
 
 use super::RepoState;
-use super::kit::{Btn, Size, TypeExt as _, field_frame, icon, radio, slot_number, spinner};
+use super::kit::{Btn, Size, TypeExt as _, icon, input_frame, radio, slot_number, spinner};
 use super::modal;
 use super::sign_in::SignInDialog;
 use crate::backend::{AgentFix, Command, NewWorkflow, OriginChoice, OriginSource};
@@ -394,23 +394,33 @@ impl Render for NewWorkflowForm {
                     &t,
                     "What should happen?",
                     None,
-                    field_frame(&t, focused(&self.title), false)
-                        .h(px(38.))
-                        .px(px(12.))
-                        .items_center()
-                        .child(super::kit::bare_input(&self.title)),
+                    input_frame(
+                        &t,
+                        focused(&self.title),
+                        false,
+                        self.title.read(cx).focus_handle(cx),
+                    )
+                    .h(px(38.))
+                    .px(px(12.))
+                    .items_center()
+                    .child(super::kit::bare_input(&self.title)),
                 ))
                 .child(labelled(
                     &t,
                     "Details, context, constraints",
                     Some("optional"),
-                    field_frame(&t, focused_area(&self.body), false)
-                        .min_h(px(82.))
-                        .px(px(2.))
-                        .child(super::kit::textarea_sized(
-                            &self.body,
-                            gpui_component::Size::Medium,
-                        )),
+                    input_frame(
+                        &t,
+                        focused_area(&self.body),
+                        false,
+                        self.body.read(cx).focus_handle(cx),
+                    )
+                    .min_h(px(82.))
+                    .px(px(2.))
+                    .child(super::kit::textarea_sized(
+                        &self.body,
+                        gpui_component::Size::Medium,
+                    )),
                 ))
                 .into_any_element(),
             Source::List(src) if !gh_ok && !matches!(src, OriginSource::Connector(_)) => div()
@@ -591,16 +601,21 @@ impl Render for NewWorkflowForm {
                     .flex_col()
                     .gap(px(8.))
                     .child(
-                        field_frame(&t, focused(&self.search), false)
-                            .h(px(34.))
-                            .px(px(10.))
-                            .gap(px(8.))
-                            .items_center()
-                            .child(super::kit::bare_input(&self.search))
-                            // The last list stays while a newer one loads.
-                            .when(updating, |d| {
-                                d.child(spinner("origins-updating", 10, t.text3))
-                            }),
+                        input_frame(
+                            &t,
+                            focused(&self.search),
+                            false,
+                            self.search.read(cx).focus_handle(cx),
+                        )
+                        .h(px(34.))
+                        .px(px(10.))
+                        .gap(px(8.))
+                        .items_center()
+                        .child(super::kit::bare_input(&self.search))
+                        // The last list stays while a newer one loads.
+                        .when(updating, |d| {
+                            d.child(spinner("origins-updating", 10, t.text3))
+                        }),
                     )
                     .child(list)
                     .into_any_element()
@@ -819,7 +834,7 @@ impl Render for NewWorkflowForm {
                         &t,
                         "Instructions for the agent",
                         Some("optional, applies to every round"),
-                        field_frame(&t, focused_area(&self.custom), false)
+                        input_frame(&t, focused_area(&self.custom), false, self.custom.read(cx).focus_handle(cx))
                             .min_h(px(62.))
                             .px(px(2.))
                                 .child(super::kit::textarea_sized(&self.custom, gpui_component::Size::Medium)),

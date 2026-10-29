@@ -11,7 +11,7 @@ use gpui::{
 };
 use gpui_component::input::{InputEvent, InputState};
 
-use super::kit::{Btn, Size, TypeExt as _, caption, dot, field_frame, icon, radio};
+use super::kit::{Btn, Size, TypeExt as _, caption, dot, icon, input_frame, radio};
 use super::modal::{self, ConfirmDialog};
 use super::sign_in::SignInDialog;
 use super::{EnvGlobal, RepoState};
@@ -470,7 +470,7 @@ impl Render for SettingsForm {
                                     .child(key.clone()),
                             )
                             .child(
-                                field_frame(&t, focused, false)
+                                input_frame(&t, focused, false, input.read(cx).focus_handle(cx))
                                     .flex_1()
                                     .h(px(28.))
                                     .px(px(8.))
@@ -599,7 +599,7 @@ impl Render for SettingsForm {
                             .child(models)
                             .when(self.custom_open || custom, |d| {
                                 d.child(
-                                    field_frame(&t, custom_focused, false)
+                                    input_frame(&t, custom_focused, false, self.custom_model.read(cx).focus_handle(cx))
                                         .h(px(34.))
                                         .px(px(10.))
                                         .items_center()

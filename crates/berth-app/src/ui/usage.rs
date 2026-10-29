@@ -165,6 +165,7 @@ impl Render for UsageMeter {
                 now,
             )
             .id("usage-card")
+            .occlude()
             .opacity(fade)
             .on_hover(cx.listener(|this, on: &bool, _, cx| this.hover(*on, cx)))
             .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close(cx)));

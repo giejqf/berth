@@ -37,6 +37,8 @@ pub fn overlay(
                 .absolute()
                 .inset_0()
                 .bg(t.scrim)
+                // What lies under it takes no hover, cursor or click.
+                .occlude()
                 .on_click(move |_, window, cx| on_scrim(window, cx))
                 .with_animation(
                     ("scrim-in", key),

@@ -20,7 +20,7 @@ use gpui_component::input::{InputEvent, InputState};
 use self::findings::FindingsView;
 use super::RepoState;
 use super::diff_view::DiffView;
-use super::kit::{Btn, Size, TypeExt as _, caption, dot, field_frame, icon, spinner};
+use super::kit::{Btn, Size, TypeExt as _, caption, dot, icon, input_frame, spinner};
 use super::nodes::diff_stats;
 use crate::backend::{Command, DiffResult};
 use crate::keymap::{
@@ -508,7 +508,7 @@ impl Render for ReviewPane {
                 .items_center()
                 .gap(px(6.))
                 .child(
-                    field_frame(&t, false, false)
+                    input_frame(&t, false, false, self.custom_from.read(cx).focus_handle(cx))
                         .h(px(28.))
                         .px(px(8.))
                         .flex_1()
@@ -516,7 +516,7 @@ impl Render for ReviewPane {
                         .child(super::kit::bare_input(&self.custom_from)),
                 )
                 .child(
-                    field_frame(&t, false, false)
+                    input_frame(&t, false, false, self.custom_to.read(cx).focus_handle(cx))
                         .h(px(28.))
                         .px(px(8.))
                         .flex_1()
@@ -628,14 +628,19 @@ impl Render for ReviewPane {
                     .when(open, |d| {
                         d.child(
                             div().ml_auto().w(px(158.)).child(
-                                field_frame(&t, filter_focused, false)
-                                    .border_color(if filter_focused { t.accent } else { t.border })
-                                    .rounded(px(4.))
-                                    .h(px(24.))
-                                    .px(px(8.))
-                                    .items_center()
-                                    .text_size(px(12.))
-                                    .child(super::kit::bare_input(&self.filter).text_size(px(12.))),
+                                input_frame(
+                                    &t,
+                                    filter_focused,
+                                    false,
+                                    self.filter.read(cx).focus_handle(cx),
+                                )
+                                .border_color(if filter_focused { t.accent } else { t.border })
+                                .rounded(px(4.))
+                                .h(px(24.))
+                                .px(px(8.))
+                                .items_center()
+                                .text_size(px(12.))
+                                .child(super::kit::bare_input(&self.filter).text_size(px(12.))),
                             ),
                         )
                     }),

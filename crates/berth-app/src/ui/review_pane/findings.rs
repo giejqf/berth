@@ -27,7 +27,7 @@ use crate::keymap::{
 use crate::theme::{MONO, Tokens, ty};
 use crate::ui::RepoState;
 use crate::ui::kit::{
-    Btn, Size, Tone, TypeExt as _, chip, clock, dialog_shadow, dot, field_frame, icon, kbd, plural,
+    Btn, Size, Tone, TypeExt as _, chip, clock, dialog_shadow, dot, icon, input_frame, kbd, plural,
 };
 use crate::ui::motion;
 use crate::ui::rich::{self, clamped, rich};
@@ -483,6 +483,7 @@ impl FindingsView {
             .rounded(px(8.))
             .shadow(dialog_shadow())
             .opacity(fade)
+            .occlude()
             .child(
                 div()
                     .flex()
@@ -752,7 +753,7 @@ impl Render for FindingsView {
                         div()
                             .pl(px(INDENT))
                             .child(
-                                field_frame(&t, focused, false)
+                                input_frame(&t, focused, false, input.read(cx).focus_handle(cx))
                                     .h(px(30.))
                                     .px(px(8.))
                                     .items_center()
@@ -782,6 +783,7 @@ impl Render for FindingsView {
                 .py(px(10.))
                 .border_b_1()
                 .border_color(t.border)
+                .cursor_pointer()
                 .when(on, |d| d.bg(t.card))
                 .when(!on, |d| d.hover(move |s| s.bg(hover)))
                 .on_hover(

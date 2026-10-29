@@ -8,7 +8,7 @@ use gpui::{
 };
 use gpui_component::input::{InputEvent, InputState};
 
-use super::kit::{Btn, Size, TypeExt as _, bare_input, field_frame};
+use super::kit::{Btn, Size, TypeExt as _, bare_input, input_frame};
 use super::modal::{footer, frame, header};
 use super::slot_rail::{default_title, slot_title};
 use crate::backend::{BackendHandle, Command, SlotEntry};
@@ -106,7 +106,7 @@ impl Render for RenameSlotDialog {
                     .pt(px(12.))
                     .pb(px(20.))
                     .child(
-                        field_frame(&t, focused, false)
+                        input_frame(&t, focused, false, self.input.read(cx).focus_handle(cx))
                             .h(px(38.))
                             .px(px(12.))
                             .items_center()

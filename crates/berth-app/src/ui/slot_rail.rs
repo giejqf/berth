@@ -401,9 +401,14 @@ impl Render for SlotRail {
                 .px(px(8.))
                 .py(px(6.))
                 .rounded(px(6.))
-                .cursor_pointer()
+                // The pointer on hover; a drag holds the base cursor across
+                // the window, so a slot being dragged shows the arrow.
+                .cursor_default()
                 .when(is_selected, |d| d.bg(t.raised))
-                .when(!is_selected, |d| d.hover(move |s| s.bg(hover)))
+                .hover(move |s| {
+                    let s = s.cursor_pointer();
+                    if is_selected { s } else { s.bg(hover) }
+                })
                 .when(is_selected && focused, |d| {
                     d.shadow(vec![BoxShadow {
                         color: t.accent,
@@ -523,7 +528,10 @@ impl Render for SlotRail {
                         div()
                             .id("rail-header")
                             .flex_1()
-                            .cursor_grab()
+                            // An open hand on hover, closed while dragged (a
+                            // drag holds the base cursor).
+                            .cursor_grabbing()
+                            .hover(gpui::Styled::cursor_grab)
                             .on_drag(window_drag, |d, _, _, cx| {
                                 cx.new(|_| DragChip::new(&Dragged::Window(d.clone())))
                             })
@@ -618,9 +626,13 @@ pub fn collapsed(state: &Entity<RepoState>, t: &Tokens, cx: &App) -> Div {
                 .flex()
                 .items_center()
                 .justify_center()
-                .cursor_pointer()
+                // As the rail's rows: the arrow while dragged.
+                .cursor_default()
                 .when(is_selected, |d| d.bg(t.raised))
-                .when(!is_selected, |d| d.hover(move |s| s.bg(hover)))
+                .hover(move |s| {
+                    let s = s.cursor_pointer();
+                    if is_selected { s } else { s.bg(hover) }
+                })
                 .tooltip(move |w, cx| Tooltip::new(tip.clone()).build(w, cx))
                 .on_click(move |_, _, cx| {
                     let id = id.clone();

@@ -598,6 +598,8 @@ fn more_menu(t: &Tokens) -> impl IntoElement {
         .flex_none()
         .w(px(28.))
         .h(px(28.))
+        // As Berth's own buttons (Component's show the arrow).
+        .cursor_pointer()
         .child(icon("more", 16., color))
         .dropdown_menu(|menu, _, _| {
             menu.menu("Workflow diff", Box::new(crate::keymap::ReviewWorkflow))

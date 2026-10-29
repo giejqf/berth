@@ -832,6 +832,9 @@ impl Render for TerminalView {
         let focus = self.focus.clone();
         let marked = self.marked.clone();
         let exit = self.exit;
+        // A program that takes the mouse (vim, htop) gets the arrow, as in
+        // VS Code; shift, which selects over it, the I-beam again.
+        let mouse = self.reports_mouse(window.modifiers().shift).is_some();
 
         let grid = canvas(
             move |bounds, window, _cx| {
@@ -936,7 +939,18 @@ impl Render for TerminalView {
             .bg(ground)
             .px(PAD_X)
             .py(PAD_Y)
-            .cursor_text()
+            .map(|d| {
+                if mouse {
+                    d.cursor_default()
+                } else {
+                    d.cursor_text()
+                }
+            })
+            .on_modifiers_changed(cx.listener(move |this, _, window, cx| {
+                if this.reports_mouse(window.modifiers().shift).is_some() != mouse {
+                    cx.notify();
+                }
+            }))
             .on_key_down(cx.listener(Self::key_down))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::paste))

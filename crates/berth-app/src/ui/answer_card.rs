@@ -13,7 +13,7 @@ use gpui::{
 };
 use gpui_component::input::{InputEvent, InputState};
 
-use super::kit::{Btn, Size, TypeExt as _, field_frame, key_chip, keyed, radio, shrink};
+use super::kit::{Btn, Size, TypeExt as _, input_frame, key_chip, keyed, radio, shrink};
 use super::rich::{self, rich};
 use crate::backend::{BackendHandle, Command};
 use crate::keymap::{
@@ -342,11 +342,16 @@ impl Render for AnswerCard {
                                     )
                                 })
                                 .child(
-                                    field_frame(&t, input_focused, false)
-                                        .h(px(34.))
-                                        .px(px(10.))
-                                        .items_center()
-                                        .child(super::kit::bare_input(&self.input).w_full()),
+                                    input_frame(
+                                        &t,
+                                        input_focused,
+                                        false,
+                                        self.input.read(cx).focus_handle(cx),
+                                    )
+                                    .h(px(34.))
+                                    .px(px(10.))
+                                    .items_center()
+                                    .child(super::kit::bare_input(&self.input).w_full()),
                                 ),
                         )
                     }),

@@ -3,8 +3,8 @@
 
 use gpui::{
     Action, App, AppContext as _, Context, DismissEvent, Entity, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
+    Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, ParentElement as _,
+    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
     prelude::FluentBuilder as _, px,
 };
 use gpui_component::input::{InputEvent, InputState};
@@ -175,7 +175,9 @@ impl Render for Palette {
                     _ => {}
                 }
             }))
-            .child(
+            .child({
+                // The whole band is the field.
+                let field = self.query.read(cx).focus_handle(cx);
                 div()
                     .h(px(48.))
                     .px(px(16.))
@@ -184,8 +186,13 @@ impl Render for Palette {
                     .border_b_1()
                     .border_color(t.border)
                     .text_size(px(15.))
-                    .child(super::kit::bare_input(&self.query)),
-            )
+                    .cursor_text()
+                    .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                        window.focus(&field, cx);
+                        window.prevent_default();
+                    })
+                    .child(super::kit::bare_input(&self.query))
+            })
             .child(list)
     }
 }
