@@ -178,6 +178,7 @@ impl Shared {
             | Command::AnswerReview { workflow_id, .. }
             | Command::Rewind { workflow_id, .. }
             | Command::Interrupt { workflow_id }
+            | Command::SetStatus { workflow_id, .. }
             | Command::Background { workflow_id }
             | Command::StopTask { workflow_id, .. }
             | Command::ReadTask { workflow_id, .. }
@@ -302,6 +303,23 @@ impl Shared {
                 slot_id,
                 open,
             } => self.open_from_history(&repo_id, &slot_id, open).await,
+            Command::SetStatus {
+                workflow_id,
+                status,
+            } => {
+                let repo_id = {
+                    let core = self.core();
+                    let wf = core.store.workflow(&workflow_id)?;
+                    let slot = core.store.slot(&wf.slot_id)?;
+                    if let Some(why) = berth_core::ManualStatus::locked(slot.state, wf.state) {
+                        return Err(anyhow!(why));
+                    }
+                    core.store.set_workflow_status(&workflow_id, status)?;
+                    slot.repo_id
+                };
+                self.emit_slots(&repo_id);
+                Ok(())
+            }
             Command::Interrupt { workflow_id } => {
                 let session = lock(&self.sessions).get(&workflow_id).cloned();
                 if let Some(s) = session {

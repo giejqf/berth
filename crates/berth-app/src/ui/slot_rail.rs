@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use berth_core::{SlotState, WorkflowState};
+use berth_core::{ManualStatus, SlotState, WorkflowState};
 use berth_protocol::OutcomeKind;
 use gpui::{
     AnyElement, App, AppContext as _, BoxShadow, Context, Div, Entity, FocusHandle, Focusable,
@@ -13,7 +13,7 @@ use gpui::{
     Render, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _, Window,
     div, point, prelude::FluentBuilder as _, px,
 };
-use gpui_component::menu::ContextMenuExt as _;
+use gpui_component::menu::{ContextMenuExt as _, PopupMenu};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::tooltip::Tooltip;
 
@@ -23,12 +23,13 @@ use super::kit::{
     spinner,
 };
 use super::motion;
-use super::repo_state::{RailGroup, rail_group};
+use super::repo_state::{RailGroup, manual_status, rail_group, state_group, status_locked};
 use super::windows::{DragChip, Dragged, SlotDrag, WindowDrag};
 use crate::backend::SlotEntry;
 use crate::keymap::{
-    CommandPalette, DestroySlot, MoveSlotToNewWindow, NewWorkflow, NewWorkflowHere, OpenHistory,
-    RailNext, RailOpen, RailPrev, RenameSlot, ToggleRail,
+    ClearStatus, CommandPalette, DestroySlot, MarkDone, MarkNeedsYou, MarkReview, MarkTodo,
+    MoveSlotToNewWindow, NewWorkflow, NewWorkflowHere, OpenHistory, RailNext, RailOpen, RailPrev,
+    RenameSlot, ToggleRail,
 };
 use crate::theme::{Tokens, ty};
 
@@ -188,6 +189,37 @@ pub fn rail_lines(entry: &SlotEntry, state: &RepoState) -> (String, String) {
     (title, sub)
 }
 
+/// The conversation's status by hand (TODO, Needs you, Ready to review,
+/// Done), the one set checked, and Automatic: what its state says. All of
+/// it off while the slot's agent is busy.
+pub fn status_menu(menu: PopupMenu, entry: &SlotEntry) -> PopupMenu {
+    let locked = status_locked(entry).is_some();
+    let manual = manual_status(entry);
+    let mut menu = menu;
+    for (status, action) in [
+        (
+            ManualStatus::Todo,
+            Box::new(MarkTodo) as Box<dyn gpui::Action>,
+        ),
+        (ManualStatus::NeedsYou, Box::new(MarkNeedsYou)),
+        (ManualStatus::Review, Box::new(MarkReview)),
+        (ManualStatus::Done, Box::new(MarkDone)),
+    ] {
+        menu = menu.menu_with_check_and_disabled(
+            status.label(),
+            manual == Some(status),
+            action,
+            locked,
+        );
+    }
+    menu.separator().menu_with_check_and_disabled(
+        format!("Automatic · {}", state_group(entry).label()),
+        manual.is_none(),
+        Box::new(ClearStatus),
+        locked,
+    )
+}
+
 /// The color of a slot's mark (for the chip a dragged slot shows).
 fn status_color(t: &Tokens, entry: &SlotEntry) -> Hsla {
     if entry.slot.state == SlotState::Failed {
@@ -196,6 +228,7 @@ fn status_color(t: &Tokens, entry: &SlotEntry) -> Hsla {
     match rail_group(entry) {
         RailGroup::NeedsYou => t.attention,
         RailGroup::Working | RailGroup::Review => t.accent,
+        RailGroup::Todo => t.todo,
         RailGroup::Done => t.done,
     }
 }
@@ -231,6 +264,7 @@ fn status_dot(t: &Tokens, entry: &SlotEntry, size: f32) -> AnyElement {
             t.accent,
         ),
         RailGroup::Review => dot(size, t.accent).into_any_element(),
+        RailGroup::Todo => dot(size, t.todo).into_any_element(),
         RailGroup::Done => dot(size, t.done).into_any_element(),
     }
 }
@@ -380,6 +414,7 @@ impl Render for SlotRail {
                 let color = match g {
                     RailGroup::NeedsYou => t.attention_soft,
                     RailGroup::Review => t.accent_soft,
+                    RailGroup::Todo => t.todo_soft,
                     RailGroup::Done => t.done_soft,
                     RailGroup::Working => return None,
                 };
@@ -484,14 +519,22 @@ impl Render for SlotRail {
                 Some(p) => motion::rise(row, p),
                 None => row,
             };
-            list = list.child(row.context_menu(|menu, _, _| {
-                menu.menu("New workflow here…", Box::new(NewWorkflowHere))
-                    .menu("Open from history here…", Box::new(OpenHistory))
-                    .separator()
-                    .menu("Move to a new window", Box::new(MoveSlotToNewWindow))
-                    .menu("Rename…", Box::new(RenameSlot))
-                    .menu("Destroy slot…", Box::new(DestroySlot))
-            }));
+            let for_menu = SlotEntry::clone(entry);
+            list = list.child(row.context_menu(
+                move |menu: PopupMenu, window: &mut Window, cx: &mut Context<'_, PopupMenu>| {
+                    let entry = for_menu.clone();
+                    menu.menu("New workflow here…", Box::new(NewWorkflowHere))
+                        .menu("Open from history here…", Box::new(OpenHistory))
+                        .separator()
+                        .submenu("Status", window, cx, move |menu, _, _| {
+                            status_menu(menu, &entry)
+                        })
+                        .separator()
+                        .menu("Move to a new window", Box::new(MoveSlotToNewWindow))
+                        .menu("Rename…", Box::new(RenameSlot))
+                        .menu("Destroy slot…", Box::new(DestroySlot))
+                },
+            ));
         }
 
         div()

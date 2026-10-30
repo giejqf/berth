@@ -41,6 +41,12 @@ actions!(
         RailOpen,
         RenameSlot,
         DestroySlot,
+        // the conversation's status, set by hand
+        MarkTodo,
+        MarkNeedsYou,
+        MarkReview,
+        MarkDone,
+        ClearStatus,
         // event flow
         NextNode,
         PrevNode,
@@ -281,6 +287,11 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut {
         keys: "R",
         label: "Rename the slot (or double-click it)",
+        group: "Slot rail",
+    },
+    Shortcut {
+        keys: "T D",
+        label: "Mark the conversation TODO / Done (⌘K for the others)",
         group: "Slot rail",
     },
     Shortcut {
@@ -555,6 +566,15 @@ pub fn palette_actions() -> Vec<(&'static str, &'static str, Box<dyn Action>)> {
             Box::new(ShowTasks),
         ),
         ("Rewind conversation…", "R", Box::new(RewindConversation)),
+        ("Status: TODO", "T", Box::new(MarkTodo)),
+        ("Status: Needs you", "", Box::new(MarkNeedsYou)),
+        ("Status: Ready to review", "", Box::new(MarkReview)),
+        ("Status: Done", "D", Box::new(MarkDone)),
+        (
+            "Status: automatic, as the conversation stands",
+            "",
+            Box::new(ClearStatus),
+        ),
         ("Next slot", "⌘⇧]", Box::new(NextSlot)),
         ("Previous slot", "⌘⇧[", Box::new(PrevSlot)),
         (
@@ -634,6 +654,8 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("enter", RailOpen, Some("SlotRail")),
         KeyBinding::new("r", RenameSlot, Some("SlotRail")),
         KeyBinding::new("backspace", DestroySlot, Some("SlotRail")),
+        KeyBinding::new("t", MarkTodo, Some("SlotRail")),
+        KeyBinding::new("d", MarkDone, Some("SlotRail")),
         KeyBinding::new("a", FocusAnswer, Some("SlotRail")),
         // event flow
         KeyBinding::new("j", NextNode, Some("EventFlow")),

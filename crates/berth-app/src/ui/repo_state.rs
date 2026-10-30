@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use berth_core::activity::RoundActivity;
 use berth_core::transcript::TranscriptEntry;
-use berth_core::{ReviewCommentRow, SlotState, WorkflowState, WorkflowView};
+use berth_core::{ManualStatus, ReviewCommentRow, SlotState, WorkflowState, WorkflowView};
 use berth_protocol::{DiffPreset, SlotRequest};
 use gpui::{Context, Entity, EntityId, EventEmitter};
 
@@ -129,12 +129,14 @@ impl SlotTerminals {
     }
 }
 
-/// Where a slot sits in the rail (design: grouped by state).
+/// Where a slot sits in the rail (design: grouped by state), in the rail's
+/// order. TODO is only ever set by hand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RailGroup {
     NeedsYou,
     Working,
     Review,
+    Todo,
     Done,
 }
 
@@ -144,7 +146,19 @@ impl RailGroup {
             Self::NeedsYou => "Needs you",
             Self::Working => "Working",
             Self::Review => "Ready to review",
+            Self::Todo => "TODO",
             Self::Done => "Done",
+        }
+    }
+}
+
+impl From<ManualStatus> for RailGroup {
+    fn from(s: ManualStatus) -> Self {
+        match s {
+            ManualStatus::Todo => Self::Todo,
+            ManualStatus::NeedsYou => Self::NeedsYou,
+            ManualStatus::Review => Self::Review,
+            ManualStatus::Done => Self::Done,
         }
     }
 }
@@ -158,8 +172,36 @@ fn in_window(slots: &[SlotEntry], window_id: &str) -> Vec<SlotEntry> {
         .collect()
 }
 
-/// The rail group a slot belongs to.
+/// The rail group a slot belongs to: the status the user set by hand while
+/// it holds (never over a busy or failed slot), else what its state says.
 pub fn rail_group(entry: &SlotEntry) -> RailGroup {
+    match manual_status(entry) {
+        Some(s) => s.into(),
+        None => state_group(entry),
+    }
+}
+
+/// The status the user set by hand, when it applies: the slot's agent isn't
+/// busy and nothing newer happened in the conversation.
+pub fn manual_status(entry: &SlotEntry) -> Option<ManualStatus> {
+    let wf = entry.workflow.as_ref()?;
+    if ManualStatus::locked(entry.slot.state, wf.state).is_some() {
+        return None;
+    }
+    entry.facts.status
+}
+
+/// Why the slot's conversation can't take a status by hand now; `None` when
+/// it can.
+pub fn status_locked(entry: &SlotEntry) -> Option<&'static str> {
+    match &entry.workflow {
+        Some(wf) => ManualStatus::locked(entry.slot.state, wf.state),
+        None => Some("The slot has no conversation yet."),
+    }
+}
+
+/// The rail group the slot's state gives it, whatever was set by hand.
+pub fn state_group(entry: &SlotEntry) -> RailGroup {
     if entry.slot.state == SlotState::Failed {
         return RailGroup::NeedsYou;
     }

@@ -647,7 +647,7 @@ repos            id, path, default_slot_type, created_at
 slots            id, repo_id, type, name, custom_name, state, state_detail, checkout_path, placement, branch,
                  base_ref, created_at, model, effort, window_id, number
 workflows        id, slot_id, origin_json, state, claude_session_id, section_no, total_cost_usd, last_error,
-                 created_at, closed_at, resume_at, opened_at, context_json, resume_drops
+                 created_at, closed_at, resume_at, opened_at, context_json, resume_drops, status, status_at
 rounds           id, workflow_id, section_no, started_at, ended_at, terminal_kind, nudges, cost_usd, duration_ms,
                  turn_uuid, hop
 branches         id, workflow_id, spawn_round_id, collect_round_id, parent_branch_id, parent_tool_use_id,
@@ -787,7 +787,13 @@ settles nothing (ADR 0013).
   in it is one text (`kit::keyed`), not a row of pieces.
 - The rail groups slots by what they need: **Needs you** (a question, an idle workflow
   awaiting its next prompt, a message held for the user, a failed slot), **Working**, **Ready to review** (idle after
-  a summary), **Done**; by number within a group. Each slot's mark is its number on a
+  a summary), **TODO**, **Done**; by number within a group. The user may set a
+  conversation's status by hand (ADR 0024): TODO (parked for later; only ever set by
+  hand), Needs you, Ready to review, Done, or back to Automatic, from the header's state
+  chip, the rail's context menu (Status), ⌘K, or T / D with the rail focused. Never while
+  its agent is busy (a round in flight, the slot being made or torn down) or its slot
+  failed; it holds until anything newer happens in the conversation (a node, a round
+  starting or ending), and closes nothing. Each slot's mark is its number on a
   tile (`kit::slot_number`), with a dot in its group's color at the tile's corner; a busy
   slot's (its agent working, or the slot being created or destroyed) is the working
   spinner, in the rail and its collapsed strip alike. The same tile leads the flow

@@ -417,6 +417,59 @@ pub struct WorkflowFacts {
     pub held_message: Option<(i64, String, String)>,
     pub rounds: usize,
     pub last_round_at: Option<i64>,
+    /// The status the user set by hand, while it holds: nothing happened in
+    /// the workflow since.
+    pub status: Option<ManualStatus>,
+}
+
+/// A status the user gives a conversation by hand, as the rail groups it.
+/// Working is never one: it is the agent's. It holds until anything newer
+/// happens in the workflow (a node, a round starting or ending).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ManualStatus {
+    /// Parked for later.
+    Todo,
+    NeedsYou,
+    Review,
+    Done,
+}
+
+text_enum!(ManualStatus {
+    Todo => "todo",
+    NeedsYou => "needs_you",
+    Review => "review",
+    Done => "done",
+});
+
+impl ManualStatus {
+    pub const ALL: [Self; 4] = [Self::Todo, Self::NeedsYou, Self::Review, Self::Done];
+
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Todo => "TODO",
+            Self::NeedsYou => "Needs you",
+            Self::Review => "Ready to review",
+            Self::Done => "Done",
+        }
+    }
+
+    /// Why a slot's conversation can't take a status by hand now: its agent
+    /// is busy (a round in flight, the slot being created or torn down), or
+    /// the slot failed.
+    #[must_use]
+    pub fn locked(slot: SlotState, workflow: WorkflowState) -> Option<&'static str> {
+        match slot {
+            SlotState::Creating | SlotState::Destroying => {
+                Some("The slot is being set up or torn down; its status follows it.")
+            }
+            SlotState::Failed => Some("The slot failed; destroy it to clear it."),
+            _ if workflow.is_busy() => {
+                Some("The agent is working; its status follows it until it stops.")
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Everything the event-flow view needs for one workflow.

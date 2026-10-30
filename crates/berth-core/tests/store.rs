@@ -276,3 +276,74 @@ fn agents_work_while_a_round_runs_or_a_slot_is_made_or_torn_down() {
         .unwrap();
     assert!(store.agents_working().unwrap(), "destroying");
 }
+
+#[test]
+fn a_status_set_by_hand_holds_until_anything_newer_happens() {
+    use berth_core::{ManualStatus, Workflow, WorkflowState};
+    let store = Store::open_in_memory().unwrap();
+    let repo = store.upsert_repo(Path::new("/tmp/repo")).unwrap();
+    let mut s = slot(&repo.id);
+    store.insert_slot(&mut s).unwrap();
+    let wf = Workflow {
+        id: new_id(),
+        slot_id: s.id.clone(),
+        origin: berth_protocol::Origin {
+            kind: berth_protocol::OriginKind::Thought,
+            r#ref: String::new(),
+            title: "x".into(),
+            body: String::new(),
+            custom_prompt: None,
+            url: None,
+        },
+        state: WorkflowState::Idle,
+        claude_session_id: None,
+        section_no: 1,
+        total_cost_usd: 0.0,
+        last_error: None,
+        created_at: now_ms(),
+        closed_at: None,
+    };
+    store.insert_workflow(&wf).unwrap();
+    let round = store.insert_round(&wf.id, 1, now_ms() - 60_000).unwrap();
+    store
+        .end_round(
+            &round.id,
+            berth_protocol::TerminalKind::Reply,
+            0,
+            0.0,
+            1,
+            now_ms() - 50_000,
+        )
+        .unwrap();
+    let status = |store: &Store| store.workflow_facts(&wf.id).unwrap().status;
+    assert_eq!(status(&store), None);
+
+    store
+        .set_workflow_status(&wf.id, Some(ManualStatus::Todo))
+        .unwrap();
+    assert_eq!(status(&store), Some(ManualStatus::Todo));
+    store
+        .set_workflow_status(&wf.id, Some(ManualStatus::Done))
+        .unwrap();
+    assert_eq!(status(&store), Some(ManualStatus::Done));
+
+    // The agent works again: what its state says counts once more.
+    store.insert_round(&wf.id, 1, now_ms() + 1_000).unwrap();
+    assert_eq!(status(&store), None);
+
+    store.set_workflow_status(&wf.id, None).unwrap();
+    assert_eq!(status(&store), None);
+}
+
+#[test]
+fn a_busy_or_failed_slot_takes_no_status_by_hand() {
+    use berth_core::{ManualStatus, WorkflowState};
+    let locked = |slot, wf| ManualStatus::locked(slot, wf).is_some();
+    assert!(locked(SlotState::Running, WorkflowState::Running));
+    assert!(locked(SlotState::Running, WorkflowState::Starting));
+    assert!(locked(SlotState::Creating, WorkflowState::Starting));
+    assert!(locked(SlotState::Failed, WorkflowState::Idle));
+    assert!(!locked(SlotState::Running, WorkflowState::Idle));
+    assert!(!locked(SlotState::Running, WorkflowState::AwaitingAnswer));
+    assert!(!locked(SlotState::Ready, WorkflowState::Closed));
+}

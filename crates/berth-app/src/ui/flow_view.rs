@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use berth_core::flow::{FlowItem, layout};
-use berth_core::{SlotState, WorkflowState, WorkflowView};
+use berth_core::{ManualStatus, SlotState, WorkflowState, WorkflowView};
 use berth_protocol::{DiffPreset, NodePayload, OutcomeKind, TerminalKind};
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable,
@@ -342,7 +342,10 @@ impl FlowView {
         });
         let failed =
             entry.is_some_and(|e| e.slot.state == SlotState::Failed) || wf.last_error.is_some();
+        // A status set by hand shows while it holds (never over a busy agent).
+        let manual = entry.and_then(super::repo_state::manual_status);
         let state_chip = match wf.state {
+            _ if manual.is_some() => manual_chip(t, manual),
             // The slot, the agent's start, or a round failed.
             WorkflowState::Starting | WorkflowState::Idle if failed => {
                 chip(t, Tone::Danger, "Failed")
@@ -402,6 +405,28 @@ impl FlowView {
             WorkflowState::Idle => chip(t, Tone::Accent, "Ready to review")
                 .child(icon("flag-bold", 12., t.accent))
                 .flex_row_reverse(),
+        };
+        // Not while the agent is busy: then the chip is its state, nothing to
+        // pick. Otherwise a click sets the status by hand (or back).
+        let state_chip = match entry.filter(|e| super::repo_state::status_locked(e).is_none()) {
+            Some(e) => {
+                let e = e.clone();
+                let tip = if manual.is_some() {
+                    "Status, set by you · click to change"
+                } else {
+                    "Status · click to set it by hand (TODO, Done…)"
+                };
+                Button::new("status-menu")
+                    .ghost()
+                    .h(px(22.))
+                    .px(px(2.))
+                    .cursor_pointer()
+                    .tooltip(tip)
+                    .child(state_chip)
+                    .dropdown_menu(move |menu, _, _| super::slot_rail::status_menu(menu, &e))
+                    .into_any_element()
+            }
+            None => state_chip.into_any_element(),
         };
         // Only a round in flight can be interrupted.
         let running = wf.state == WorkflowState::Running;
@@ -557,6 +582,22 @@ fn origin_glyph(kind: berth_protocol::OriginKind) -> &'static str {
         K::Posthog => "alert",
         K::FollowUp => "fork",
         K::Session => "history",
+    }
+}
+
+/// The header chip for a status set by hand.
+fn manual_chip(t: &Tokens, status: Option<ManualStatus>) -> gpui::Div {
+    match status {
+        Some(ManualStatus::Todo) => chip(t, Tone::Todo, "TODO")
+            .child(icon("list-todo", 12., t.todo))
+            .flex_row_reverse(),
+        Some(ManualStatus::NeedsYou) => chip(t, Tone::Attention, "Needs you"),
+        Some(ManualStatus::Review) => chip(t, Tone::Accent, "Ready to review")
+            .child(icon("flag-bold", 12., t.accent))
+            .flex_row_reverse(),
+        Some(ManualStatus::Done) | None => chip(t, Tone::Done, "Done")
+            .child(icon("check-bold", 12., t.on_done))
+            .flex_row_reverse(),
     }
 }
 

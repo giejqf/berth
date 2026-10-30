@@ -43,6 +43,9 @@ pub struct Tokens {
     /// state.danger: failures, destroy slot, deletions.
     pub danger: Hsla,
     pub danger_soft: Hsla,
+    /// state.todo: a conversation parked for later (set by hand). Gruvbox purple.
+    pub todo: Hsla,
+    pub todo_soft: Hsla,
     /// Subagent rails: purple → orange → aqua.
     pub lanes: [Hsla; 3],
     pub diff_add: Hsla,
@@ -97,6 +100,8 @@ impl Tokens {
             on_done: c(0x28_28_28),
             danger: c(0xfb_49_34),
             danger_soft: soft(0xfb_49_34, 0.14),
+            todo: c(0xd3_86_9b),
+            todo_soft: soft(0xd3_86_9b, 0.16),
             lanes: [c(0xd3_86_9b), c(0xfe_80_19), c(0x8e_c0_7c)],
             diff_add: soft(0xb8_bb_26, 0.14),
             diff_del: soft(0xfb_49_34, 0.14),
@@ -135,6 +140,8 @@ impl Tokens {
             on_done: c(0xfb_f1_c7),
             danger: c(0x9d_00_06),
             danger_soft: soft(0x9d_00_06, 0.12),
+            todo: c(0x8f_3f_71),
+            todo_soft: soft(0x8f_3f_71, 0.14),
             lanes: [c(0x8f_3f_71), c(0xaf_3a_03), c(0x42_7b_58)],
             diff_add: soft(0x79_74_0e, 0.14),
             diff_del: soft(0x9d_00_06, 0.12),

@@ -10,7 +10,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use crate::error::{CoreError, Result};
 use crate::ids::{new_id, now_ms};
 use crate::model::{
-    Branch, BranchState, ConnectorRow, Dropped, GhEntityRow, Node, RawEventRow, Repo,
+    Branch, BranchState, ConnectorRow, Dropped, GhEntityRow, ManualStatus, Node, RawEventRow, Repo,
     ReviewCommentRow, Round, Slot, SlotState, Snapshot, SnapshotKind, Workflow, WorkflowFacts,
     WorkflowState, WorkflowView,
 };
@@ -26,6 +26,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0008_turn_uuids.sql"),
     include_str!("../migrations/0009_message_hops.sql"),
     include_str!("../migrations/0010_slot_numbers.sql"),
+    include_str!("../migrations/0011_workflow_status.sql"),
 ];
 
 pub struct Store {
@@ -1344,6 +1345,29 @@ impl Store {
             [workflow_id],
             |r| r.get(0),
         )?;
+        // The status set by hand, while nothing newer happened.
+        let set: Option<(Option<String>, Option<i64>)> = self
+            .conn
+            .query_row(
+                "SELECT status, status_at FROM workflows WHERE id = ?1",
+                [workflow_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let status = match set {
+            Some((Some(status), Some(at))) => {
+                let latest: Option<i64> = self.conn.query_row(
+                    "SELECT MAX(at) FROM ( \
+                       SELECT MAX(created_at) AS at FROM nodes WHERE workflow_id = ?1 \
+                       UNION ALL SELECT MAX(started_at) FROM rounds WHERE workflow_id = ?1 \
+                       UNION ALL SELECT MAX(ended_at) FROM rounds WHERE workflow_id = ?1)",
+                    [workflow_id],
+                    |r| r.get(0),
+                )?;
+                ManualStatus::parse(&status).filter(|_| latest.is_none_or(|l| at >= l))
+            }
+            _ => None,
+        };
         Ok(WorkflowFacts {
             question_at,
             review: review.map(|(at, n)| (at, usize::try_from(n).unwrap_or(0))),
@@ -1353,7 +1377,22 @@ impl Store {
             held_message,
             rounds: usize::try_from(rounds).unwrap_or(0),
             last_round_at,
+            status,
         })
+    }
+
+    /// Set the workflow's status by hand, or go back to what its state says
+    /// (`None`). It holds until anything newer happens in the workflow.
+    pub fn set_workflow_status(&self, id: &str, status: Option<ManualStatus>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE workflows SET status = ?2, status_at = ?3 WHERE id = ?1",
+            params![
+                id,
+                status.map(ManualStatus::as_str),
+                status.map(|_| crate::ids::now_ms())
+            ],
+        )?;
+        Ok(())
     }
 
     /// The Question node with this question id.

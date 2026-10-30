@@ -75,6 +75,12 @@ pub enum Command {
     Interrupt {
         workflow_id: String,
     },
+    /// Set the conversation's status by hand (TODO, Done…), or `None` to go
+    /// back to what its state says. Refused while its agent is busy.
+    SetStatus {
+        workflow_id: String,
+        status: Option<berth_core::ManualStatus>,
+    },
     /// Move the agent's running foreground tool calls to the background.
     Background {
         workflow_id: String,

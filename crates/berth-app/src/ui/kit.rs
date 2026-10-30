@@ -162,6 +162,8 @@ pub enum Tone {
     Danger,
     /// raised fill, secondary text (Interrupted).
     Neutral,
+    /// todo-soft fill, todo text (TODO, set by hand).
+    Todo,
 }
 
 /// A state chip: 12/16, padding 2×8, radius 4. Only these carry hue.
@@ -172,6 +174,7 @@ pub fn chip(t: &Tokens, tone: Tone, label: impl Into<SharedString>) -> Div {
         Tone::Done => (t.done, t.on_done, FontWeight::SEMIBOLD),
         Tone::Danger => (t.danger_soft, t.danger, FontWeight::SEMIBOLD),
         Tone::Neutral => (t.raised, t.text2, FontWeight::NORMAL),
+        Tone::Todo => (t.todo_soft, t.todo, FontWeight::MEDIUM),
     };
     div()
         .flex()

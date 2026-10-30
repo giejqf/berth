@@ -47,6 +47,7 @@ use crate::keymap::{
     ShowFile, ShowFiles, ShowFindings, ShowReview, ShowTasks, ToggleDiffMode, ToggleRail,
     ToggleReview,
 };
+use crate::keymap::{ClearStatus, MarkDone, MarkNeedsYou, MarkReview, MarkTodo};
 use crate::keymap::{
     CloseTerminal, HideTerminal, KillTerminal, NewTerminal, NextTerminal, PrevTerminal,
     ToggleTerminal, ToggleTerminalSize,
@@ -765,6 +766,24 @@ impl RepoWindow {
         self.open_modal(dialog, window, cx);
     }
 
+    /// The selected slot's conversation takes `status` by hand, or goes back
+    /// to what its state says (`None`). The backend refuses while its agent
+    /// is busy, and says why.
+    fn set_status(&mut self, status: Option<berth_core::ManualStatus>, cx: &mut Context<'_, Self>) {
+        let state = self.state.read(cx);
+        let Some(workflow_id) = state
+            .selected()
+            .and_then(|e| e.workflow.as_ref())
+            .map(|w| w.id.clone())
+        else {
+            return;
+        };
+        state.backend.send(Command::SetStatus {
+            workflow_id,
+            status,
+        });
+    }
+
     fn rename_slot(&mut self, _: &RenameSlot, window: &mut Window, cx: &mut Context<'_, Self>) {
         let state = self.state.read(cx);
         let Some(entry) = state.selected().cloned() else {
@@ -1061,6 +1080,19 @@ impl Render for RepoWindow {
             }))
             .on_action(cx.listener(Self::destroy_slot))
             .on_action(cx.listener(Self::rename_slot))
+            .on_action(cx.listener(|this, _: &MarkTodo, _, cx| {
+                this.set_status(Some(berth_core::ManualStatus::Todo), cx);
+            }))
+            .on_action(cx.listener(|this, _: &MarkNeedsYou, _, cx| {
+                this.set_status(Some(berth_core::ManualStatus::NeedsYou), cx);
+            }))
+            .on_action(cx.listener(|this, _: &MarkReview, _, cx| {
+                this.set_status(Some(berth_core::ManualStatus::Review), cx);
+            }))
+            .on_action(cx.listener(|this, _: &MarkDone, _, cx| {
+                this.set_status(Some(berth_core::ManualStatus::Done), cx);
+            }))
+            .on_action(cx.listener(|this, _: &ClearStatus, _, cx| this.set_status(None, cx)))
             .on_action(cx.listener(|this, a: &ShowFile, window, cx| {
                 this.show_files(Some(a.0.clone()), window, cx);
             }))
