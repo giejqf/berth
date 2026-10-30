@@ -491,7 +491,7 @@ checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "berth-app"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -524,7 +524,7 @@ dependencies = [
 
 [[package]]
 name = "berth-connectors"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "security-framework",
  "serde",
@@ -538,7 +538,7 @@ dependencies = [
 
 [[package]]
 name = "berth-core"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "berth-protocol",
  "rusqlite",
@@ -552,7 +552,7 @@ dependencies = [
 
 [[package]]
 name = "berth-gh"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -563,7 +563,7 @@ dependencies = [
 
 [[package]]
 name = "berth-git"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -575,7 +575,7 @@ dependencies = [
 
 [[package]]
 name = "berth-protocol"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -584,7 +584,7 @@ dependencies = [
 
 [[package]]
 name = "berth-proxy"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "bytes",
  "futures",
@@ -603,7 +603,7 @@ dependencies = [
 
 [[package]]
 name = "berth-sidecar-client"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "berth-protocol",
  "serde_json",
@@ -615,7 +615,7 @@ dependencies = [
 
 [[package]]
 name = "berth-slot"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "berth-git",
  "serde",
@@ -629,7 +629,7 @@ dependencies = [
 
 [[package]]
 name = "berth-svg"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "anyhow",
  "resvg 0.46.0",
