@@ -2,6 +2,7 @@
 //! slot scripts, git, `gh`, and sidecars, and executes the engine's effects.
 //! Views talk to it only through [`Command`]s and [`UiEvent`]s.
 
+mod awake;
 mod env;
 mod files;
 mod history;
@@ -73,6 +74,8 @@ pub(crate) struct Shared {
     restart_after_round: Mutex<HashSet<String>>,
     /// Workflows whose session runs something in the background.
     background: Mutex<HashSet<String>>,
+    /// Keeps the Mac awake while agents work.
+    awake: awake::Awake,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -107,6 +110,7 @@ pub fn start(rt: &tokio::runtime::Handle, ui: UnboundedSender<UiEvent>) -> Resul
         diff_cache: Mutex::default(),
         restart_after_round: Mutex::default(),
         background: Mutex::default(),
+        awake: awake::Awake::start(),
     });
     shared.reload_connectors();
 
@@ -420,6 +424,9 @@ impl Shared {
             Command::LoadSettings => self.emit_settings(),
             Command::SetSetting { key, value } => {
                 self.core().store.set_setting(&key, value.trim())?;
+                if key == "keep_awake" {
+                    self.keep_awake();
+                }
                 Ok(())
             }
             Command::CheckEnvironment => {
@@ -489,6 +496,9 @@ impl Shared {
             }),
             Err(e) => tracing::warn!(error = %e, workflow_id, "load workflow"),
         }
+        // A round starts (a prompt, an answer, a message) or ends here, or
+        // on the rail.
+        self.keep_awake();
     }
 
     fn emit_slots(&self, repo_id: &str) {
@@ -499,6 +509,7 @@ impl Shared {
             }),
             Err(e) => tracing::warn!(error = %e, repo_id, "load slots"),
         }
+        self.keep_awake();
     }
 
     fn slot_entries(&self, repo_id: &str) -> Result<Vec<SlotEntry>> {

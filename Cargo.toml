@@ -24,6 +24,10 @@ alacritty_terminal = "0.26"
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 futures = "0.3"
+# macOS's own APIs, as GPUI already links them: keeping the Mac awake while
+# agents work (`NSProcessInfo` activities).
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSProcessInfo", "NSString", "NSObject"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 security-framework = "3"
 serde = { version = "1", features = ["derive"] }

@@ -86,6 +86,8 @@ pub struct Berth {
     /// The review pane's width as the user dragged it (`settings.review_width`);
     /// `None` is the design's.
     pub review_width: Option<f32>,
+    /// The Mac stays awake while agents work (`settings.keep_awake`).
+    pub keep_awake: bool,
 }
 
 impl Global for Berth {}
@@ -106,6 +108,7 @@ pub fn init(backend: BackendHandle, events: UnboundedReceiver<UiEvent>, cx: &mut
         quota: None,
         account: None,
         review_width: None,
+        keep_awake: true,
     });
     cx.spawn(async move |cx| {
         let mut events = events;
@@ -241,8 +244,10 @@ fn route(event: UiEvent, cx: &mut App) {
             model,
             theme,
             review_width,
+            keep_awake,
         } => {
             cx.global_mut::<Berth>().review_width = review_width;
+            cx.global_mut::<Berth>().keep_awake = keep_awake;
             crate::theme::set_appearance(crate::theme::Appearance::parse(&theme), cx);
             for handle in cx.windows() {
                 let _ = handle.update(cx, |_, window, cx| crate::theme::apply(window, cx));
@@ -256,6 +261,7 @@ fn route(event: UiEvent, cx: &mut App) {
                             model,
                             theme,
                             review_width,
+                            keep_awake,
                         },
                         cx,
                     );

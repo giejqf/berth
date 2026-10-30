@@ -594,6 +594,8 @@ pub enum UiEvent {
         theme: String,
         /// The review pane's width as the user dragged it.
         review_width: Option<f32>,
+        /// The Mac stays awake while agents work (`keep_awake` isn't "off").
+        keep_awake: bool,
     },
     /// The models the agent can run on, as the SDK last reported them.
     Models(Vec<ModelChoice>),

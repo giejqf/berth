@@ -212,6 +212,7 @@ impl Shared {
     pub(super) fn take_session(&self, workflow_id: &str) -> Option<Arc<Session>> {
         lock(&self.restart_after_round).remove(workflow_id);
         lock(&self.background).remove(workflow_id);
+        self.keep_awake();
         let taken = lock(&self.sessions).remove(workflow_id);
         if taken.is_some() {
             self.emit(UiEvent::SlotRequestsGone {
@@ -570,6 +571,7 @@ impl Shared {
                                     background.insert(workflow_id.clone());
                                 }
                             }
+                            self.keep_awake();
                             self.emit(UiEvent::BackgroundTasks {
                                 workflow_id: workflow_id.clone(),
                                 tasks: t.tasks.clone(),
@@ -632,6 +634,7 @@ impl Shared {
                     if current {
                         lock(&self.restart_after_round).remove(&workflow_id);
                         lock(&self.background).remove(&workflow_id);
+                        self.keep_awake();
                         self.emit(UiEvent::SlotRequestsGone {
                             workflow_id: workflow_id.clone(),
                         });
@@ -832,7 +835,7 @@ impl Shared {
 
     /// The app's settings (the default model, the theme), for the windows.
     pub(super) fn emit_settings(&self) -> Result<()> {
-        let (model, theme, review_width) = {
+        let (model, theme, review_width, keep_awake) = {
             let core = self.core();
             (
                 core.store.setting("model")?.unwrap_or_default(),
@@ -840,12 +843,14 @@ impl Shared {
                 core.store
                     .setting("review_width")?
                     .and_then(|w| w.parse::<f32>().ok()),
+                core.store.setting("keep_awake")?.as_deref() != Some("off"),
             )
         };
         self.emit(UiEvent::Settings {
             model,
             theme,
             review_width,
+            keep_awake,
         });
         Ok(())
     }

@@ -1715,6 +1715,17 @@ impl Store {
         Ok(())
     }
 
+    /// Whether an agent works anywhere: a round in flight, or a slot being
+    /// created or torn down. The Mac stays awake while one does.
+    pub fn agents_working(&self) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM workflows WHERE state = 'running')
+                 OR EXISTS (SELECT 1 FROM slots WHERE state IN ('creating', 'destroying'))",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+
     pub fn setting(&self, key: &str) -> Result<Option<String>> {
         self.conn
             .query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {

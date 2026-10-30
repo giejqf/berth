@@ -228,3 +228,51 @@ fn slots_from_before_numbers_are_numbered_in_order() {
     let n = |id| store.slot(id).unwrap().number;
     assert_eq!([n("z"), n("x"), n("y")], [1, 2, 0]);
 }
+
+#[test]
+fn agents_work_while_a_round_runs_or_a_slot_is_made_or_torn_down() {
+    use berth_core::{Workflow, WorkflowState};
+    let store = Store::open_in_memory().unwrap();
+    let repo = store.upsert_repo(Path::new("/tmp/repo")).unwrap();
+    let mut s = Slot {
+        state: SlotState::Creating,
+        ..slot(&repo.id)
+    };
+    store.insert_slot(&mut s).unwrap();
+    assert!(store.agents_working().unwrap(), "creating");
+    store
+        .transition_slot(&s.id, SlotState::Ready, None)
+        .unwrap();
+    assert!(!store.agents_working().unwrap(), "ready");
+
+    let wf = Workflow {
+        id: new_id(),
+        slot_id: s.id.clone(),
+        origin: berth_protocol::Origin {
+            kind: berth_protocol::OriginKind::Thought,
+            r#ref: String::new(),
+            title: "x".into(),
+            body: String::new(),
+            custom_prompt: None,
+            url: None,
+        },
+        state: WorkflowState::Running,
+        claude_session_id: None,
+        section_no: 1,
+        total_cost_usd: 0.0,
+        last_error: None,
+        created_at: now_ms(),
+        closed_at: None,
+    };
+    store.insert_workflow(&wf).unwrap();
+    assert!(store.agents_working().unwrap(), "a round runs");
+    for idle in [WorkflowState::AwaitingAnswer, WorkflowState::Idle] {
+        store.set_workflow_state(&wf.id, idle).unwrap();
+        assert!(!store.agents_working().unwrap(), "{idle:?}");
+    }
+
+    store
+        .transition_slot(&s.id, SlotState::Destroying, None)
+        .unwrap();
+    assert!(store.agents_working().unwrap(), "destroying");
+}

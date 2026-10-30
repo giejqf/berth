@@ -120,6 +120,15 @@ impl SettingsForm {
         backend.send(Command::LoadSettings);
     }
 
+    fn set_keep_awake(&mut self, on: bool, cx: &mut Context<'_, Self>) {
+        let backend = self.state.read(cx).backend.clone();
+        backend.send(Command::SetSetting {
+            key: "keep_awake".into(),
+            value: if on { "on" } else { "off" }.into(),
+        });
+        backend.send(Command::LoadSettings);
+    }
+
     fn tool_row(
         &self,
         t: &Tokens,
@@ -553,6 +562,24 @@ impl Render for SettingsForm {
                     .child(label)
                     .on_click(cx.listener(move |this, _, _, cx| this.set_theme(a, cx)))
             };
+        let keep_awake = cx.global::<super::Berth>().keep_awake;
+        let awake_seg =
+            |id: &'static str, label: &'static str, on: bool, cx: &mut Context<'_, Self>| {
+                let active = keep_awake == on;
+                div()
+                    .id(id)
+                    .h(px(26.))
+                    .px(px(12.))
+                    .flex()
+                    .items_center()
+                    .rounded(px(4.))
+                    .ty(ty::META)
+                    .cursor_pointer()
+                    .when(active, |d| d.bg(t.win).text_color(t.text).medium())
+                    .when(!active, |d| d.text_color(t.text2))
+                    .child(label)
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_keep_awake(on, cx)))
+            };
         let this = cx.entity().downgrade();
         let done = this.clone();
 
@@ -646,6 +673,32 @@ impl Render for SettingsForm {
                                             .child(seg("theme-dark", "Dark", Appearance::Dark, cx)),
                                     )
                                     .child(div().ty(ty::META).text_color(t.text3).child("Gruvbox in both. Follows macOS by default.")),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.))
+                            .child(caption("While agents work", t.text3))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_none()
+                                            .gap(px(2.))
+                                            .p(px(2.))
+                                            .bg(t.raised)
+                                            .rounded(px(6.))
+                                            .child(awake_seg("awake-on", "Keep the Mac awake", true, cx))
+                                            .child(awake_seg("awake-off", "Let it sleep", false, cx)),
+                                    )
+                                    .child(div().min_w_0().ty(ty::META).text_color(t.text3).child("The display still sleeps and the screen still locks. A closed laptop lid still sleeps the Mac.")),
                             ),
                     ),
             )

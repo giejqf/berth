@@ -651,7 +651,7 @@ gh_entities      id, repo_id, kind, number_or_sha, json, synced_at
 workflow_links   workflow_id, entity_id, role(origin|outcome)
 connectors       name, path, enabled
 settings         key, value          # last_repo, recent_repos, model, models, quota, commands:<repo_id>, account,
-                                     # claude_identity, review_width
+                                     # claude_identity, review_width, keep_awake
 ```
 
 Timestamps are unix epoch milliseconds. `nodes.raw_first/raw_last` are `raw_events.id`
@@ -907,6 +907,15 @@ settles nothing (ADR 0013).
   API keys and cloud providers from the environment show as ready, with no sign in
   or out. Node.js missing (or older than 22) blocks host agents the same way, with
   **Get Node.js** in place of Sign in…; Settings and Welcome list it with Claude Code.
+- **Keeping the Mac awake** (`backend/awake.rs`): while an agent works anywhere (a
+  round in flight, a slot being created or torn down, something in a session's
+  background; `Store::agents_working`), Berth holds a user-initiated `NSProcessInfo`
+  activity: the Mac doesn't sleep when idle and Berth isn't App Napped while its
+  windows can't be seen (the screen locked). The display still sleeps and the screen
+  still locks; a laptop's closed lid still sleeps the Mac. Headless Claude Code holds
+  no sleep inhibitor of its own (its terminal UI does). Checked on every flow and rail
+  update; ends with the process. Settings › While agents work: "Let it sleep" stores
+  `settings.keep_awake = off`.
 - **Usage ring** (`ui/usage.rs`, ADR 0014): at the end of the composer's status line,
   a ring of two arcs: the workflow's context window outside (`workflows.context_json`,
   reported by its session after each round, each compaction and on resume), the
