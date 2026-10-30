@@ -174,7 +174,7 @@ impl DiffView {
             self.highlighting = None;
             return;
         }
-        let theme = syntax_theme(&Tokens::get(cx));
+        let theme = super::syntax::theme(&Tokens::get(cx));
         let work = cx.background_spawn({
             let diff = diff.clone();
             async move { highlight_all(&diff, theme.as_ref()) }
@@ -526,73 +526,6 @@ fn pair_lines(lines: &[berth_git::DiffLine]) -> Vec<(Option<usize>, Option<usize
     out
 }
 
-fn language_for(path: &str) -> &'static str {
-    let ext = path
-        .rsplit_once('.')
-        .map(|(_, e)| e.to_ascii_lowercase())
-        .unwrap_or_default();
-    match ext.as_str() {
-        "rs" => "rust",
-        "ts" | "tsx" | "mts" => "typescript",
-        "js" | "jsx" | "mjs" | "cjs" => "javascript",
-        "py" => "python",
-        "go" => "go",
-        "md" | "markdown" => "markdown",
-        "toml" => "toml",
-        "json" => "json",
-        "yaml" | "yml" => "yaml",
-        "html" | "htm" => "html",
-        "css" => "css",
-        "sh" | "bash" | "zsh" => "bash",
-        "c" | "h" => "c",
-        "cpp" | "cc" | "hpp" => "cpp",
-        "java" => "java",
-        "rb" => "ruby",
-        "swift" => "swift",
-        "sql" => "sql",
-        _ => "text",
-    }
-}
-
-/// The design's syntax colors as a tree-sitter highlight theme.
-fn syntax_theme(t: &Tokens) -> Option<HighlightTheme> {
-    let hex = |c: Hsla| {
-        let r = gpui::Rgba::from(c);
-        format!(
-            "#{:02x}{:02x}{:02x}",
-            (r.r * 255.).round() as u8,
-            (r.g * 255.).round() as u8,
-            (r.b * 255.).round() as u8
-        )
-    };
-    let (kw, st, fun, cm, at) = (
-        hex(t.syn_keyword),
-        hex(t.syn_string),
-        hex(t.syn_macro),
-        hex(t.syn_comment),
-        hex(t.syn_attr),
-    );
-    let json = serde_json::json!({
-        "name": "berth",
-        "appearance": if t.dark { "dark" } else { "light" },
-        "style": { "syntax": {
-            "keyword": { "color": kw },
-            "string": { "color": st },
-            "string.escape": { "color": st },
-            "string.special": { "color": st },
-            "function": { "color": fun },
-            "constructor": { "color": at },
-            "comment": { "color": cm, "font_style": "italic" },
-            "comment.doc": { "color": cm, "font_style": "italic" },
-            "attribute": { "color": at },
-            "type": { "color": at },
-            "preproc": { "color": at },
-            "label": { "color": at },
-        }}
-    });
-    serde_json::from_value(json).ok()
-}
-
 fn highlight_all(diff: &Diff, theme: Option<&HighlightTheme>) -> Styles {
     let Some(theme) = theme else {
         return Vec::new();
@@ -600,7 +533,7 @@ fn highlight_all(diff: &Diff, theme: Option<&HighlightTheme>) -> Styles {
     diff.files
         .iter()
         .map(|f| {
-            let lang = language_for(f.display_path());
+            let lang = super::syntax::language_for_path(f.display_path());
             f.hunks
                 .iter()
                 .map(|h| {

@@ -1,15 +1,23 @@
 //! Agent prose: a small markdown subset rendered the design's way. Backticks
 //! become inline code chips, `**bold**` is 600, `- ` lines are a real list,
-//! `#` lines are headings and `| a | b |` rows a table (what Claude Code's
-//! commands print). Raw markdown never reaches the screen.
+//! `#` lines are headings, `| a | b |` rows a table (what Claude Code's
+//! commands print) and fenced code a code block: its lines as written, in
+//! the design's syntax colors, with Copy. Raw markdown never reaches the
+//! screen.
+
+use std::cell::Cell;
+use std::hash::{Hash as _, Hasher as _};
+use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, Div, FontWeight, Hsla, IntoElement, ParentElement as _, SharedString, Styled as _,
+    AnyElement, ClipboardItem, Div, ElementId, FontWeight, Hsla, InteractiveElement as _,
+    IntoElement, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _,
     StyledText, TextRun, div, font, prelude::FluentBuilder as _, px,
 };
 
-use super::kit::{code, code_plain, dot};
-use crate::theme::{MONO, SANS, Tokens};
+use super::kit::{TypeExt as _, code, code_plain, dot, icon};
+use super::syntax;
+use crate::theme::{MONO, SANS, Tokens, ty};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Inline {
@@ -25,6 +33,52 @@ pub enum Block {
     Heading(Vec<Inline>),
     /// Rows of cells, the header first; separator rows are dropped.
     Table(Vec<Vec<String>>),
+    /// A fenced code block: its language (the fence's info word) and its
+    /// lines as written, the fence's indent taken off.
+    Code {
+        lang: Option<String>,
+        text: String,
+    },
+}
+
+/// The opening fence of a code block: its character, its length and the
+/// language it names. A backtick fence's info has no backticks (```` ```x``` ````
+/// is inline code).
+fn fence_open(line: &str) -> Option<(char, usize, Option<String>)> {
+    let l = line.trim_start();
+    let ch = l.chars().next().filter(|c| matches!(c, '`' | '~'))?;
+    let n = l.chars().take_while(|c| *c == ch).count();
+    let info = l[n..].trim();
+    if n < 3 || (ch == '`' && info.contains('`')) {
+        return None;
+    }
+    let lang = info
+        .split_whitespace()
+        .next()
+        .map(|w| {
+            w.trim_start_matches(['{', '.'])
+                .trim_end_matches('}')
+                .to_owned()
+        })
+        .filter(|w| !w.is_empty());
+    Some((ch, n, lang))
+}
+
+/// Whether `line` closes a fence of `n` `ch`s.
+fn fence_close(line: &str, ch: char, n: usize) -> bool {
+    let l = line.trim();
+    l.chars().count() >= n && l.chars().all(|c| c == ch)
+}
+
+/// `line` without up to `indent` leading spaces or tabs.
+fn unindent(line: &str, indent: usize) -> &str {
+    let cut = line
+        .char_indices()
+        .take(indent)
+        .take_while(|(_, c)| matches!(c, ' ' | '\t'))
+        .last()
+        .map_or(0, |(i, c)| i + c.len_utf8());
+    &line[cut..]
 }
 
 /// The cells of a `| a | b |` row, or `None` when the line is not one.
@@ -82,7 +136,29 @@ pub fn parse(text: &str) -> Vec<Block> {
         }
         para.clear();
     };
-    for line in text.lines() {
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
+        if let Some((ch, n, lang)) = fence_open(line) {
+            flush_para(&mut para, &mut blocks);
+            if !items.is_empty() {
+                blocks.push(Block::List(items.drain(..).map(|i| inlines(&i)).collect()));
+            }
+            if !table.is_empty() {
+                blocks.push(Block::Table(std::mem::take(&mut table)));
+            }
+            // Up to the closing fence, or the end (an unclosed fence runs on).
+            let indent = line.len() - line.trim_start().len();
+            let code: Vec<&str> = lines
+                .by_ref()
+                .take_while(|l| !fence_close(l, ch, n))
+                .map(|l| unindent(l.trim_end_matches('\r'), indent))
+                .collect();
+            blocks.push(Block::Code {
+                lang,
+                text: code.join("\n"),
+            });
+            continue;
+        }
         let l = line.trim();
         if let Some(cells) = table_row(l) {
             flush_para(&mut para, &mut blocks);
@@ -210,6 +286,7 @@ pub fn plain(text: &str) -> String {
                 .map(|r| r.join(" "))
                 .collect::<Vec<_>>()
                 .join("; "),
+            Block::Code { text, .. } => text.split_whitespace().collect::<Vec<_>>().join(" "),
         })
         .collect::<Vec<_>>()
         .join(" ")
@@ -268,8 +345,9 @@ pub fn rich(t: &Tokens, text: &str, color: Hsla) -> Div {
         .gap(px(8.))
         .text_color(color)
         .min_w_0();
-    for b in blocks {
+    for (n, b) in blocks.into_iter().enumerate() {
         col = col.child(match b {
+            Block::Code { lang, text } => code_block(t, lang.as_deref(), &text, &text, n),
             Block::Para(i) => div()
                 .min_w_0()
                 .child(selectable(t, &i, color, FontWeight::NORMAL)),
@@ -292,6 +370,92 @@ pub fn rich(t: &Tokens, text: &str, color: Hsla) -> Div {
         });
     }
     col
+}
+
+/// How long a code block's button says "Copied".
+const COPIED_FOR: Duration = Duration::from_millis(1500);
+
+thread_local! {
+    /// The code block copied last, and when: its button says so a moment.
+    static COPIED: Cell<Option<(u64, Instant)>> = const { Cell::new(None) };
+}
+
+/// A code block: the language, Copy, and the code (`shown`, its lines as
+/// written, the design's syntax colors) as one text you can select, so a
+/// copy keeps its lines and indents. Copy takes all of `code`, fences left
+/// out, even when only some of it shows. `n` tells blocks of one text apart.
+fn code_block(t: &Tokens, lang: Option<&str>, shown: &str, code: &str, n: usize) -> Div {
+    // A tab is four columns here; Copy keeps the tabs.
+    let display = shown.replace('\t', "    ");
+    let runs = syntax::block_runs(t, syntax::language(lang.unwrap_or("")), &display);
+    let runs = syntax::text_runs(&display, &runs, t.text);
+    let mut h = std::hash::DefaultHasher::new();
+    (code, n).hash(&mut h);
+    let key = h.finish();
+    let copied = COPIED
+        .with(Cell::get)
+        .is_some_and(|(k, at)| k == key && at.elapsed() < COPIED_FOR);
+    let label = lang.filter(|l| !l.is_empty()).unwrap_or("code").to_owned();
+    let code = code.to_owned();
+    let (fg, hover) = (if copied { t.done } else { t.text2 }, t.border);
+    let copy = div()
+        .id(ElementId::NamedInteger("copy-code".into(), key))
+        .flex()
+        .items_center()
+        .gap(px(4.))
+        .h(px(20.))
+        .px(px(6.))
+        .rounded(px(4.))
+        .cursor_pointer()
+        .ty(ty::META)
+        .text_color(fg)
+        .hover(move |s| s.bg(hover))
+        .child(icon(if copied { "check" } else { "copy" }, 12., fg))
+        .child(if copied { "Copied" } else { "Copy" })
+        .on_click(move |_, window, cx| {
+            cx.stop_propagation();
+            cx.write_to_clipboard(ClipboardItem::new_string(code.clone()));
+            COPIED.with(|c| c.set(Some((key, Instant::now()))));
+            window.refresh();
+            cx.spawn(async move |cx| {
+                cx.background_executor().timer(COPIED_FOR).await;
+                cx.update(gpui::App::refresh_windows);
+            })
+            .detach();
+        });
+    div()
+        .flex()
+        .flex_col()
+        .min_w_0()
+        .rounded(px(6.))
+        .bg(t.raised)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .h(px(28.))
+                .pl(px(10.))
+                .pr(px(4.))
+                .child(
+                    div()
+                        .font_family(MONO)
+                        .text_size(px(11.))
+                        .text_color(t.text3)
+                        .child(label),
+                )
+                .child(copy),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .px(px(10.))
+                .pb(px(9.))
+                .font_family(MONO)
+                .text_size(px(12.))
+                .line_height(px(18.))
+                .child(super::select::styled(display, runs, t)),
+        )
 }
 
 /// The room a list item's bullet takes.
@@ -466,12 +630,21 @@ pub fn clamped(t: &Tokens, text: &str, color: Hsla, lines: usize, width: f32) ->
     // Something left out after the last line shown in full: "…" says so
     // (a paragraph cut short has its own).
     let (mut more, mut cut) = (false, false);
-    for b in parse(text) {
+    for (n, b) in parse(text).into_iter().enumerate() {
         if left == 0 {
             more = true;
             break;
         }
         col = col.child(match b {
+            // Its header a line, then as many lines as are left.
+            Block::Code { lang, text } => {
+                let room = left.saturating_sub(1).max(1);
+                let lines: Vec<&str> = text.lines().collect();
+                let shown = lines.len().min(room);
+                left = left.saturating_sub(shown + 1);
+                more |= shown < lines.len();
+                code_block(t, lang.as_deref(), &lines[..shown].join("\n"), &text, n)
+            }
             Block::Para(i) => piece(t, &i, color, (&mut left, &mut cut), width),
             Block::Heading(i) => piece(t, &bolded(i), color, (&mut left, &mut cut), width),
             Block::Table(rows) => {
@@ -596,6 +769,42 @@ mod tests {
         // A hashtag is not a heading.
         assert_eq!(parse("#42 is fixed").len(), 1);
         assert!(matches!(parse("#42 is fixed")[0], Block::Para(_)));
+    }
+
+    #[test]
+    fn fenced_code_keeps_its_lines_and_indents() {
+        let text = "Run this:\n\n```rust\nfn main() {\n    println!(\"hi\");\n\n}\n```\nThen `cargo run`.\n\n- step\n  ```sh\n  ls -la\n  ```";
+        let blocks = parse(text);
+        assert_eq!(blocks.len(), 5);
+        assert_eq!(
+            blocks[1],
+            Block::Code {
+                lang: Some("rust".into()),
+                text: "fn main() {\n    println!(\"hi\");\n\n}".into()
+            }
+        );
+        assert!(matches!(&blocks[2], Block::Para(_)));
+        assert!(matches!(&blocks[3], Block::List(items) if items.len() == 1));
+        // A fence in a list item loses the item's indent, not the code's.
+        assert_eq!(
+            blocks[4],
+            Block::Code {
+                lang: Some("sh".into()),
+                text: "ls -la".into()
+            }
+        );
+        // An unclosed fence runs to the end; tildes fence too.
+        assert_eq!(
+            parse("~~~\na\n\n b\n"),
+            vec![Block::Code {
+                lang: None,
+                text: "a\n\n b".into()
+            }]
+        );
+        // Triple backticks inside a line are inline code, not a fence.
+        assert!(matches!(&parse("use ```x``` here")[0], Block::Para(_)));
+        assert_eq!(plain("a\n```\nx  y\n```"), "a x y");
+        assert_eq!(unindent("\t  x", 2), " x");
     }
 
     #[test]

@@ -26,6 +26,7 @@ mod select;
 mod settings;
 mod sign_in;
 mod slot_rail;
+mod syntax;
 mod tasks;
 mod terminal;
 mod usage;

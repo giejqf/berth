@@ -898,7 +898,11 @@ settles nothing (ADR 0013).
   the detail above no longer in its memory (Details: its transcript). While it runs,
   the live card turns into a compacting card (what is happening, how full the window
   is, for how long), and the composer's status and the rail say so too.
-  `ui/rich.rs` renders the headings and tables commands print.
+  `ui/rich.rs` renders the headings and tables commands print, and fenced code as a
+  code block: its lines and indents as written, the design's syntax colors (the
+  diff view's highlighter, `ui/syntax.rs`, kept per block so a frame doesn't parse it
+  again), the language, and **Copy** (all of it, fences left out, also when "Show
+  more" hides some). A selection copies a block's lines as they are.
 - **SDK extras** (ADR 0016): a session's title in Claude Code's history is the slot's
   name (else the workflow's title); renaming a slot renames it there too (host slots).
   After a round Claude Code may suggest the next prompt: the composer's status line
