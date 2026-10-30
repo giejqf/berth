@@ -475,7 +475,7 @@ fn thinking(rows: &Rc<Rows>, ix: usize, e: &TranscriptEntry, time: &str) -> Div 
             .ty(ty::READ)
             .italic()
             .text_color(t.text2)
-            .child(rich::clamped(t, &e.body, t.text2, THINKING_LINES))
+            .child(rich::clamped(t, &e.body, t.text2, THINKING_LINES, 560.))
     });
     if long {
         col = col.child(link(

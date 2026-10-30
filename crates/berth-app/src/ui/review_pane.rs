@@ -62,6 +62,14 @@ enum Tab {
     Findings,
 }
 
+/// About how wide text runs in the pane: its width less its 16px sides.
+fn text_width(cx: &gpui::App) -> f32 {
+    cx.try_global::<super::Berth>()
+        .and_then(|b| b.review_width)
+        .unwrap_or(super::repo_window::REVIEW_W)
+        - 32.
+}
+
 impl ReviewPane {
     pub fn new(state: Entity<RepoState>, window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
         let diff = cx.new(|cx| DiffView::new(state.clone(), window, cx));

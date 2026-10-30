@@ -395,7 +395,7 @@ impl ReviewPane {
                     ),
             )
             .when_some(current.description.clone(), |d, text| {
-                d.child(clamped(t, &text, t.text2, 3))
+                d.child(clamped(t, &text, t.text2, 3, super::text_width(cx)))
             })
             .child(
                 div()

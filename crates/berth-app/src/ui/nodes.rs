@@ -372,7 +372,7 @@ fn decision_body(
         .child(title);
     if !d.rationale.trim().is_empty() {
         let body = if long && !open {
-            clamped(t, &d.rationale, t.text2, 4)
+            clamped(t, &d.rationale, t.text2, 4, ctx.width - 60.)
         } else {
             rich(t, &d.rationale, t.text2).into_any_element()
         };
@@ -498,7 +498,7 @@ fn prompt(t: &Tokens, node: &Node, p: &Prompt, ctx: &RowCtx, line: bool) -> Div 
     let text: AnyElement = if p.text.trim().is_empty() {
         div().into_any_element()
     } else if clamp {
-        clamped(t, &p.text, t.text2, 2)
+        clamped(t, &p.text, t.text2, 2, ctx.width - 100.)
     } else {
         rich(t, &p.text, t.text).into_any_element()
     };
@@ -835,7 +835,7 @@ fn reply(t: &Tokens, node: &Node, r: &Reply, ctx: &RowCtx, line: bool) -> Div {
         ));
     }
     let text: AnyElement = if long && !open {
-        clamped(t, &r.message, t.text, 14)
+        clamped(t, &r.message, t.text, 14, ctx.width - 100.)
     } else {
         rich(t, &r.message, t.text).into_any_element()
     };
@@ -932,7 +932,7 @@ fn message(t: &Tokens, node: &Node, m: &SlotMessage, ctx: &RowCtx, line: bool) -
         ));
     }
     let text: AnyElement = if long && !open {
-        clamped(t, &m.text, t.text, 14)
+        clamped(t, &m.text, t.text, 14, ctx.width - 100.)
     } else {
         rich(t, &m.text, t.text).into_any_element()
     };
@@ -1332,7 +1332,7 @@ fn lane_view(t: &Tokens, lane: &Lane, ctx: &RowCtx, window: &mut Window, cx: &mu
                             )
                             .when(!c.result_text.trim().is_empty(), |d| {
                                 d.child(div().pl(px(22.)).child(if long && !more_open {
-                                    clamped(t, &c.result_text, t.text2, 2)
+                                    clamped(t, &c.result_text, t.text2, 2, ctx.width - 140.)
                                 } else {
                                     rich(t, &c.result_text, t.text2).into_any_element()
                                 }))
@@ -1458,7 +1458,7 @@ fn question(t: &Tokens, node: &Node, q: &Question, ctx: &RowCtx, line: bool, _cx
                 details_link(t, node, ctx),
                 Some(clock(node.created_at)),
             ))
-            .child(clamped(t, &q.question, t.text2, 3))
+            .child(clamped(t, &q.question, t.text2, 3, ctx.width - 60.))
             .child(if q.answer.is_some() {
                 div()
                     .flex()
@@ -1554,7 +1554,7 @@ fn review(t: &Tokens, node: &Node, r: &Review, ctx: &RowCtx, line: bool) -> Div 
                             )))
                             .child(level_counts(t, &r.findings)),
                     )
-                    .children(summary.map(|s| clamped(t, s, t.text2, 3)))
+                    .children(summary.map(|s| clamped(t, s, t.text2, 3, ctx.width - 100.)))
                     .child(
                         div().flex().items_center().gap(px(8.)).pt(px(4.)).child(
                             Btn::new(SharedString::from(format!("findings-{}", node.id)))
@@ -1614,7 +1614,7 @@ fn review(t: &Tokens, node: &Node, r: &Review, ctx: &RowCtx, line: bool) -> Div 
                 details_link(t, node, ctx),
                 Some(clock(node.created_at)),
             ))
-            .children(summary.map(|s| clamped(t, s, t.text2, 3)))
+            .children(summary.map(|s| clamped(t, s, t.text2, 3, ctx.width - 60.)))
             .child(level_counts(t, &r.findings))
             .child(
                 div()

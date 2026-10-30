@@ -282,31 +282,35 @@ pub fn rich(t: &Tokens, text: &str, color: Hsla) -> Div {
             Block::List(items) => {
                 let mut list = div().flex().flex_col().gap(px(4.));
                 for item in items {
-                    list = list.child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .child(
-                                div()
-                                    .w(px(18.))
-                                    .flex_none()
-                                    .pt(px(7.))
-                                    .pl(px(5.))
-                                    .child(dot(5., color)),
-                            )
-                            .child(div().flex_1().min_w_0().child(selectable(
-                                t,
-                                &item,
-                                color,
-                                FontWeight::NORMAL,
-                            ))),
-                    );
+                    list = list.child(list_item(
+                        color,
+                        selectable(t, &item, color, FontWeight::NORMAL),
+                    ));
                 }
                 list
             }
         });
     }
     col
+}
+
+/// The room a list item's bullet takes.
+const BULLET_W: f32 = 18.;
+
+/// A list item: the bullet, then `content`.
+fn list_item(color: Hsla, content: impl IntoElement) -> Div {
+    div()
+        .flex()
+        .flex_row()
+        .child(
+            div()
+                .w(px(BULLET_W))
+                .flex_none()
+                .pt(px(7.))
+                .pl(px(5.))
+                .child(dot(5., color)),
+        )
+        .child(div().flex_1().min_w_0().child(content))
 }
 
 fn bolded(inl: Vec<Inline>) -> Vec<Inline> {
@@ -447,16 +451,84 @@ fn para_with(t: &Tokens, inl: &[Inline], chips: bool) -> Div {
     row
 }
 
-/// Clamped rendering (`lines` lines, ellipsis). Code keeps its mono face and
-/// raised background but not the chip padding; "Show more" reveals [`rich`].
-pub fn clamped(t: &Tokens, text: &str, color: Hsla, lines: usize) -> AnyElement {
+/// [`rich`] as far as `lines` lines at `width` px go (the estimate
+/// [`overflows`] makes): whole paragraphs, list items and table rows as they
+/// fit, then the one that runs past them cut short with an ellipsis. The
+/// text keeps its form; "Show more" reveals the rest.
+pub fn clamped(t: &Tokens, text: &str, color: Hsla, lines: usize, width: f32) -> AnyElement {
+    let mut left = lines;
+    let mut col = div()
+        .flex()
+        .flex_col()
+        .gap(px(8.))
+        .text_color(color)
+        .min_w_0();
+    // Something left out after the last line shown in full: "…" says so
+    // (a paragraph cut short has its own).
+    let (mut more, mut cut) = (false, false);
+    for b in parse(text) {
+        if left == 0 {
+            more = true;
+            break;
+        }
+        col = col.child(match b {
+            Block::Para(i) => piece(t, &i, color, (&mut left, &mut cut), width),
+            Block::Heading(i) => piece(t, &bolded(i), color, (&mut left, &mut cut), width),
+            Block::Table(rows) => {
+                // A row a line.
+                let n = rows.len().min(left);
+                left -= n;
+                more |= n < rows.len();
+                table(t, &rows[..n], color)
+            }
+            Block::List(items) => {
+                let mut list = div().flex().flex_col().gap(px(4.));
+                let n = items.len();
+                for (k, item) in items.into_iter().enumerate() {
+                    if left == 0 {
+                        more = k < n;
+                        break;
+                    }
+                    let text = piece(t, &item, color, (&mut left, &mut cut), width - BULLET_W);
+                    list = list.child(list_item(color, text));
+                }
+                list
+            }
+        });
+    }
+    col.when(more && !cut, |d| {
+        d.child(div().text_color(t.text3).child("…"))
+    })
+    .into_any_element()
+}
+
+/// One paragraph within the `left` lines still to fill: whole (and
+/// selectable) when it fits, else cut to them with an ellipsis (`cut`).
+fn piece(
+    t: &Tokens,
+    inl: &[Inline],
+    color: Hsla,
+    (left, cut): (&mut usize, &mut bool),
+    width: f32,
+) -> Div {
+    let need = flat(inl).chars().count().div_ceil(per_line(width)).max(1);
+    if need <= *left {
+        *left -= need;
+        return div()
+            .min_w_0()
+            .child(selectable(t, inl, color, FontWeight::NORMAL));
+    }
+    *cut = true;
+    let shown = std::mem::take(left);
+    // Code keeps its mono face and raised background, not the chip padding.
     let mut s = String::new();
     let mut runs = Vec::new();
-    let mut push = |s: &mut String,
-                    piece: &str,
-                    family: &'static str,
-                    weight: FontWeight,
-                    bg: Option<Hsla>| {
+    for span in inl {
+        let (piece, family, weight, background) = match span {
+            Inline::Text(x) => (x, SANS, FontWeight::NORMAL, None),
+            Inline::Bold(x) => (x, SANS, FontWeight::SEMIBOLD, None),
+            Inline::Code(x) => (x, MONO, FontWeight::NORMAL, Some(t.raised)),
+        };
         s.push_str(piece);
         let mut f = font(family);
         f.weight = weight;
@@ -464,59 +536,27 @@ pub fn clamped(t: &Tokens, text: &str, color: Hsla, lines: usize) -> AnyElement 
             len: piece.len(),
             font: f,
             color,
-            background_color: bg,
+            background_color: background,
             underline: None,
             strikethrough: None,
         });
-    };
-    for (bi, b) in parse(text).into_iter().enumerate() {
-        if bi > 0 {
-            push(&mut s, " ", SANS, FontWeight::NORMAL, None);
-        }
-        let spans: Vec<Inline> = match b {
-            Block::Para(i) => i,
-            Block::Heading(i) => bolded(i),
-            Block::Table(rows) => vec![Inline::Text(
-                rows.iter()
-                    .map(|r| r.join(" "))
-                    .collect::<Vec<_>>()
-                    .join(" · "),
-            )],
-            Block::List(items) => items
-                .into_iter()
-                .enumerate()
-                .flat_map(|(n, i)| {
-                    let mut v = vec![Inline::Text(if n == 0 {
-                        "• ".into()
-                    } else {
-                        " • ".into()
-                    })];
-                    v.extend(i);
-                    v
-                })
-                .collect(),
-        };
-        for span in spans {
-            match span {
-                Inline::Text(x) => push(&mut s, &x, SANS, FontWeight::NORMAL, None),
-                Inline::Bold(x) => push(&mut s, &x, SANS, FontWeight::SEMIBOLD, None),
-                Inline::Code(x) => push(&mut s, &x, MONO, FontWeight::NORMAL, Some(t.raised)),
-            }
-        }
     }
     div()
         .min_w_0()
-        .line_clamp(lines)
+        .line_clamp(shown)
         .text_ellipsis()
         .child(StyledText::new(SharedString::from(s)).with_runs(runs))
-        .into_any_element()
 }
 
-/// Rough check whether `text` overflows `lines` lines at `width` px (13px Plex
-/// averages ~6.6px per character).
+/// Characters a line holds at `width` px (13px Plex averages ~6.6px each).
+fn per_line(width: f32) -> usize {
+    (width / 6.6).max(20.) as usize
+}
+
+/// Rough check whether `text` overflows `lines` lines at `width` px.
 #[must_use]
 pub fn overflows(text: &str, width: f32, lines: usize) -> bool {
-    let per_line = (width / 6.6).max(20.) as usize;
+    let per_line = per_line(width);
     let mut used = 0usize;
     for block in text.lines() {
         used += block.chars().count().div_ceil(per_line).max(1);

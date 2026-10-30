@@ -724,7 +724,7 @@ impl Render for FindingsView {
             )
             .when_some(
                 review.summary.clone().filter(|s| !s.trim().is_empty()),
-                |d, s| d.child(clamped(&t, &s, t.text2, 3)),
+                |d, s| d.child(clamped(&t, &s, t.text2, 3, super::text_width(cx))),
             );
 
         // ---- the findings ----
