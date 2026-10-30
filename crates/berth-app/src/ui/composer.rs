@@ -2,17 +2,21 @@
 //! footer with what rides along (review comments, files) and Send. Files
 //! attach by drop, paste, or ⌘⇧O.
 
+use std::cell::Cell;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use berth_core::files::{MAX_ATTACHMENT_BYTES, human_size, is_inline_image, mime_for};
 use berth_core::{SlotState, WorkflowState};
 use berth_protocol::CommandInfo;
 use gpui::{
-    AnimationExt as _, App, AppContext as _, ClipboardEntry, ClipboardItem, Context, DragMoveEvent,
-    Entity, ExternalPaths, Focusable as _, ImageFormat, InteractiveElement as _, IntoElement,
-    KeyContext, ObjectFit, ParentElement as _, PathPromptOptions, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, div, img,
-    prelude::FluentBuilder as _, px,
+    AnimationExt as _, App, AppContext as _, Bounds, ClipboardEntry, ClipboardItem, Context,
+    CursorStyle, DispatchPhase, DragMoveEvent, Entity, ExternalPaths, Focusable as _, Hitbox,
+    HitboxBehavior, ImageFormat, InteractiveElement as _, IntoElement, KeyContext, MouseButton,
+    MouseDownEvent, MouseMoveEvent, ObjectFit, ParentElement as _, PathPromptOptions, Pixels,
+    Point, Render, SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _,
+    Window, canvas, div, fill, img, point, prelude::FluentBuilder as _, px, size,
 };
 use gpui_component::input::{InputEvent, Position, TextareaState};
 
@@ -57,6 +61,9 @@ pub struct Composer {
     completion: usize,
     /// The text the list was closed at (esc): it stays closed until the text changes.
     completion_dismissed: Option<String>,
+    /// The URL under the pointer (its index among the text's) and whether ⌘
+    /// is down, as last drawn: a change draws the links again.
+    link_hover: Rc<Cell<(Option<usize>, bool)>>,
 }
 
 impl Composer {
@@ -102,6 +109,7 @@ impl Composer {
             notice: None,
             completion: 0,
             completion_dismissed: None,
+            link_hover: Rc::default(),
         }
     }
 
@@ -703,13 +711,17 @@ impl Render for Composer {
             .when(disabled, |d| d.border_color(t.border).opacity(0.6))
             .when(self.drag_hover, |d| d.shadow(vec![ring(&t)]))
             .child(
-                div().min_h(px(64.)).child(
-                    super::kit::bare_textarea(&self.input)
-                        .disabled(disabled)
-                        .on_paste(move |item, _, cx| {
-                            weak.update(cx, |c, cx| c.paste(item, cx)).unwrap_or(false)
-                        }),
-                ),
+                div()
+                    .relative()
+                    .min_h(px(64.))
+                    .child(
+                        super::kit::bare_textarea(&self.input)
+                            .disabled(disabled)
+                            .on_paste(move |item, _, cx| {
+                                weak.update(cx, |c, cx| c.paste(item, cx)).unwrap_or(false)
+                            }),
+                    )
+                    .child(links(&self.input, self.link_hover.clone(), &t)),
             )
             .when(!self.attachments.is_empty(), |d| d.child(chips))
             .child(
@@ -833,6 +845,124 @@ impl Render for Composer {
 
 /// The slash commands for what is typed: name, what it takes, and what it
 /// does (or, for one Berth does itself, where to go instead).
+/// The URLs in the composer's text, underlined. With ⌘ down, the one under
+/// the pointer is a link: the pointing hand, and a click opens it in the
+/// browser (a plain click edits, as anywhere in the text).
+fn links(
+    input: &Entity<TextareaState>,
+    hover: Rc<Cell<(Option<usize>, bool)>>,
+    t: &Tokens,
+) -> impl IntoElement {
+    let input = input.clone();
+    let (soft, strong) = (t.accent.opacity(0.45), t.accent);
+    canvas(
+        |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+        move |_, area: Hitbox, window, cx| {
+            // Painted after the text, so its layout is this frame's.
+            let state = input.read(cx);
+            let text = state.value();
+            let urls: Rc<Vec<(String, Vec<Bounds<Pixels>>)>> = Rc::new(
+                berth_core::links::urls(&text)
+                    .into_iter()
+                    .map(|r| (text[r.clone()].to_owned(), line_rects(state, &text, r)))
+                    .collect(),
+            );
+            if urls.is_empty() {
+                hover.set((None, false));
+                return;
+            }
+            let under = Rc::new({
+                let urls = urls.clone();
+                move |at: Point<Pixels>, area: &Hitbox, window: &Window| {
+                    if !area.is_hovered(window) {
+                        return None;
+                    }
+                    urls.iter()
+                        .position(|(_, rects)| rects.iter().any(|b| b.contains(&at)))
+                }
+            });
+            let now = (
+                under(window.mouse_position(), &area, window),
+                window.modifiers().platform,
+            );
+            hover.set(now);
+            for (i, (_, rects)) in urls.iter().enumerate() {
+                let color = if now == (Some(i), true) { strong } else { soft };
+                for b in rects {
+                    let line = point(b.origin.x, b.bottom() - px(3.));
+                    window.paint_quad(fill(Bounds::new(line, size(b.size.width, px(1.))), color));
+                }
+            }
+            if let (Some(_), true) = now {
+                window.set_cursor_style(CursorStyle::PointingHand, &area);
+            }
+            // Drawn again when the URL under the pointer, or ⌘, changes.
+            let again = {
+                let (hover, under, area) = (hover.clone(), under.clone(), area.clone());
+                Rc::new(move |at: Point<Pixels>, cmd: bool, window: &mut Window| {
+                    let next = (under(at, &area, window), cmd);
+                    if hover.replace(next) != next {
+                        window.refresh();
+                    }
+                })
+            };
+            let moved = again.clone();
+            window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, _| {
+                if phase == DispatchPhase::Bubble {
+                    moved(e.position, e.modifiers.platform, window);
+                }
+            });
+            window.on_modifiers_changed(move |e, window, _| {
+                again(window.mouse_position(), e.modifiers.platform, window);
+            });
+            window.on_mouse_event(move |e: &MouseDownEvent, phase, window, cx| {
+                // Ahead of the text's own handler, which would move the caret.
+                if phase != DispatchPhase::Capture
+                    || e.button != MouseButton::Left
+                    || !e.modifiers.platform
+                {
+                    return;
+                }
+                if let Some((url, _)) = under(e.position, &area, window).and_then(|i| urls.get(i)) {
+                    cx.open_url(url);
+                    cx.stop_propagation();
+                    window.prevent_default();
+                }
+            });
+        },
+    )
+    .absolute()
+    .inset_0()
+}
+
+/// The box `range` of `text` takes on each line it shows on, within what
+/// the field shows.
+fn line_rects(state: &TextareaState, text: &str, range: Range<usize>) -> Vec<Bounds<Pixels>> {
+    let mut rects: Vec<Bounds<Pixels>> = Vec::new();
+    for (i, c) in text[range.clone()].char_indices() {
+        let at = range.start + i;
+        // A character the line wraps after ends on the next line: no box.
+        let Some(b) = state
+            .range_to_bounds(&(at..at + c.len_utf8()))
+            .filter(|b| b.size.width > px(0.))
+        else {
+            continue;
+        };
+        match rects.last_mut() {
+            Some(last) if last.origin.y == b.origin.y => *last = last.union(&b),
+            _ => rects.push(b),
+        }
+    }
+    let shown = state.input_bounds();
+    if shown.size.width > px(0.) {
+        rects.retain_mut(|b| {
+            *b = b.intersect(&shown);
+            b.size.width > px(0.) && b.size.height > px(0.)
+        });
+    }
+    rects
+}
+
 fn completion_list(
     t: &Tokens,
     commands: &[CommandInfo],

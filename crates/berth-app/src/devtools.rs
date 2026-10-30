@@ -26,6 +26,8 @@
 //! mouse_down 120 200          # press the left button at window coordinates (drags too:
 //! mouse_move -200 300         #   moves may leave the window, as a real drag does)
 //! mouse_up -200 300
+//! hover 400 700 cmd          # move with no button down; a trailing `cmd` (any mouse
+//!                             #   command) holds ⌘
 //! quit
 //! ```
 
@@ -402,7 +404,9 @@ pub fn start(cx: &mut App) {
                         });
                     }
                 }),
-                "mouse_down" | "mouse_move" | "mouse_up" => cx.update(|cx| mouse(cmd, arg, cx)),
+                "mouse_down" | "mouse_move" | "mouse_up" | "hover" => {
+                    cx.update(|cx| mouse(cmd, arg, cx));
+                }
                 "quit" => cx.update(|cx| cx.quit()),
                 other => tracing::warn!(other, "unknown devtools command"),
             }
@@ -696,8 +700,9 @@ fn log_windows(cx: &mut App) {
     tracing::info!(count = n, "devtools windows");
 }
 
-/// A left-button press, move or release at window coordinates, dispatched as
-/// the platform would (a fresh frame first, so hit tests see the UI).
+/// A left-button press, move (a drag; `hover`: no button) or release at
+/// window coordinates, ⌘ held when `arg` ends in `cmd`, dispatched as the
+/// platform would (a fresh frame first, so hit tests see the UI).
 fn mouse(cmd: &str, arg: &str, cx: &mut App) {
     use gpui::{Modifiers, MouseButton, PlatformInput, point, px};
     let v: Vec<f32> = arg
@@ -708,23 +713,27 @@ fn mouse(cmd: &str, arg: &str, cx: &mut App) {
         return;
     };
     let position = point(px(x), px(y));
+    let modifiers = Modifiers {
+        platform: arg.split_whitespace().last() == Some("cmd"),
+        ..Modifiers::default()
+    };
     let event = match cmd {
         "mouse_down" => PlatformInput::MouseDown(gpui::MouseDownEvent {
             button: MouseButton::Left,
             position,
-            modifiers: Modifiers::default(),
+            modifiers,
             click_count: 1,
             first_mouse: false,
         }),
-        "mouse_move" => PlatformInput::MouseMove(gpui::MouseMoveEvent {
+        "mouse_move" | "hover" => PlatformInput::MouseMove(gpui::MouseMoveEvent {
             position,
-            pressed_button: Some(MouseButton::Left),
-            modifiers: Modifiers::default(),
+            pressed_button: (cmd == "mouse_move").then_some(MouseButton::Left),
+            modifiers,
         }),
         _ => PlatformInput::MouseUp(gpui::MouseUpEvent {
             button: MouseButton::Left,
             position,
-            modifiers: Modifiers::default(),
+            modifiers,
             click_count: 1,
         }),
     };

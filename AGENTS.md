@@ -813,6 +813,9 @@ settles nothing (ADR 0013).
 - While the agent works, the composer still takes a message (ADR 0018): it joins the
   running round, the agent reads it at its next step, and the flow marks it "while the
   agent worked" (not a rewind point). Slash commands wait until the round ends.
+- URLs in the composer's text (`http(s)://`, `berth_core::links`) are underlined;
+  ⌘-click opens one in the browser, and with ⌘ down the one under the pointer shows
+  the pointing hand. A plain click edits, as anywhere in the text.
 - The composer takes **attachments**: drop files on it, paste files or images, or
   pick them (⌘⇧O). They show as chips until sent. Attachments and **artifacts**
   show in the flow as small tiles: a 56px thumbnail (the image itself, or Quick
@@ -966,7 +969,8 @@ settles nothing (ADR 0013).
   disabled one. The I-beam over text you can select (`ui/select.rs`) and over a
   field's whole box, its padding too (`kit::input_frame`: a click anywhere in it
   goes to the field); in a terminal, the arrow while its program takes the mouse
-  (shift brings the I-beam back). A resize edge keeps its cursor for the whole drag.
+  (shift brings the I-beam back). A URL in the composer with ⌘ down, the pointing
+  hand. A resize edge keeps its cursor for the whole drag.
   A dragged slot shows the arrow; the rail's Slots header an open hand, closed
   while dragged (GPUI holds a dragged element's base cursor across the window).
 - Theme tokens in `berth-app/src/theme.rs`; light/dark follow the system unless
@@ -1015,7 +1019,8 @@ settles nothing (ADR 0013).
   width as a drag would, to check layouts at their narrowest.
   `window <n>` points later commands at another repo window, `windows` logs them
   all, and `mouse_down`/`mouse_move`/`mouse_up <x> <y>` drive real drags (positions
-  may leave the window, as a drag between windows does).
+  may leave the window, as a drag between windows does); `hover <x> <y>` moves with
+  no button down, and a trailing `cmd` on any of them holds ⌘.
 
 
 ### 11.1 Terminals
