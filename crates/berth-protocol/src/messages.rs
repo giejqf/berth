@@ -195,23 +195,75 @@ pub struct SessionSuggestion {
     pub text: String,
 }
 
-/// A task running in the session's background: a subagent, a shell command.
+/// A task Claude Code runs for the session, from `task_started` until its
+/// `task_notification`: a subagent, a shell command, a monitor, in the
+/// foreground (its tool call waits on it) or the background (ADR 0022).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-pub struct BackgroundTask {
+pub struct SessionTask {
     pub task_id: String,
-    /// Claude Code's task type: `local_agent`, `local_bash`, …
+    /// Claude Code's task type: `local_agent`, `local_bash`, `monitor`, …
     pub kind: String,
     pub description: String,
     /// The subagent's type, for a subagent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub agent: Option<String>,
+    /// It runs in the background: no tool call waits on it.
+    #[serde(default)]
+    pub background: bool,
+    /// When it started (unix ms).
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub started_at: i64,
+    /// Its latest one-line status: a subagent's progress summary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub summary: Option<String>,
+    /// The tool calls it made so far (a subagent's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tool_uses: Option<u32>,
+    /// The tool call that started it: a subagent's branch in the flow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tool_use_id: Option<String>,
 }
 
-/// Every live background task, replacing the last list (`background_tasks_changed`).
+/// Every live task of the session, replacing the last list; housekeeping
+/// ones left out.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct SessionTasks {
-    pub tasks: Vec<BackgroundTask>,
+    pub tasks: Vec<SessionTask>,
+}
+
+/// Stop one of the session's tasks (`stopTask`): a subagent, a command. It
+/// leaves the list once Claude Code reports it stopped (ADR 0022).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct TaskStop {
+    pub task_id: String,
+}
+
+/// Read the end of a shell or monitor task's output; answered with
+/// `task.output`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct TaskRead {
+    pub task_id: String,
+}
+
+/// The end of a task's output (the last 8 KiB, as Claude Code keeps it),
+/// escape sequences included, or why it couldn't be read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct TaskOutput {
+    pub task_id: String,
+    pub output: String,
+    /// The whole output's size in bytes.
+    #[ts(type = "number")]
+    pub total_bytes: u64,
+    /// `output` is only the end of a longer output.
+    pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub error: Option<String>,
 }
 
 /// Who Claude Code works as (`accountInfo()`), for the rail's footer.
@@ -340,6 +392,10 @@ pub enum AppToSidecar {
     SessionBackground(SessionBackground),
     #[serde(rename = "sessions.rename")]
     SessionsRename(SessionsRename),
+    #[serde(rename = "task.stop")]
+    TaskStop(TaskStop),
+    #[serde(rename = "task.read")]
+    TaskRead(TaskRead),
 }
 
 impl AppToSidecar {
@@ -359,6 +415,8 @@ impl AppToSidecar {
             Self::SessionsList(_) => "sessions.list",
             Self::SessionBackground(_) => "session.background",
             Self::SessionsRename(_) => "sessions.rename",
+            Self::TaskStop(_) => "task.stop",
+            Self::TaskRead(_) => "task.read",
         }
     }
 }
@@ -737,6 +795,8 @@ pub enum SidecarToApp {
     SessionAccount(SessionAccount),
     #[serde(rename = "sessions.renamed")]
     SessionsRenamed(SessionsRenamed),
+    #[serde(rename = "task.output")]
+    TaskOutput(TaskOutput),
 }
 
 impl SidecarToApp {
@@ -771,6 +831,7 @@ impl SidecarToApp {
             Self::SessionTasks(_) => "session.tasks",
             Self::SessionAccount(_) => "session.account",
             Self::SessionsRenamed(_) => "sessions.renamed",
+            Self::TaskOutput(_) => "task.output",
         }
     }
 }

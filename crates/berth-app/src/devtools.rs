@@ -264,12 +264,17 @@ pub fn start(cx: &mut App) {
                         if cmd == "suggest" {
                             s.suggestions.insert(wf, arg.to_owned());
                         } else {
-                            let tasks = s.background.entry(wf).or_default();
-                            tasks.push(berth_protocol::BackgroundTask {
+                            let tasks = s.tasks.entry(wf).or_default();
+                            tasks.push(berth_protocol::SessionTask {
                                 task_id: format!("t{}", tasks.len()),
                                 kind: "local_bash".into(),
                                 description: arg.to_owned(),
                                 agent: None,
+                                background: true,
+                                started_at: ui::kit::now_ms(),
+                                summary: None,
+                                tool_uses: None,
+                                tool_use_id: None,
                             });
                         }
                         cx.notify();
@@ -763,6 +768,7 @@ fn dispatch(name: &str, cx: &mut App) {
         "ToggleDiffMode" => Box::new(keymap::ToggleDiffMode),
         "ToggleFileList" => Box::new(keymap::ToggleFileList),
         "OpenSettings" => Box::new(keymap::OpenSettings),
+        "ShowTasks" => Box::new(keymap::ShowTasks),
         "ClaudeAccount" => Box::new(keymap::ClaudeAccount),
         "DestroySlot" => Box::new(keymap::DestroySlot),
         "RenameSlot" => Box::new(keymap::RenameSlot),

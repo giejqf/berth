@@ -26,8 +26,8 @@ use gpui_base::motion::MotionReveal;
 use super::answer_card::AnswerCard;
 use super::flow_view::FlowView;
 use super::kit::{
-    Btn, Tone, TypeExt as _, caption, clock, dot, dur, file_chip, icon, link, plural, slot_number,
-    spinner, tag, tokens,
+    Btn, Size, Tone, TypeExt as _, caption, clock, dot, dur, file_chip, icon, link, plural,
+    slot_number, spinner, tag, tokens,
 };
 use super::motion;
 use super::rich::{self, clamped, overflows, rich};
@@ -72,6 +72,10 @@ pub struct RowCtx {
     pub cursor: Option<usize>,
     pub flow_focused: bool,
     pub width: f32,
+    /// The tasks the workflow's session runs, and those asked to stop
+    /// (ADR 0022): a running subagent's row can stop it.
+    pub tasks: Vec<berth_protocol::SessionTask>,
+    pub stopping: HashSet<String>,
 }
 
 // ---- gutter ----
@@ -1121,6 +1125,40 @@ fn group_row(
     row(t, glyph(t.card, glyph_el), line, col)
 }
 
+/// Stop, on a running subagent's row: its task, found by the tool call that
+/// spawned it (ADR 0022). The round goes on without the subagent's result.
+fn lane_stop(lane: &Lane, ctx: &RowCtx) -> Option<AnyElement> {
+    if !matches!(lane.status, BranchState::Running) {
+        return None;
+    }
+    let spawn = ctx.view.branches.iter().find(|b| b.id == lane.branch_id)?;
+    let task = ctx
+        .tasks
+        .iter()
+        .find(|t| t.tool_use_id.as_deref() == Some(spawn.parent_tool_use_id.as_str()))?;
+    let stopping = ctx.stopping.contains(&task.task_id);
+    let (state, wf, id) = (
+        ctx.state.clone(),
+        ctx.view.workflow.id.clone(),
+        task.task_id.clone(),
+    );
+    Some(
+        Btn::new(SharedString::from(format!("lane-stop-{}", lane.branch_id)))
+            .ghost()
+            .size(Size::S22)
+            .icon("stop", 10.)
+            .label(if stopping { "Stopping…" } else { "Stop" })
+            .disabled(stopping)
+            .tooltip("Stop this subagent; the round goes on without its result")
+            .on_click(move |_, _, cx| {
+                // Not the row's own click, which folds it.
+                cx.stop_propagation();
+                state.update(cx, |s, cx| s.stop_task(&wf, &id, cx));
+            })
+            .into_any_element(),
+    )
+}
+
 fn lane_view(t: &Tokens, lane: &Lane, ctx: &RowCtx, window: &mut Window, cx: &mut App) -> Div {
     let failed = matches!(lane.status, BranchState::Error | BranchState::Cancelled);
     let open = ctx.expanded.contains(&lane.branch_id)
@@ -1256,7 +1294,8 @@ fn lane_view(t: &Tokens, lane: &Lane, ctx: &RowCtx, window: &mut Window, cx: &mu
                 .ty(ty::META)
                 .whitespace_nowrap()
                 .child(right),
-        );
+        )
+        .children(lane_stop(lane, ctx));
 
     let mut body = div().flex().flex_col().gap(px(6.)).child(head);
     if open || motion::moving(&unfold) {

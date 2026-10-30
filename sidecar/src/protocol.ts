@@ -389,7 +389,7 @@ export type SlotMessageSent = { request_id: string,
  */
 ok: boolean, text: string, };
 
-export type AppToSidecar = { "type": "session.start" } & SessionStart | { "type": "session.resume" } & SessionResume | { "type": "session.turn" } & SessionTurn | { "type": "session.interrupt" } | { "type": "session.stop" } | { "type": "question.answer" } & QuestionAnswer | { "type": "review.answer" } & ReviewAnswer | { "type": "slot_request.resolved" } & SlotRequestResolved | { "type": "slot_message.sent" } & SlotMessageSent | { "type": "session.configure" } & SessionConfigure | { "type": "sessions.list" } & SessionsList | { "type": "session.background" } & SessionBackground | { "type": "sessions.rename" } & SessionsRename;
+export type AppToSidecar = { "type": "session.start" } & SessionStart | { "type": "session.resume" } & SessionResume | { "type": "session.turn" } & SessionTurn | { "type": "session.interrupt" } | { "type": "session.stop" } | { "type": "question.answer" } & QuestionAnswer | { "type": "review.answer" } & ReviewAnswer | { "type": "slot_request.resolved" } & SlotRequestResolved | { "type": "slot_message.sent" } & SlotMessageSent | { "type": "session.configure" } & SessionConfigure | { "type": "sessions.list" } & SessionsList | { "type": "session.background" } & SessionBackground | { "type": "sessions.rename" } & SessionsRename | { "type": "task.stop" } & TaskStop | { "type": "task.read" } & TaskRead;
 
 export type SessionStarted = { claude_session_id: string, };
 
@@ -562,17 +562,51 @@ subagent: boolean, };
 
 export type SessionSuggestion = { text: string, };
 
-export type BackgroundTask = { task_id: string, 
+export type SessionTask = { task_id: string, 
 /**
- * Claude Code's task type: `local_agent`, `local_bash`, …
+ * Claude Code's task type: `local_agent`, `local_bash`, `monitor`, …
  */
 kind: string, description: string, 
 /**
  * The subagent's type, for a subagent.
  */
-agent?: string, };
+agent?: string, 
+/**
+ * It runs in the background: no tool call waits on it.
+ */
+background: boolean, 
+/**
+ * When it started (unix ms).
+ */
+started_at: number, 
+/**
+ * Its latest one-line status: a subagent's progress summary.
+ */
+summary?: string, 
+/**
+ * The tool calls it made so far (a subagent's).
+ */
+tool_uses?: number, 
+/**
+ * The tool call that started it: a subagent's branch in the flow.
+ */
+tool_use_id?: string, };
 
-export type SessionTasks = { tasks: Array<BackgroundTask>, };
+export type SessionTasks = { tasks: Array<SessionTask>, };
+
+export type TaskStop = { task_id: string, };
+
+export type TaskRead = { task_id: string, };
+
+export type TaskOutput = { task_id: string, output: string, 
+/**
+ * The whole output's size in bytes.
+ */
+total_bytes: number, 
+/**
+ * `output` is only the end of a longer output.
+ */
+truncated: boolean, error?: string, };
 
 export type Account = { email?: string, organization?: string, 
 /**
@@ -596,11 +630,11 @@ provider?: string, };
 
 export type SessionError = { message: string, fatal: boolean, };
 
-export type SidecarToApp = { "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.reply" } & NodeReply | { "type": "node.artifact" } & NodeArtifact | { "type": "node.review" } & NodeReview | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "slot.message" } & SlotMessageRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels | { "type": "sessions.listed" } & SessionsListed | { "type": "session.context" } & SessionContext | { "type": "session.quota" } & SessionQuota | { "type": "node.compacted" } & NodeCompacted | { "type": "session.commands" } & SessionCommands | { "type": "branch.progress" } & BranchProgress | { "type": "node.refusal" } & NodeRefusal | { "type": "session.suggestion" } & SessionSuggestion | { "type": "session.tasks" } & SessionTasks | { "type": "session.account" } & SessionAccount | { "type": "sessions.renamed" } & SessionsRenamed;
+export type SidecarToApp = { "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.reply" } & NodeReply | { "type": "node.artifact" } & NodeArtifact | { "type": "node.review" } & NodeReview | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "slot.message" } & SlotMessageRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels | { "type": "sessions.listed" } & SessionsListed | { "type": "session.context" } & SessionContext | { "type": "session.quota" } & SessionQuota | { "type": "node.compacted" } & NodeCompacted | { "type": "session.commands" } & SessionCommands | { "type": "branch.progress" } & BranchProgress | { "type": "node.refusal" } & NodeRefusal | { "type": "session.suggestion" } & SessionSuggestion | { "type": "session.tasks" } & SessionTasks | { "type": "session.account" } & SessionAccount | { "type": "sessions.renamed" } & SessionsRenamed | { "type": "task.output" } & TaskOutput;
 
-export type AppMessage = { id: string, } & ({ "type": "session.start" } & SessionStart | { "type": "session.resume" } & SessionResume | { "type": "session.turn" } & SessionTurn | { "type": "session.interrupt" } | { "type": "session.stop" } | { "type": "question.answer" } & QuestionAnswer | { "type": "review.answer" } & ReviewAnswer | { "type": "slot_request.resolved" } & SlotRequestResolved | { "type": "slot_message.sent" } & SlotMessageSent | { "type": "session.configure" } & SessionConfigure | { "type": "sessions.list" } & SessionsList | { "type": "session.background" } & SessionBackground | { "type": "sessions.rename" } & SessionsRename);
+export type AppMessage = { id: string, } & ({ "type": "session.start" } & SessionStart | { "type": "session.resume" } & SessionResume | { "type": "session.turn" } & SessionTurn | { "type": "session.interrupt" } | { "type": "session.stop" } | { "type": "question.answer" } & QuestionAnswer | { "type": "review.answer" } & ReviewAnswer | { "type": "slot_request.resolved" } & SlotRequestResolved | { "type": "slot_message.sent" } & SlotMessageSent | { "type": "session.configure" } & SessionConfigure | { "type": "sessions.list" } & SessionsList | { "type": "session.background" } & SessionBackground | { "type": "sessions.rename" } & SessionsRename | { "type": "task.stop" } & TaskStop | { "type": "task.read" } & TaskRead);
 
-export type SidecarMessage = { id: string, reply_to?: string, } & ({ "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.reply" } & NodeReply | { "type": "node.artifact" } & NodeArtifact | { "type": "node.review" } & NodeReview | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "slot.message" } & SlotMessageRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels | { "type": "sessions.listed" } & SessionsListed | { "type": "session.context" } & SessionContext | { "type": "session.quota" } & SessionQuota | { "type": "node.compacted" } & NodeCompacted | { "type": "session.commands" } & SessionCommands | { "type": "branch.progress" } & BranchProgress | { "type": "node.refusal" } & NodeRefusal | { "type": "session.suggestion" } & SessionSuggestion | { "type": "session.tasks" } & SessionTasks | { "type": "session.account" } & SessionAccount | { "type": "sessions.renamed" } & SessionsRenamed);
+export type SidecarMessage = { id: string, reply_to?: string, } & ({ "type": "session.started" } & SessionStarted | { "type": "raw.event" } & RawEvent | { "type": "node.decision" } & NodeDecision | { "type": "node.question" } & NodeQuestion | { "type": "node.summary" } & NodeSummary | { "type": "node.outcome" } & NodeOutcome | { "type": "node.reply" } & NodeReply | { "type": "node.artifact" } & NodeArtifact | { "type": "node.review" } & NodeReview | { "type": "branch.spawned" } & BranchSpawned | { "type": "branch.collected" } & BranchCollected | { "type": "slot.request" } & SlotRequest | { "type": "slot.message" } & SlotMessageRequest | { "type": "round.ended" } & RoundEnded | { "type": "session.cost" } & SessionCost | { "type": "session.error" } & SessionError | { "type": "session.models" } & SessionModels | { "type": "sessions.listed" } & SessionsListed | { "type": "session.context" } & SessionContext | { "type": "session.quota" } & SessionQuota | { "type": "node.compacted" } & NodeCompacted | { "type": "session.commands" } & SessionCommands | { "type": "branch.progress" } & BranchProgress | { "type": "node.refusal" } & NodeRefusal | { "type": "session.suggestion" } & SessionSuggestion | { "type": "session.tasks" } & SessionTasks | { "type": "session.account" } & SessionAccount | { "type": "sessions.renamed" } & SessionsRenamed | { "type": "task.output" } & TaskOutput);
 
 export const MCP_SERVER_NAME = "berth" as const;
 

@@ -45,6 +45,8 @@ pub struct FlowView {
     focus: FocusHandle,
     cursor: Option<usize>,
     live_key: Option<(usize, usize, Option<String>)>,
+    /// The header's tasks count and its panel (ADR 0022).
+    tasks: Entity<super::tasks::TasksMenu>,
 }
 
 impl FlowView {
@@ -55,6 +57,7 @@ impl FlowView {
         let answer = cx.new(|cx| AnswerCard::new(backend, window, cx));
         cx.observe_in(&state, window, |this, _, window, cx| this.sync(window, cx))
             .detach();
+        let tasks = cx.new(|cx| super::tasks::TasksMenu::new(state.clone(), cx));
         let mut this = Self {
             state,
             list,
@@ -66,6 +69,7 @@ impl FlowView {
             focus: cx.focus_handle(),
             cursor: None,
             live_key: None,
+            tasks,
         };
         this.sync(window, cx);
         this
@@ -94,6 +98,11 @@ impl FlowView {
     /// An answer that did not go out: its card unlocks.
     pub fn unsend(&mut self, question_id: &str, cx: &mut Context<'_, Self>) {
         self.answer.update(cx, |a, cx| a.unsend(question_id, cx));
+    }
+
+    /// ⌘⇧B: the tasks panel opens, or closes.
+    pub fn toggle_tasks(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.tasks.update(cx, |m, cx| m.toggle(window, cx));
     }
 
     pub fn focus_answer(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
@@ -500,7 +509,7 @@ impl FlowView {
                             .child(wf.origin.title.clone()),
                     )
                     .child(state_chip)
-                    .children(background_chip(t, state.background.get(&wf.id)))
+                    .child(self.tasks.clone())
                     .child(vrule(t))
                     .when(running, |d| {
                         d.child(
@@ -536,45 +545,6 @@ impl FlowView {
             )
             .child(meta)
     }
-}
-
-/// "2 in background", with the tasks on hover; nothing when none run.
-fn background_chip(
-    t: &Tokens,
-    tasks: Option<&Vec<berth_protocol::BackgroundTask>>,
-) -> Option<gpui::AnyElement> {
-    let tasks = tasks.filter(|t| !t.is_empty())?;
-    let lines: Vec<String> = tasks
-        .iter()
-        .map(|task| {
-            let kind = match (task.kind.as_str(), &task.agent) {
-                (_, Some(agent)) => format!("subagent, {agent}"),
-                ("local_bash", _) => "command".to_owned(),
-                ("local_agent", _) => "subagent".to_owned(),
-                (other, None) => other.replace('_', " "),
-            };
-            format!("{} ({kind})", task.description)
-        })
-        .collect();
-    let tip: gpui::SharedString = lines.join("\n").into();
-    Some(
-        div()
-            .id("background-tasks")
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap(px(6.))
-            .child(spinner("background-spin", 10, t.text2))
-            .child(
-                div()
-                    .ty(ty::META)
-                    .text_color(t.text2)
-                    .whitespace_nowrap()
-                    .child(format!("{} in background", tasks.len())),
-            )
-            .tooltip(move |w, cx| gpui_component::tooltip::Tooltip::new(tip.clone()).build(w, cx))
-            .into_any_element(),
-    )
 }
 
 fn origin_glyph(kind: berth_protocol::OriginKind) -> &'static str {
@@ -692,6 +662,12 @@ impl Render for FlowView {
             cursor: self.cursor,
             flow_focused: self.focus.contains_focused(window, cx),
             width,
+            tasks: state
+                .tasks
+                .get(&view.workflow.id)
+                .cloned()
+                .unwrap_or_default(),
+            stopping: state.stopping.clone(),
         });
         let header = self.header(&t, &view, cx);
         let rows = list(self.list.clone(), move |ix, window, cx| -> AnyElement {

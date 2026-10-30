@@ -144,6 +144,21 @@ export class FakeQuery implements AgentQuery {
     return Promise.resolve(true);
   }
 
+  stopped: string[] = [];
+
+  stopTask(taskId: string): Promise<void> {
+    this.stopped.push(taskId);
+    return Promise.resolve();
+  }
+
+  taskOutput: Record<string, string> = {};
+
+  getTaskOutput(taskId: string): Promise<{ output: string; total_bytes: number; truncated: boolean }> {
+    const output = this.taskOutput[taskId];
+    if (output === undefined) return Promise.reject(new Error(`no such task: ${taskId}`));
+    return Promise.resolve({ output, total_bytes: output.length, truncated: false });
+  }
+
   usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(): Promise<UsageReport> {
     this.usageCalls += 1;
     return Promise.resolve(this.usage);

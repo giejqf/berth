@@ -92,8 +92,13 @@ pub struct RepoState {
     pub commands: berth_core::commands::Commands,
     /// A predicted next prompt per idle workflow (ADR 0016).
     pub suggestions: HashMap<String, String>,
-    /// What runs in each workflow's session's background.
-    pub background: HashMap<String, Vec<berth_protocol::BackgroundTask>>,
+    /// The tasks each workflow's session runs: subagents, commands, in the
+    /// foreground or background (ADR 0022).
+    pub tasks: HashMap<String, Vec<berth_protocol::SessionTask>>,
+    /// The end of each task's output read last, by task id.
+    pub task_output: HashMap<String, berth_protocol::TaskOutput>,
+    /// Tasks asked to stop that Claude Code hasn't reported stopped yet.
+    pub stopping: HashSet<String>,
     pub theme_setting: Option<String>,
     /// Whether the window shows the review pane (mirrored from the window).
     pub review_open: bool,
@@ -222,7 +227,9 @@ impl RepoState {
             model_setting: None,
             commands: berth_core::commands::Commands::default(),
             suggestions: HashMap::new(),
-            background: HashMap::new(),
+            tasks: HashMap::new(),
+            task_output: HashMap::new(),
+            stopping: HashSet::new(),
             theme_setting: None,
             terminals: HashMap::new(),
             terminal_pending: HashSet::new(),
@@ -242,6 +249,25 @@ impl RepoState {
     pub fn selected(&self) -> Option<&SlotEntry> {
         let id = self.selected_slot.as_ref()?;
         self.slots.iter().find(|s| &s.slot.id == id)
+    }
+
+    /// Ask the workflow's session to stop task `task_id` (ADR 0022); it
+    /// shows "Stopping…" until Claude Code reports it stopped.
+    pub fn stop_task(&mut self, workflow_id: &str, task_id: &str, cx: &mut Context<'_, Self>) {
+        self.backend.send(Command::StopTask {
+            workflow_id: workflow_id.to_owned(),
+            task_id: task_id.to_owned(),
+        });
+        self.stopping.insert(task_id.to_owned());
+        cx.notify();
+    }
+
+    /// Ask for the end of a command's or monitor's output.
+    pub fn read_task(&self, workflow_id: &str, task_id: &str) {
+        self.backend.send(Command::ReadTask {
+            workflow_id: workflow_id.to_owned(),
+            task_id: task_id.to_owned(),
+        });
     }
 
     pub fn selected_workflow_id(&self) -> Option<String> {
@@ -651,12 +677,26 @@ impl RepoState {
                 self.suggestions.insert(workflow_id, text);
                 cx.notify();
             }
-            UiEvent::BackgroundTasks { workflow_id, tasks } if self.knows(&workflow_id) => {
-                if tasks.is_empty() {
-                    self.background.remove(&workflow_id);
-                } else {
-                    self.background.insert(workflow_id, tasks);
+            UiEvent::Tasks { workflow_id, tasks } if self.knows(&workflow_id) => {
+                let before = self.tasks.remove(&workflow_id).unwrap_or_default();
+                // A task that ended takes its output and its "Stopping…" along.
+                for gone in before
+                    .iter()
+                    .filter(|b| !tasks.iter().any(|t| t.task_id == b.task_id))
+                {
+                    self.stopping.remove(&gone.task_id);
+                    self.task_output.remove(&gone.task_id);
                 }
+                if !tasks.is_empty() {
+                    self.tasks.insert(workflow_id, tasks);
+                }
+                cx.notify();
+            }
+            UiEvent::TaskOutput {
+                workflow_id,
+                output,
+            } if self.knows(&workflow_id) => {
+                self.task_output.insert(output.task_id.clone(), output);
                 cx.notify();
             }
             UiEvent::ShowFindings { workflow_id } if self.knows(&workflow_id) => {

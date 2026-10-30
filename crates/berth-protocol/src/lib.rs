@@ -134,8 +134,11 @@ pub fn typescript() -> String {
         BranchProgress,
         NodeRefusal,
         SessionSuggestion,
-        BackgroundTask,
+        SessionTask,
         SessionTasks,
+        TaskStop,
+        TaskRead,
+        TaskOutput,
         Account,
         SessionAccount,
         SessionError,
@@ -561,6 +564,42 @@ mod tests {
         roundtrip_app(&AppMessage {
             id: "b".into(),
             body: AppToSidecar::SessionBackground(SessionBackground { tool_use_id: None }),
+        });
+        // Tasks (ADR 0022): stop one, read a command's output.
+        roundtrip_app(&AppMessage {
+            id: "s".into(),
+            body: AppToSidecar::TaskStop(TaskStop {
+                task_id: "t1".into(),
+            }),
+        });
+        roundtrip_app(&AppMessage {
+            id: "o".into(),
+            body: AppToSidecar::TaskRead(TaskRead {
+                task_id: "t1".into(),
+            }),
+        });
+        let tasks: SidecarMessage = serde_json::from_value(serde_json::json!({
+            "id": "k",
+            "type": "session.tasks",
+            "tasks": [{"task_id": "t1", "kind": "local_bash", "description": "Run the tests",
+                       "background": true, "started_at": 1_700_000_000_000_i64}]
+        }))
+        .unwrap();
+        let SidecarToApp::SessionTasks(list) = &tasks.body else {
+            panic!("not session.tasks");
+        };
+        assert!(list.tasks[0].background && list.tasks[0].summary.is_none());
+        roundtrip_sidecar(&tasks);
+        roundtrip_sidecar(&SidecarMessage {
+            id: "w".into(),
+            reply_to: None,
+            body: SidecarToApp::TaskOutput(TaskOutput {
+                task_id: "t1".into(),
+                output: "ok\n".into(),
+                total_bytes: 3,
+                truncated: false,
+                error: None,
+            }),
         });
         let refusal: SidecarMessage = serde_json::from_value(serde_json::json!({
             "id": "r",

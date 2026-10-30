@@ -211,7 +211,7 @@ impl Shared {
     /// The workflow's live session, no longer its: what waited on it goes too.
     pub(super) fn take_session(&self, workflow_id: &str) -> Option<Arc<Session>> {
         lock(&self.restart_after_round).remove(workflow_id);
-        lock(&self.background).remove(workflow_id);
+        lock(&self.tasks).remove(workflow_id);
         self.keep_awake();
         let taken = lock(&self.sessions).remove(workflow_id);
         if taken.is_some() {
@@ -246,7 +246,7 @@ impl Shared {
     /// Restart the workflow's session if it waits for that and is quiet now:
     /// idle, nothing in the background.
     fn restart_if_due(self: &Arc<Self>, workflow_id: &str) {
-        let quiet = !lock(&self.background).contains(workflow_id)
+        let quiet = !lock(&self.tasks).contains(workflow_id)
             && self
                 .core()
                 .store
@@ -266,7 +266,7 @@ impl Shared {
             Ok(fx) => self.run_effects(workflow_id, fx),
             Err(e) => tracing::error!(error = %e, "settling a restarted session failed"),
         }
-        self.emit(UiEvent::BackgroundTasks {
+        self.emit(UiEvent::Tasks {
             workflow_id: workflow_id.to_owned(),
             tasks: Vec::new(),
         });
@@ -564,15 +564,15 @@ impl Shared {
                         }
                         berth_protocol::SidecarToApp::SessionTasks(t) => {
                             {
-                                let mut background = lock(&self.background);
+                                let mut running = lock(&self.tasks);
                                 if t.tasks.is_empty() {
-                                    background.remove(&workflow_id);
+                                    running.remove(&workflow_id);
                                 } else {
-                                    background.insert(workflow_id.clone());
+                                    running.insert(workflow_id.clone());
                                 }
                             }
                             self.keep_awake();
-                            self.emit(UiEvent::BackgroundTasks {
+                            self.emit(UiEvent::Tasks {
                                 workflow_id: workflow_id.clone(),
                                 tasks: t.tasks.clone(),
                             });
@@ -580,6 +580,12 @@ impl Shared {
                         }
                         berth_protocol::SidecarToApp::SessionAccount(a) => {
                             self.remember_account(&a.account);
+                        }
+                        berth_protocol::SidecarToApp::TaskOutput(o) => {
+                            self.emit(UiEvent::TaskOutput {
+                                workflow_id: workflow_id.clone(),
+                                output: o.clone(),
+                            });
                         }
                         _ => {}
                     }
@@ -633,7 +639,7 @@ impl Shared {
                     };
                     if current {
                         lock(&self.restart_after_round).remove(&workflow_id);
-                        lock(&self.background).remove(&workflow_id);
+                        lock(&self.tasks).remove(&workflow_id);
                         self.keep_awake();
                         self.emit(UiEvent::SlotRequestsGone {
                             workflow_id: workflow_id.clone(),
@@ -642,8 +648,8 @@ impl Shared {
                     if !current {
                         break;
                     }
-                    // Background tasks die with the session.
-                    self.emit(UiEvent::BackgroundTasks {
+                    // Its tasks die with the session.
+                    self.emit(UiEvent::Tasks {
                         workflow_id: workflow_id.clone(),
                         tasks: Vec::new(),
                     });

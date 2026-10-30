@@ -43,6 +43,7 @@ import type {
   WriteSummaryInput,
 } from "./protocol.js";
 import { AsyncQueue } from "./queue.js";
+import { TaskTracker } from "./tasks.js";
 import { type ContextReport, type UsageReport, contextCategories, quotaFromRateLimit, quotaFromUsage } from "./usage.js";
 import { berthToolName, createBerthServer, type CallContext, type ToolHost, type ToolOutcome } from "./tools.js";
 
@@ -108,6 +109,10 @@ export interface AgentQuery extends AsyncIterable<SDKMessage> {
   supportedCommands?(): Promise<SlashCommand[]>;
   accountInfo?(): Promise<AccountInfo>;
   backgroundTasks?(toolUseId?: string): Promise<boolean>;
+  stopTask?(taskId: string): Promise<void>;
+  /** At runtime on the SDK's `Query` (the `get_task_output` control), not
+   * in its published types. */
+  getTaskOutput?(taskId: string): Promise<{ output: string; total_bytes: number; truncated: boolean }>;
   getContextUsage?(opts?: { detail?: "summary" | "full" }): Promise<ContextReport>;
   usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET?(opts?: { skipBehaviors?: boolean }): Promise<UsageReport>;
 }
@@ -178,6 +183,7 @@ export class Session implements ToolHost {
    * through: a refused one sends them again. */
   private replay?: SDKUserMessage[];
   private readonly branches: BranchTracker;
+  private readonly tasks: TaskTracker;
   private readonly toolUses = new Map<string, ObservedToolUse>();
   private readonly toolUseWaiters = new Map<string, Array<(t: ObservedToolUse) => void>>();
   private readonly questions = new Map<string, Pending<string>>();
@@ -210,6 +216,7 @@ export class Session implements ToolHost {
     this.queryFn = deps.query ?? defaultQuery;
     this.now = deps.now ?? Date.now;
     this.branches = new BranchTracker(this.now);
+    this.tasks = new TaskTracker(this.now);
   }
 
   get started(): boolean {
@@ -420,6 +427,9 @@ export class Session implements ToolHost {
       agentProgressSummaries: true,
       forwardSubagentText: true,
       promptSuggestions: true,
+      // Berth stops tasks one at a time (ADR 0022): an interrupt ends the
+      // turn and spares what runs in the background.
+      perTaskStopAffordance: true,
       ...(msg.model ? { model: msg.model } : {}),
       ...(msg.effort ? { effort: msg.effort } : {}),
       ...(claudePath() ? { pathToClaudeCodeExecutable: claudePath() } : {}),
@@ -463,12 +473,18 @@ export class Session implements ToolHost {
     switch (msg.type) {
       case "system":
         if (msg.subtype === "init") this.onInit(msg.session_id, msg.terminal_slash_commands ?? []);
-        else if (msg.subtype === "task_notification") this.onTaskNotification(msg);
+        else if (msg.subtype === "task_notification") {
+          this.onTaskNotification(msg);
+          this.emitTasks(this.tasks.ended(msg.task_id));
+        } else if (msg.subtype === "task_started") this.emitTasks(this.tasks.started(msg));
+        else if (msg.subtype === "task_updated") this.emitTasks(this.tasks.updated(msg));
         else if (msg.subtype === "compact_boundary") this.onCompacted(msg.compact_metadata);
         else if (msg.subtype === "commands_changed") this.emitCommands(msg.commands);
         else if (msg.subtype === "local_command_output") this.onCommandOutput(msg.content);
-        else if (msg.subtype === "task_progress") this.onTaskProgress(msg.tool_use_id, msg.summary);
-        else if (msg.subtype === "background_tasks_changed") this.onBackgroundTasks(msg.tasks);
+        else if (msg.subtype === "task_progress") {
+          this.onTaskProgress(msg.tool_use_id, msg.summary);
+          this.emitTasks(this.tasks.progress(msg));
+        } else if (msg.subtype === "background_tasks_changed") this.emitTasks(this.tasks.background(msg.tasks));
         else if (msg.subtype === "model_refusal_fallback" || msg.subtype === "model_refusal_no_fallback")
           this.onRefusal(msg);
         break;
@@ -550,21 +566,38 @@ export class Session implements ToolHost {
     if (branch && text) this.emitter.emit({ type: "branch.progress", branch_id: branch.branchId, summary: text });
   }
 
-  /** The live background tasks, housekeeping ones left out. */
-  private onBackgroundTasks(
-    tasks: ReadonlyArray<{ task_id: string; task_type: string; description: string; subagent_type?: string; ambient?: boolean }>,
-  ): void {
-    this.emitter.emit({
-      type: "session.tasks",
-      tasks: tasks
-        .filter((t) => !t.ambient)
-        .map((t) => ({
-          task_id: t.task_id,
-          kind: t.task_type,
-          description: t.description,
-          ...(t.subagent_type && t.subagent_type !== "main-session" ? { agent: t.subagent_type } : {}),
-        })),
-    });
+  /** The session's live tasks, when they changed (ADR 0022). */
+  private emitTasks(changed: boolean): void {
+    if (changed) this.emitter.emit({ type: "session.tasks", tasks: this.tasks.list() });
+  }
+
+  /** Stop one task; it leaves the list once Claude Code reports it stopped. */
+  async stopTask(taskId: string): Promise<void> {
+    if (!this.q?.stopTask) {
+      this.error("Nothing to stop: no session.", false);
+      return;
+    }
+    try {
+      await this.q.stopTask(taskId);
+    } catch (e) {
+      this.error(`Could not stop it: ${e instanceof Error ? e.message : String(e)}`, false);
+    }
+  }
+
+  /** The end of a shell or monitor task's output, for the app. */
+  async readTask(taskId: string): Promise<void> {
+    const reply = (r: { output: string; total_bytes: number; truncated: boolean }, error?: string) =>
+      this.emitter.emit({ type: "task.output", task_id: taskId, ...r, ...(error ? { error } : {}) });
+    const none = { output: "", total_bytes: 0, truncated: false };
+    if (!this.q?.getTaskOutput) {
+      reply(none, "This session can't read a task's output.");
+      return;
+    }
+    try {
+      reply(await this.q.getTaskOutput(taskId));
+    } catch (e) {
+      reply(none, e instanceof Error ? e.message : String(e));
+    }
   }
 
   private onRefusal(msg: {

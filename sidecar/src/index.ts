@@ -45,6 +45,12 @@ export function dispatch(session: Session, msg: AppMessage, emitter: Emitter): v
     case "session.background":
       void session.background(msg.tool_use_id);
       break;
+    case "task.stop":
+      void session.stopTask(msg.task_id);
+      break;
+    case "task.read":
+      void session.readTask(msg.task_id);
+      break;
     default: {
       const unknown = msg as { type: string; id: string };
       emitter.emit({ type: "session.error", message: `unknown message type ${unknown.type}`, fatal: false }, unknown.id);

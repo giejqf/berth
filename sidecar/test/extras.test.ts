@@ -69,7 +69,7 @@ describe("SDK extras (ADR 0016)", () => {
     const branch = emitter.ofType("branch.spawned")[0]?.branch_id;
     expect(emitter.ofType("branch.progress")[0]).toMatchObject({ branch_id: branch, summary: "Reading the auth module" });
     expect(emitter.ofType("session.tasks")[0]?.tasks).toEqual([
-      { task_id: "t1", kind: "local_agent", description: "Survey", agent: "general-purpose" },
+      { task_id: "t1", kind: "local_agent", description: "Survey", agent: "general-purpose", background: true, started_at: 0 },
     ]);
     expect(emitter.ofType("node.refusal")[0]).toMatchObject({
       model: "claude-opus-5-5",
@@ -82,6 +82,43 @@ describe("SDK extras (ADR 0016)", () => {
 
     await session.background();
     expect(fake.backgrounded).toEqual([undefined]);
+  });
+
+  it("tracks every task, stops one and reads a command's output (ADR 0022)", async () => {
+    const { emitter, session, q } = setup();
+    const fake = q.last();
+    // Berth offers a Stop per task, so an interrupt spares the background.
+    expect(fake.options?.perTaskStopAffordance).toBe(true);
+    fake.send(sdk.init("abc"));
+    session.turn("go");
+    const base = { type: "system", uuid: "u", session_id: "abc" } as const;
+    fake.send({ ...base, subtype: "task_started", task_id: "a1", tool_use_id: "agent-1", description: "Survey", subagent_type: "Explore", task_type: "local_agent", is_backgrounded: false });
+    fake.send({ ...base, subtype: "task_started", task_id: "b1", tool_use_id: "bash-1", description: "Run the tests", task_type: "local_bash", is_backgrounded: false });
+    fake.send({ ...base, subtype: "task_started", task_id: "w1", description: "file watcher", task_type: "monitor", ambient: true });
+    fake.send({ ...base, subtype: "task_progress", task_id: "a1", tool_use_id: "agent-1", description: "Survey", usage: { total_tokens: 9, tool_uses: 4, duration_ms: 9 }, summary: "Reading the auth module" });
+    fake.send({ ...base, subtype: "task_updated", task_id: "b1", patch: { is_backgrounded: true } });
+    await flush();
+    const last = () => emitter.ofType("session.tasks").at(-1)?.tasks;
+    expect(last()).toEqual([
+      { task_id: "a1", kind: "local_agent", description: "Survey", agent: "Explore", background: false, started_at: 0, tool_use_id: "agent-1", summary: "Reading the auth module", tool_uses: 4 },
+      { task_id: "b1", kind: "local_bash", description: "Run the tests", background: true, started_at: 0, tool_use_id: "bash-1" },
+    ]);
+
+    fake.taskOutput.b1 = "3 passed\n";
+    await session.readTask("b1");
+    await session.readTask("gone");
+    expect(emitter.ofType("task.output")).toEqual([
+      { type: "task.output", task_id: "b1", output: "3 passed\n", total_bytes: 9, truncated: false },
+      { type: "task.output", task_id: "gone", output: "", total_bytes: 0, truncated: false, error: "no such task: gone" },
+    ]);
+
+    // Stopping goes to Claude Code; the task leaves once it reports so.
+    await session.stopTask("b1");
+    expect(fake.stopped).toEqual(["b1"]);
+    fake.send({ ...base, subtype: "task_notification", task_id: "b1", tool_use_id: "bash-1", status: "stopped", output_file: "/tmp/b1", summary: "" });
+    fake.send({ ...base, subtype: "task_updated", task_id: "a1", patch: { status: "completed" } });
+    await flush();
+    expect(last()).toEqual([]);
   });
 
   it("resumes the whole conversation when Claude Code refuses the guarded one", async () => {

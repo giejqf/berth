@@ -344,8 +344,9 @@ the main lane.
   current step; a failed row opens itself. Subagents' own text is forwarded
   (`forwardSubagentText`), so "Details" shows their reasoning, not only their tools.
   The CollectResults node is folded into its row. "Details" → that subagent's
-  transcript slice. Cancel is session-wide in v1 (Claude Code has no per-subagent
-  interrupt), so cancelling a branch interrupts the round.
+  transcript slice. A running subagent's row has **Stop**: its task alone stops
+  (`task.stop`, found by the tool call that spawned it), it collects as cancelled,
+  and the round goes on without its result (ADR 0022).
 
 ### 5.5 Agent-side `Prompt` ingestion
 
@@ -683,6 +684,8 @@ session.start    { workflow_id, cwd, system_prompt, env, allowed_tools, connecto
 session.resume   { workflow_id, claude_session_id, resume_at?, drops_turn?, cwd, … }   # resume_at: a rewind (ADR 0009); drops_turn: its one turn (ADR 0016)
 session.turn     { text, attachments?: [{ path, mime }], uuid? }   # a Prompt or nudge; images become image blocks; uuid: the turn's in the transcript; during a round it joins it (ADR 0018)
 session.background { tool_use_id? }   # move running foreground tool calls to the background (ADR 0016)
+task.stop        { task_id }   # stop one task: a subagent, a command (stopTask; ADR 0022)
+task.read        { task_id }   # the end of a command's or monitor's output; answered with task.output
 sessions.rename  { session_id, title, dir }   # no session needed: retitle it in Claude Code's history
 session.interrupt
 session.stop
@@ -718,7 +721,8 @@ node.refusal     { model, fallback_model?, category?, explanation?, subagent }  
 node.reply       { message }                     # the agent's answer (ADR 0019)
 branch.progress  { branch_id, summary }          # a subagent's task_progress summary
 session.suggestion { text }                      # prompt_suggestion: a predicted next prompt
-session.tasks    { tasks: [{ task_id, kind, description, agent? }] }   # background_tasks_changed, ambient ones left out
+session.tasks    { tasks: [{ task_id, kind, description, agent?, background, started_at, summary?, tool_uses?, tool_use_id? }] }   # every live task, foreground or background, housekeeping ones left out (ADR 0022)
+task.output      { task_id, output, total_bytes, truncated, error? }   # reply to task.read: the last 8 KiB
 session.account  { email?, organization?, plan?, provider? }   # accountInfo()
 sessions.renamed { ok, error? }                  # reply to sessions.rename
 session.commands { commands: [{ name, description, argument_hint, aliases, builtin }], terminal: [name] }   # supportedCommands()
@@ -887,9 +891,8 @@ settles nothing (ADR 0013).
   name (else the workflow's title); renaming a slot renames it there too (host slots).
   After a round Claude Code may suggest the next prompt: the composer's status line
   shows it while the field is empty, and Tab takes it (bound in `Suggesting > Input`).
-  The flow header counts what runs in the background ("2 in background", the tasks on
-  hover); while a round runs, **Background** (⌘B, ⌘K) moves a long command or a
-  subagent there, and the round goes on. Each turn Berth sends carries a uuid
+  While a round runs, **Background** (⌘B, ⌘K) moves a long command or a subagent
+  to the background, and the round goes on. Each turn Berth sends carries a uuid
   (`rounds.turn_uuid`): a rewind that drops exactly one clean turn declares it
   (`resumeDropsTurn`, `workflows.resume_drops`), so Claude Code refuses to drop anything
   else; on a refusal the sidecar resumes the whole conversation and sends the turn
@@ -907,6 +910,15 @@ settles nothing (ADR 0013).
   API keys and cloud providers from the environment show as ready, with no sign in
   or out. Node.js missing (or older than 22) blocks host agents the same way, with
   **Get Node.js** in place of Sign in…; Settings and Welcome list it with Claude Code.
+- **Tasks** (`ui/tasks.rs`, ADR 0022): what the selected workflow's session runs now:
+  its subagents, shell commands and monitors, foreground or background. The flow
+  header counts them ("3 tasks"); a click or ⌘⇧B (⌘K) opens the panel: each task
+  with what it is, how long it has run, whether the round waits on it, its tool
+  calls and latest summary; **Output** for a command or monitor (its last lines as
+  plain text, `berth_core::ansi`, read again every 2 s while shown); **Stop**, and
+  **Stop all**. A stopped task says "Stopping…" until Claude Code reports it gone.
+  Interrupt (⌘.) ends only the turn: Berth declares `perTaskStopAffordance`, so
+  background tasks go on until stopped here.
 - **Keeping the Mac awake** (`backend/awake.rs`): while an agent works anywhere (a
   round in flight, a slot being created or torn down, something in a session's
   background; `Store::agents_working`), Berth holds a user-initiated `NSProcessInfo`

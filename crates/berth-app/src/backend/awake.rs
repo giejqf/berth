@@ -1,5 +1,5 @@
 //! Keeping the Mac awake while an agent works: a round in flight, a slot
-//! being created or torn down, something running in the background.
+//! being created or torn down, a task its session runs (a background one).
 //!
 //! Claude Code holds a sleep inhibitor only in its own terminal UI, not
 //! headless as Berth runs it, so Berth holds one: a user-initiated activity,
@@ -92,7 +92,7 @@ impl Shared {
                 core.store.agents_working().unwrap_or(false),
             )
         };
-        let background = !lock(&self.background).is_empty();
-        self.awake.set(!off && (working || background));
+        let tasks = !lock(&self.tasks).is_empty();
+        self.awake.set(!off && (working || tasks));
     }
 }

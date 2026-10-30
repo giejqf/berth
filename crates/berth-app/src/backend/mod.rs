@@ -72,8 +72,8 @@ pub(crate) struct Shared {
     /// Sessions to restart once their round ends: Claude Code signed in as
     /// another account while they worked (ADR 0017).
     restart_after_round: Mutex<HashSet<String>>,
-    /// Workflows whose session runs something in the background.
-    background: Mutex<HashSet<String>>,
+    /// Workflows whose session runs a task: a subagent, a command (ADR 0022).
+    tasks: Mutex<HashSet<String>>,
     /// Keeps the Mac awake while agents work.
     awake: awake::Awake,
 }
@@ -109,7 +109,7 @@ pub fn start(rt: &tokio::runtime::Handle, ui: UnboundedSender<UiEvent>) -> Resul
         agents_blocked: Mutex::default(),
         diff_cache: Mutex::default(),
         restart_after_round: Mutex::default(),
-        background: Mutex::default(),
+        tasks: Mutex::default(),
         awake: awake::Awake::start(),
     });
     shared.reload_connectors();
@@ -165,6 +165,8 @@ impl Shared {
             | Command::Rewind { workflow_id, .. }
             | Command::Interrupt { workflow_id }
             | Command::Background { workflow_id }
+            | Command::StopTask { workflow_id, .. }
+            | Command::ReadTask { workflow_id, .. }
             | Command::ResolveSlotRequest { workflow_id, .. }
             | Command::ReleaseMessage { workflow_id, .. }
             | Command::DismissMessage { workflow_id, .. }
@@ -299,6 +301,30 @@ impl Shared {
                 s.send(berth_protocol::AppToSidecar::SessionBackground(
                     berth_protocol::SessionBackground { tool_use_id: None },
                 ))
+            }
+            Command::StopTask {
+                workflow_id,
+                task_id,
+            } => {
+                let session = lock(&self.sessions).get(&workflow_id).cloned();
+                let Some(s) = session else {
+                    return Err(anyhow::anyhow!("The agent is not running."));
+                };
+                s.send(berth_protocol::AppToSidecar::TaskStop(
+                    berth_protocol::TaskStop { task_id },
+                ))
+            }
+            Command::ReadTask {
+                workflow_id,
+                task_id,
+            } => {
+                // A session gone takes its tasks along: nothing to read.
+                if let Some(s) = lock(&self.sessions).get(&workflow_id).cloned() {
+                    s.send(berth_protocol::AppToSidecar::TaskRead(
+                        berth_protocol::TaskRead { task_id },
+                    ))?;
+                }
+                Ok(())
             }
             Command::ResolveSlotRequest {
                 workflow_id,

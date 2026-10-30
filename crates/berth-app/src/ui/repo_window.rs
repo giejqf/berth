@@ -44,7 +44,8 @@ use crate::keymap::{
     MoveSlotToNewWindow, NewWorkflow, NewWorkflowHere, NewWorkflowTab, NextChange, NextSlot,
     OpenHistory, OpenSettings, PrevChange, PrevSlot, RefreshReview, RenameSlot, ReviewBranch,
     ReviewSection, ReviewWorkflow, RewindConversation, RewindTo, RunInBackground, SelectSlot,
-    ShowFile, ShowFiles, ShowFindings, ShowReview, ToggleDiffMode, ToggleRail, ToggleReview,
+    ShowFile, ShowFiles, ShowFindings, ShowReview, ShowTasks, ToggleDiffMode, ToggleRail,
+    ToggleReview,
 };
 use crate::keymap::{
     CloseTerminal, HideTerminal, KillTerminal, NewTerminal, NextTerminal, PrevTerminal,
@@ -1114,6 +1115,9 @@ impl Render for RepoWindow {
                     c.add_paths(&a.paths, cx);
                     c.focus(window, cx);
                 });
+            }))
+            .on_action(cx.listener(|this, _: &ShowTasks, window, cx| {
+                this.flow.update(cx, |f, cx| f.toggle_tasks(window, cx));
             }))
             .on_action(cx.listener(|this, _: &RunInBackground, _, cx| {
                 if let Some(wf) = this.selected_workflow(cx) {

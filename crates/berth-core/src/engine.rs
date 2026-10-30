@@ -1348,13 +1348,15 @@ impl Engine {
                 fx.push(Effect::FlowChanged { workflow_id: wf_id });
             }
             // The backend keeps what is the app's or the moment's: models,
-            // plan limits, commands, the account, a suggestion, background
-            // tasks; renames and the history answer short-lived sidecars.
+            // plan limits, commands, the account, a suggestion, the session's
+            // tasks and their output; renames and the history answer
+            // short-lived sidecars.
             SidecarToApp::SessionModels(_)
             | SidecarToApp::SessionQuota(_)
             | SidecarToApp::SessionCommands(_)
             | SidecarToApp::SessionSuggestion(_)
             | SidecarToApp::SessionTasks(_)
+            | SidecarToApp::TaskOutput(_)
             | SidecarToApp::SessionAccount(_)
             | SidecarToApp::SessionsRenamed(_)
             | SidecarToApp::SessionsListed(_) => {}

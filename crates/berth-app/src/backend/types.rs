@@ -79,6 +79,18 @@ pub enum Command {
     Background {
         workflow_id: String,
     },
+    /// Stop one task the workflow's session runs: a subagent, a command
+    /// (ADR 0022).
+    StopTask {
+        workflow_id: String,
+        task_id: String,
+    },
+    /// Read the end of a command's or monitor's output; answered with
+    /// [`UiEvent::TaskOutput`].
+    ReadTask {
+        workflow_id: String,
+        task_id: String,
+    },
     ResolveSlotRequest {
         workflow_id: String,
         request: SlotRequest,
@@ -607,10 +619,16 @@ pub enum UiEvent {
         workflow_id: String,
         text: String,
     },
-    /// What runs in the workflow's session's background, replacing the last list.
-    BackgroundTasks {
+    /// Every task the workflow's session runs, foreground or background,
+    /// replacing the last list (ADR 0022).
+    Tasks {
         workflow_id: String,
-        tasks: Vec<berth_protocol::BackgroundTask>,
+        tasks: Vec<berth_protocol::SessionTask>,
+    },
+    /// The end of a task's output, as asked with [`Command::ReadTask`].
+    TaskOutput {
+        workflow_id: String,
+        output: berth_protocol::TaskOutput,
     },
     /// Who Claude Code works as, as a session last reported it; `None` once
     /// it signs in as someone else.
