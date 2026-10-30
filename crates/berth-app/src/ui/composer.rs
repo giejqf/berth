@@ -1143,8 +1143,9 @@ fn closed_row(t: &Tokens) -> impl IntoElement {
 
 /// The selected slot is still being created (`slot.sh create`, then `status`).
 /// Why the selected slot's agent can't run, and the fix: Claude Code is
-/// signed out (or missing) or Node.js is, on this Mac, and the slot's agent
-/// runs here. An `inside` slot brings its own.
+/// signed out (or missing), the OpenAI-compatible API isn't set up, or
+/// Node.js is missing, on this Mac, and the slot's agent runs here. An
+/// `inside` slot brings its own.
 fn agent_blocked(state: &super::RepoState, cx: &App) -> Option<(&'static str, AgentFix)> {
     let host = state
         .selected()
@@ -1170,6 +1171,9 @@ fn blocked_row(t: &Tokens, why: &'static str, fix: AgentFix) -> gpui::Div {
                 .on_click(move |_, window, cx| match fix {
                     AgentFix::SignIn => window.dispatch_action(Box::new(ClaudeAccount), cx),
                     AgentFix::GetNode => cx.open_url(super::sign_in::NODE_URL),
+                    AgentFix::SetUpProvider => {
+                        window.dispatch_action(Box::new(crate::keymap::OpenSettings), cx);
+                    }
                 }),
         )
 }

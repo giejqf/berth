@@ -8,6 +8,7 @@ mod files;
 mod history;
 mod launch;
 mod messages;
+mod provider;
 mod review;
 mod session;
 mod slots;
@@ -76,6 +77,15 @@ pub(crate) struct Shared {
     tasks: Mutex<HashSet<String>>,
     /// Keeps the Mac awake while agents work.
     awake: awake::Awake,
+    /// The model provider proxy, once a session needed it (ADR 0023).
+    proxy: tokio::sync::OnceCell<berth_proxy::Proxy>,
+    /// What listing the provider's models found last.
+    provider_check: Mutex<ProviderCheck>,
+    /// Held while the provider's setup is read, changed and saved: commands
+    /// run at once, and two edits must not each save over the other.
+    provider_edit: Mutex<()>,
+    /// Workflows whose session's requests go through the proxy.
+    via_proxy: Mutex<HashSet<String>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -111,6 +121,10 @@ pub fn start(rt: &tokio::runtime::Handle, ui: UnboundedSender<UiEvent>) -> Resul
         restart_after_round: Mutex::default(),
         tasks: Mutex::default(),
         awake: awake::Awake::start(),
+        proxy: tokio::sync::OnceCell::new(),
+        provider_check: Mutex::default(),
+        provider_edit: Mutex::default(),
+        via_proxy: Mutex::default(),
     });
     shared.reload_connectors();
 
@@ -195,6 +209,8 @@ impl Shared {
             | Command::RefreshEnvironment
             | Command::ToolAuth { .. }
             | Command::ClaudeSignIn { .. }
+            | Command::EditProvider(_)
+            | Command::CheckProvider
             | Command::RevealConnectors => return None,
         };
         self.repo_of_workflow(&wf).ok()
@@ -447,7 +463,15 @@ impl Shared {
                 self.emit(UiEvent::Connectors(self.connector_infos()));
                 Ok(())
             }
-            Command::LoadSettings => self.emit_settings(),
+            Command::LoadSettings => {
+                self.emit_provider();
+                self.emit_settings()
+            }
+            Command::EditProvider(edit) => self.edit_provider(edit).await,
+            Command::CheckProvider => {
+                self.check_provider().await;
+                Ok(())
+            }
             Command::SetSetting { key, value } => {
                 self.core().store.set_setting(&key, value.trim())?;
                 if key == "keep_awake" {

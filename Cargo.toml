@@ -19,11 +19,20 @@ berth-slot = { path = "crates/berth-slot" }
 berth-git = { path = "crates/berth-git" }
 berth-gh = { path = "crates/berth-gh" }
 berth-connectors = { path = "crates/berth-connectors" }
+berth-proxy = { path = "crates/berth-proxy" }
 
 alacritty_terminal = "0.26"
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 futures = "0.3"
+# The model provider proxy (ADR 0023): a local HTTP server for Claude Code,
+# and the client to an OpenAI-compatible API. The same hyper and rustls GPUI
+# already builds; the Mac's own certificates and proxy settings.
+bytes = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "http2", "stream", "json", "macos-system-configuration"] }
 # macOS's own APIs, as GPUI already links them: keeping the Mac awake while
 # agents work (`NSProcessInfo` activities).
 objc2 = "0.6"

@@ -46,35 +46,34 @@ impl Shared {
             return Ok(s.clone());
         }
 
-        let (wf, slot, repo, model) = {
+        let (wf, slot, repo) = {
             let core = self.core();
             let wf = core.store.workflow(workflow_id)?;
             let slot = core.store.slot(&wf.slot_id)?;
             let repo = core.store.repo(&slot.repo_id)?;
-            // The slot's own model, else the app's setting.
-            let model = match slot.model.clone() {
-                Some(m) => Some(m),
-                None => core
-                    .store
-                    .setting("model")?
-                    .filter(|m| !m.trim().is_empty()),
-            };
-            (wf, slot, repo, model)
+            (wf, slot, repo)
         };
+        // An `inside` slot's agent runs on its own sign-in; one on this Mac
+        // goes through the proxy under an OpenAI-compatible API (ADR 0023).
+        let host = slot.placement != Placement::Inside.as_str();
+        let provider = self.provider();
+        let through_proxy = host && provider.is_openai();
+        let model = self.session_model(&provider, slot.model.as_deref(), through_proxy)?;
         if !wf.state.is_open() {
             return Err(anyhow!("this workflow is closed"));
         }
         // Up front, not as an authentication error from the first request.
         // An `inside` slot signs its own agent in (§6.1).
-        if slot.placement != Placement::Inside.as_str()
-            && let Some((why, fix)) = self.agents_unavailable().await
-        {
+        if host && let Some((why, fix)) = self.agents_unavailable().await {
             return Err(match fix {
                 AgentFix::SignIn => anyhow!(
                     "{why} Sign in from Settings › Claude Code, then send your message again."
                 ),
                 AgentFix::GetNode => anyhow!(
                     "{why} Install Node.js 22 or newer (nodejs.org, or `brew install node`), then send your message again."
+                ),
+                AgentFix::SetUpProvider => anyhow!(
+                    "{why} Set it up in Settings › Model provider, then send your message again."
                 ),
             });
         }
@@ -106,8 +105,13 @@ impl Shared {
             }
         }
 
-        let host = slot.placement != Placement::Inside.as_str();
         let mut env: BTreeMap<String, String> = script.env.vars().into_iter().collect();
+        if through_proxy {
+            let model = model
+                .as_deref()
+                .ok_or_else(|| anyhow!("No model is chosen for the OpenAI-compatible API."))?;
+            env.extend(self.provider_env(model).await?);
+        }
         if host {
             let base = std::env::var("PATH").unwrap_or_default();
             env.insert(
@@ -140,6 +144,13 @@ impl Shared {
         let cmd = if host {
             let mut cmd = self.launch.command()?;
             cmd.current_dir(&checkout).envs(&env);
+            if through_proxy {
+                for name in super::provider::DISPLACED_ENV {
+                    if !env.contains_key(name) {
+                        cmd.env_remove(name);
+                    }
+                }
+            }
             cmd
         } else {
             let (program, args) = self.launch.inside_args();
@@ -189,6 +200,9 @@ impl Shared {
         self.core().engine.session_started(&wf.id);
         session.send(msg)?;
         lock(&self.sessions).insert(wf.id.clone(), session.clone());
+        if through_proxy {
+            lock(&self.via_proxy).insert(wf.id.clone());
+        }
         tokio::spawn(self.clone().pump(wf.id.clone(), session.clone(), events));
         Ok(session)
     }
@@ -212,6 +226,7 @@ impl Shared {
     pub(super) fn take_session(&self, workflow_id: &str) -> Option<Arc<Session>> {
         lock(&self.restart_after_round).remove(workflow_id);
         lock(&self.tasks).remove(workflow_id);
+        lock(&self.via_proxy).remove(workflow_id);
         self.keep_awake();
         let taken = lock(&self.sessions).remove(workflow_id);
         if taken.is_some() {
@@ -549,6 +564,12 @@ impl Shared {
                         continue;
                     }
                     match &msg.body {
+                        // Through the proxy, Claude Code's models, plan and
+                        // account aren't what the agent runs on (ADR 0023).
+                        berth_protocol::SidecarToApp::SessionModels(_)
+                        | berth_protocol::SidecarToApp::SessionQuota(_)
+                        | berth_protocol::SidecarToApp::SessionAccount(_)
+                            if lock(&self.via_proxy).contains(&workflow_id) => {}
                         berth_protocol::SidecarToApp::SessionModels(m) => {
                             self.remember_models(&m.models);
                         }
@@ -806,29 +827,52 @@ impl Shared {
         effort: Option<berth_protocol::Effort>,
     ) -> Result<()> {
         let model = model.filter(|m| !m.trim().is_empty());
-        let (slot, live, fallback) = {
+        let (slot, live) = {
             let core = self.core();
             let slot = core
                 .store
                 .set_slot_agent(slot_id, model.as_deref(), effort)?;
             let live = core.store.active_workflow(slot_id)?.map(|w| w.id);
-            let fallback = core
-                .store
-                .setting("model")?
-                .filter(|m| !m.trim().is_empty());
-            (slot, live, fallback)
+            (slot, live)
         };
-        let session = live.and_then(|wf| lock(&self.sessions).get(&wf).cloned());
-        if let Some(session) = session {
+        let session = live.and_then(|wf| {
+            let through_proxy = lock(&self.via_proxy).contains(&wf);
+            lock(&self.sessions)
+                .get(&wf)
+                .cloned()
+                .map(|s| (s, through_proxy))
+        });
+        if let Some((session, through_proxy)) = session {
+            let model = self.session_model(&self.provider(), model.as_deref(), through_proxy)?;
             session.send(AppToSidecar::SessionConfigure(
-                berth_protocol::SessionConfigure {
-                    model: model.or(fallback),
-                    effort,
-                },
+                berth_protocol::SessionConfigure { model, effort },
             ))?;
         }
         self.emit_slots(&slot.repo_id);
         Ok(())
+    }
+
+    /// The model a slot's session runs on. Through the proxy: the slot's
+    /// own when the provider offers it, else the provider's default. On
+    /// Claude Code's account: the slot's own unless it was chosen for the
+    /// provider, else the app's setting (ADR 0007, ADR 0023).
+    fn session_model(
+        &self,
+        provider: &berth_core::Provider,
+        slot_model: Option<&str>,
+        through_proxy: bool,
+    ) -> Result<Option<String>> {
+        if through_proxy {
+            return Ok(provider.agent_model(slot_model));
+        }
+        match provider.slot_model_on(slot_model, false) {
+            Some(m) => Ok(Some(m.to_owned())),
+            None => Ok(self
+                .core()
+                .store
+                .setting("model")?
+                .filter(|m| !m.trim().is_empty())),
+        }
     }
 
     /// Keep the models the SDK offers (they outlive the session) and show them.
@@ -841,10 +885,16 @@ impl Shared {
 
     /// The app's settings (the default model, the theme), for the windows.
     pub(super) fn emit_settings(&self) -> Result<()> {
+        let provider = self.provider();
         let (model, theme, review_width, keep_awake) = {
             let core = self.core();
             (
-                core.store.setting("model")?.unwrap_or_default(),
+                // The default model of the provider agents run on.
+                if provider.is_openai() {
+                    provider.default_model().unwrap_or_default().to_owned()
+                } else {
+                    core.store.setting("model")?.unwrap_or_default()
+                },
                 core.store.setting("theme")?.unwrap_or_default(),
                 core.store
                     .setting("review_width")?
@@ -907,6 +957,10 @@ impl Shared {
 
     /// The account as last reported, before a session of this run reports.
     pub(super) fn emit_account(&self) {
+        if self.provider().is_openai() {
+            self.emit(UiEvent::Account(None));
+            return;
+        }
         let saved = self.core().store.setting("account").ok().flatten();
         if let Some(account) =
             saved.and_then(|json| serde_json::from_str::<berth_protocol::Account>(&json).ok())
@@ -928,6 +982,11 @@ impl Shared {
 
     /// The plan's limits as last known, before a session of this run reports.
     pub(super) fn emit_quota(&self) {
+        // Claude Code's plan limits don't apply to another provider's models.
+        if self.provider().is_openai() {
+            self.emit(UiEvent::Quota(None));
+            return;
+        }
         let saved = saved_quota(&self.core().store);
         if let Some(quota) = saved {
             self.emit(UiEvent::Quota(Some(quota)));

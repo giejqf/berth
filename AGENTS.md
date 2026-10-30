@@ -18,7 +18,9 @@ If a design decision is not here, it has not been made. Record new decisions her
    (§11.1) is a shell in the slot, not an editor: Berth adds nothing to it that opens,
    shows or edits files (no file links, no "open in editor"). ADR 0005.
 2. **Claude Code is the only agent.** No abstraction layer for other agents. The
-   sidecar talks to the official Claude Agent SDK and nothing else.
+   sidecar talks to the official Claude Agent SDK and nothing else. The model
+   behind it may be another provider's (an OpenAI-compatible API through Berth's
+   proxy, ADR 0023): the agent, its tools and its sessions are still Claude Code's.
 3. **macOS only.** No `#[cfg(windows)]`, no Linux code paths, no cross-platform
    abstractions that cost macOS performance or polish.
 4. **Rust everywhere except the sidecar.** The app is pure Rust on GPUI. The sidecar
@@ -56,6 +58,7 @@ If a design decision is not here, it has not been made. Record new decisions her
 | **Integration** | First-class, app-owned: **GitHub** via `gh`. PR, Issue, Branch, Commit, Comment are typed entities in SQLite. |
 | **Connector** | User-defined, global, extensible: a CLI tool plus a `SKILL.md` (§8). Linear, PostHog, etc. Not MCP. |
 | **Sidecar** | The TypeScript process that hosts the Claude Agent SDK and Berth's agent tools. One sidecar per active session. |
+| **Model provider** | What agents on this Mac run on: Claude Code's own account, or an OpenAI-compatible API (OpenAI, OpenRouter, DeepSeek, Ollama, …) whose Chat Completions Berth's proxy speaks for Claude Code (ADR 0023). |
 
 ---
 
@@ -82,6 +85,10 @@ If a design decision is not here, it has not been made. Record new decisions her
 spawns the sidecar directly. For `inside` placement the app runs
 `slot.sh exec -- node "$BERTH_SIDECAR_BUNDLE/sidecar.mjs"` and speaks the same protocol
 over that pipe. This is why there is no Unix socket: one transport works in both placements.
+
+Under an OpenAI-compatible model provider, Claude Code on the host sends its model
+requests to `berth-proxy` on `127.0.0.1` (`ANTHROPIC_BASE_URL`), which sends them on as
+Chat Completions (ADR 0023). Nothing else about a session changes.
 
 ### 3.1 Repo layout
 
@@ -117,6 +124,7 @@ berth/
 │   ├── berth-git/               tree snapshots, diff parsing, worktree helpers
 │   ├── berth-gh/                `gh --json` wrapper, GitHub entity sync
 │   ├── berth-connectors/        connector discovery, skill install, Keychain secrets
+│   ├── berth-proxy/             Messages API ⇄ Chat Completions proxy for the model provider
 │   └── berth-svg/               build tooling: renders packaging/*.svg to PNG (resvg)
 ├── sidecar/
 │   ├── package.json             pnpm, Node 22+, TypeScript strict
@@ -138,6 +146,7 @@ berth/
 ### 3.2 Crate dependency rules
 
 - `berth-protocol` depends on nothing in the workspace. Everything depends on it.
+- `berth-proxy` depends on nothing in the workspace either; only `berth-app` uses it.
 - `berth-core` must not depend on `berth-app` or GPUI.
 - `berth-app` is the only crate that depends on GPUI.
 - Non-GPUI crates use `tokio` for async. `berth-app` bridges to GPUI's executor at the
@@ -158,6 +167,7 @@ berth/
 | Terminal | `alacritty_terminal` (Apache-2.0) for the PTY, the parser and the grid; Berth draws it | One shell per terminal on a PTY thread; the view only paints cells and sends bytes (ADR 0005). |
 | Visual system | Gruvbox tokens in `theme.rs` (dark and light), IBM Plex Sans 13/18 and JetBrains Mono 12, bundled (SIL OFL 1.1: fonts are data, compatible with MIT) | Sizes follow the design *as rendered* (its CSS adds padding/borders to stated widths). Text renders without CoreGraphics stroke dilation: Berth sets `AppleFontSmoothing = 0` in its own defaults domain at launch (ADR 0003). |
 | GitHub | `gh` CLI with `--json`, reusing the user's auth | No GitHub API client crate. |
+| Model provider | Claude Code's account, or an OpenAI-compatible API through `berth-proxy` (hyper server, reqwest client with rustls and the Mac's certificates and proxy settings) | The proxy listens on `127.0.0.1` with a per-launch token; the API key stays in the Keychain and the app (ADR 0023). |
 | Secrets | macOS Keychain via `security-framework` | Never written to SQLite or disk. |
 | Sidecar runtime | Node 22+, pnpm, `tsx` in dev, bundled with `esbuild` for release | Bundle shipped inside the app at `Contents/Resources/sidecar/`, with the SDK's native `claude` next to it. Claude binary: `$BERTH_CLAUDE_PATH`, else `claude` beside the bundle, else the SDK's own. Node: `node` on the login shell's `PATH` (`shell_env.rs`: read at launch, 3 s at most, while the main thread sets the font default; a shell that takes longer is stopped with what it started, and Berth goes on with the `PATH` it was given), else where Homebrew, MacPorts, Volta, mise, asdf, nodenv, n, nvm or fnm put it (`backend/launch.rs`; nvm's setup in `~/.zshrc` never reaches a login shell), looked up for each sidecar; without it, or older than 22, host agents don't start and the UI says so. TypeScript 6 (typescript-eslint does not support 7 yet), zod 4. |
 | Dev overrides | `BERTH_HOME` (app data), `BERTH_CONFIG_DIR` (slots/connectors), `BERTH_LOG_DIR`, `BERTH_SECRETS=memory`, `BERTH_SIDECAR` (command line), `BERTH_THEME=light\|dark`, `BERTH_DEV_SEED=<scenario>` (devtools) | Never needed in normal use. |
@@ -652,7 +662,9 @@ gh_entities      id, repo_id, kind, number_or_sha, json, synced_at
 workflow_links   workflow_id, entity_id, role(origin|outcome)
 connectors       name, path, enabled
 settings         key, value          # last_repo, recent_repos, model, models, quota, commands:<repo_id>, account,
-                                     # claude_identity, review_width, keep_awake
+                                     # claude_identity, review_width, keep_awake, provider,
+                                     # openai_base_url, openai_models, openai_model,
+                                     # openai_fast_model, openai_catalog (ADR 0023)
 ```
 
 Timestamps are unix epoch milliseconds. `nodes.raw_first/raw_last` are `raw_events.id`
@@ -919,6 +931,24 @@ settles nothing (ADR 0013).
   **Stop all**. A stopped task says "Stopping…" until Claude Code reports it gone.
   Interrupt (⌘.) ends only the turn: Berth declares `perTaskStopAffordance`, so
   background tasks go on until stopped here.
+- **Model provider** (ADR 0023; `crates/berth-proxy`, `backend/provider.rs`,
+  `berth_core::provider`): Settings › Model provider switches agents on this Mac
+  between Claude Code's account and an OpenAI-compatible API: its base URL, an API key
+  (Keychain, `com.berth.provider.openai`; a local server may need none), the models on
+  offer (searched in its `/models` list, or typed), and the one for Claude Code's
+  quick requests (titles, summaries, suggestions; else the agent's model). The first
+  host session to need it starts the proxy; each gets `ANTHROPIC_BASE_URL`, the
+  proxy's token, Claude's model names mapped to its model and the model's window when
+  the provider lists it, and loses keys that would win over the proxy. The proxy
+  translates both ways (text streams, tool calls whole, images, tool results; no
+  thinking or server tools), reads providers' errors as Anthropic's (a full window is
+  "prompt is too long", so Claude Code compacts), and learns what each model refuses
+  (`max_completion_tokens`, an output cap, a parameter) by sending again. The picker
+  and Settings' default offer the provider's models; a slot keeps its model per
+  provider. Switching restarts host sessions as an account switch does (ADR 0017);
+  plan limits and the account hide under the provider, and the Claude Code row says
+  what agents run on ("via openrouter.ai"), or blocks them with Settings… until the
+  API has a URL and a model. `inside` slots sign in by themselves, as before.
 - **Keeping the Mac awake** (`backend/awake.rs`): while an agent works anywhere (a
   round in flight, a slot being created or torn down, something in a session's
   background; `Store::agents_working`), Berth holds a user-initiated `NSProcessInfo`
@@ -1041,7 +1071,10 @@ settles nothing (ADR 0013).
   `window <n>` points later commands at another repo window, `windows` logs them
   all, and `mouse_down`/`mouse_move`/`mouse_up <x> <y>` drive real drags (positions
   may leave the window, as a drag between windows does); `hover <x> <y>` moves with
-  no button down, and a trailing `cmd` on any of them holds ⌘.
+  no button down, and a trailing `cmd` on any of them holds ⌘. `provider <base url>
+  <key|-> <model>…` runs agents on an OpenAI-compatible API (`provider claude` goes
+  back); with a scripted server standing in for the model, a real session runs
+  without spending tokens (ADR 0023).
 
 
 ### 11.1 Terminals
@@ -1147,4 +1180,6 @@ owns it? what node type does it produce?
 - Any OS other than macOS.
 - Pushing review comments to Linear/PostHog (GitHub only).
 - Agent backends other than Claude Code.
+- `inside` slots' agents on the model provider (the proxy listens on the host's
+  loopback); model APIs other than Chat Completions (OpenAI's Responses, Gemini's own).
 

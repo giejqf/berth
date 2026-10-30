@@ -68,6 +68,7 @@ pub fn fix_label(fix: AgentFix) -> &'static str {
     match fix {
         AgentFix::SignIn => "Sign in…",
         AgentFix::GetNode => "Get Node.js",
+        AgentFix::SetUpProvider => "Settings…",
     }
 }
 

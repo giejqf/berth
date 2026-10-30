@@ -699,7 +699,7 @@ impl RepoWindow {
             state.model_setting.clone().filter(|m| !m.trim().is_empty()),
             state.backend.clone(),
         );
-        let dialog = cx.new(|cx| AgentDialog::new(&entry, default_model, backend, cx));
+        let dialog = cx.new(|cx| AgentDialog::new(&entry, default_model.as_deref(), backend, cx));
         self.open_modal(dialog, window, cx);
     }
 

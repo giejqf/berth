@@ -89,6 +89,9 @@ pub struct Berth {
     pub review_width: Option<f32>,
     /// The Mac stays awake while agents work (`settings.keep_awake`).
     pub keep_awake: bool,
+    /// What agents on this Mac run on: Claude Code's account or an
+    /// OpenAI-compatible API (ADR 0023).
+    pub provider: crate::backend::ProviderInfo,
 }
 
 impl Global for Berth {}
@@ -110,6 +113,7 @@ pub fn init(backend: BackendHandle, events: UnboundedReceiver<UiEvent>, cx: &mut
         account: None,
         review_width: None,
         keep_awake: true,
+        provider: crate::backend::ProviderInfo::default(),
     });
     cx.spawn(async move |cx| {
         let mut events = events;
@@ -231,6 +235,10 @@ fn route(event: UiEvent, cx: &mut App) {
         }
         UiEvent::Models(models) => {
             cx.global_mut::<Berth>().models = models;
+            cx.refresh_windows();
+        }
+        UiEvent::Provider(info) => {
+            cx.global_mut::<Berth>().provider = *info;
             cx.refresh_windows();
         }
         UiEvent::Quota(quota) => {

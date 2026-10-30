@@ -962,6 +962,10 @@ impl Render for NewWorkflowForm {
                                 .on_click(cx.listener(move |this, _, window, cx| match fix {
                                     AgentFix::SignIn => this.open_sign_in(window, cx),
                                     AgentFix::GetNode => cx.open_url(super::sign_in::NODE_URL),
+                                    AgentFix::SetUpProvider => window.dispatch_action(
+                                        Box::new(crate::keymap::OpenSettings),
+                                        cx,
+                                    ),
                                 })),
                         )
                     })

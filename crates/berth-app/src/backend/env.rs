@@ -26,14 +26,23 @@ impl Shared {
             check_gh(),
             check_docker()
         );
+        let provider = self.provider();
         if let Some(auth) = auth {
-            self.saw_claude_auth(&auth);
+            self.saw_claude_auth(&auth, provider.is_openai());
         }
+        // Agents on this Mac run on the OpenAI-compatible API, signed in or
+        // not (ADR 0023); Claude Code itself must still be there.
+        let claude = if provider.is_openai() && claude.state != ToolState::Missing {
+            super::provider::provider_status(&provider)
+        } else {
+            claude
+        };
         let env = EnvStatus {
             claude,
             node,
             gh,
             docker,
+            via_provider: provider.is_openai(),
         };
         *lock(&self.agents_blocked) = env.agents_blocked();
         self.emit(UiEvent::Environment(Box::new(env)));
@@ -94,8 +103,9 @@ impl Shared {
     }
 
     /// Compare who Claude Code signs in as with the last check (kept across
-    /// launches; the first one only records it).
-    fn saw_claude_auth(self: &Arc<Self>, auth: &AuthSeen) {
+    /// launches; the first one only records it). Under an OpenAI-compatible
+    /// API no session runs as that account: nothing restarts.
+    fn saw_claude_auth(self: &Arc<Self>, auth: &AuthSeen, via_provider: bool) {
         let changed = {
             let core = self.core();
             let last = core.store.setting(IDENTITY_KEY).ok().flatten();
@@ -113,7 +123,9 @@ impl Shared {
         }
         self.emit(UiEvent::Account(None));
         self.emit(UiEvent::Quota(None));
-        self.restart_host_sessions();
+        if !via_provider {
+            self.restart_host_sessions();
+        }
     }
 }
 

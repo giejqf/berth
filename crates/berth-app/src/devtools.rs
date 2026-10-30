@@ -40,7 +40,7 @@ use berth_protocol::{Origin, OriginKind};
 use gpui::{App, AppContext as _, AsyncApp};
 use gpui_component::WindowExt as _;
 
-use crate::backend::{Command, NewWorkflow};
+use crate::backend::{Command, NewWorkflow, ProviderEdit};
 use crate::keymap;
 use crate::ui;
 
@@ -116,6 +116,35 @@ pub fn start(cx: &mut App) {
                             value: value.to_owned(),
                         });
                     }
+                }),
+                // `provider <base url> <key|-> <model>…`: agents run on an
+                // OpenAI-compatible API (ADR 0023); `provider claude` goes back.
+                "provider" => cx.update(|cx| {
+                    let Some(state) = ui::first_repo_state(cx) else {
+                        return;
+                    };
+                    let backend = state.read(cx).backend.clone();
+                    let mut parts = arg.split_whitespace();
+                    let Some(base) = parts.next().filter(|b| *b != "claude") else {
+                        backend.send(Command::EditProvider(ProviderEdit::Kind(
+                            berth_core::ProviderKind::Claude,
+                        )));
+                        return;
+                    };
+                    backend.send(Command::EditProvider(ProviderEdit::BaseUrl(
+                        base.to_owned(),
+                    )));
+                    if let Some(key) = parts.next().filter(|k| *k != "-") {
+                        backend.send(Command::EditProvider(ProviderEdit::Key(key.to_owned())));
+                    }
+                    for model in parts {
+                        backend.send(Command::EditProvider(ProviderEdit::AddModel(
+                            model.to_owned(),
+                        )));
+                    }
+                    backend.send(Command::EditProvider(ProviderEdit::Kind(
+                        berth_core::ProviderKind::OpenAi,
+                    )));
                 }),
                 "prompt" | "answer" => cx.update(|cx| {
                     let Some(state) = ui::first_repo_state(cx) else {

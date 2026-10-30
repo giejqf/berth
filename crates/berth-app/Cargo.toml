@@ -17,6 +17,7 @@ berth-core.workspace = true
 berth-gh.workspace = true
 berth-git.workspace = true
 berth-protocol.workspace = true
+berth-proxy.workspace = true
 berth-sidecar-client.workspace = true
 berth-slot.workspace = true
 

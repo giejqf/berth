@@ -176,6 +176,10 @@ pub enum Command {
     },
     /// Show `~/.config/berth/connectors` in Finder.
     RevealConnectors,
+    /// Change the model provider's setup (ADR 0023).
+    EditProvider(ProviderEdit),
+    /// List the OpenAI-compatible API's models again (Settings opening, Check again).
+    CheckProvider,
     /// What a new terminal in this slot runs; answered with
     /// [`UiEvent::TerminalSpec`].
     TerminalSpec {
@@ -398,11 +402,50 @@ impl ToolStatus {
 
 #[derive(Debug, Clone, Default)]
 pub struct EnvStatus {
+    /// Claude Code, or under an OpenAI-compatible API ([`Self::via_provider`])
+    /// that API's setup: what agents on this Mac run on.
     pub claude: ToolStatus,
     /// Node.js, which runs the sidecar of every agent on this Mac.
     pub node: ToolStatus,
     pub gh: ToolStatus,
     pub docker: ToolStatus,
+    /// Agents on this Mac run on an OpenAI-compatible API (ADR 0023).
+    pub via_provider: bool,
+}
+
+/// The model provider as Settings shows it (ADR 0023).
+#[derive(Debug, Clone, Default)]
+pub struct ProviderInfo {
+    pub provider: berth_core::Provider,
+    /// An API key is in the Keychain.
+    pub key_set: bool,
+    pub check: ProviderCheck,
+}
+
+/// What listing the OpenAI-compatible API's models found.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum ProviderCheck {
+    #[default]
+    Unchecked,
+    Checking,
+    /// It answered with this many models.
+    Ok(usize),
+    Failed(String),
+}
+
+/// One change to the model provider's setup.
+#[derive(Debug, Clone)]
+pub enum ProviderEdit {
+    Kind(berth_core::ProviderKind),
+    BaseUrl(String),
+    /// The API key; empty removes it.
+    Key(String),
+    AddModel(String),
+    RemoveModel(String),
+    /// The default for slots without their own.
+    Model(Option<String>),
+    /// What Claude Code's quick requests run on; `None` is the agent's model.
+    FastModel(Option<String>),
 }
 
 /// What it takes for agents on this Mac to run again.
@@ -412,6 +455,8 @@ pub enum AgentFix {
     SignIn,
     /// Install Node.js (or a newer one).
     GetNode,
+    /// Finish setting up the OpenAI-compatible API, in Settings.
+    SetUpProvider,
 }
 
 impl EnvStatus {
@@ -422,7 +467,14 @@ impl EnvStatus {
         self.node
             .blocks_agents
             .map(|why| (why, AgentFix::GetNode))
-            .or_else(|| self.claude.blocks_agents.map(|why| (why, AgentFix::SignIn)))
+            .or_else(|| {
+                let fix = if self.via_provider && self.claude.state != ToolState::Missing {
+                    AgentFix::SetUpProvider
+                } else {
+                    AgentFix::SignIn
+                };
+                self.claude.blocks_agents.map(|why| (why, fix))
+            })
     }
 }
 
@@ -611,6 +663,8 @@ pub enum UiEvent {
     },
     /// The models the agent can run on, as the SDK last reported them.
     Models(Vec<ModelChoice>),
+    /// The model provider's setup and its last check (ADR 0023).
+    Provider(Box<ProviderInfo>),
     /// The plan's limits as any session last reported them (ADR 0014);
     /// `None` once Claude Code signs in as someone else.
     Quota(Option<berth_core::Quota>),

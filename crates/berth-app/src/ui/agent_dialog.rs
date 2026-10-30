@@ -68,14 +68,89 @@ pub fn model_label(id: &str) -> Option<String> {
     Some(label)
 }
 
-/// The models to offer: the SDK's last report, else Claude Code's aliases.
+/// The models agents on this Mac run on: the OpenAI-compatible API's on
+/// offer under it (ADR 0023), else Claude's.
 pub fn models(cx: &App) -> Vec<ModelChoice> {
+    let provider = &cx.global::<Berth>().provider.provider;
+    if provider.is_openai() {
+        provider_models(provider)
+    } else {
+        claude_models(cx)
+    }
+}
+
+/// Claude's models: the SDK's last report, else the current ones.
+fn claude_models(cx: &App) -> Vec<ModelChoice> {
     let known = &cx.global::<Berth>().models;
     if known.is_empty() {
         fallback_models()
     } else {
         known.clone()
     }
+}
+
+/// The models offered from the OpenAI-compatible API, as the provider names
+/// them, with their context windows where it says. None takes an effort.
+fn provider_models(p: &berth_core::Provider) -> Vec<ModelChoice> {
+    p.models
+        .iter()
+        .map(|id| ModelChoice {
+            value: id.clone(),
+            display_name: p.name_of(id),
+            description: p.context_of(id).map(context_note).unwrap_or_default(),
+            efforts: Vec::new(),
+        })
+        .collect()
+}
+
+/// "128K context", "1M context": thousands, or binary ones for a window in
+/// steps of 32K (65536 is "64K", as people say it).
+pub fn context_note(tokens: u64) -> String {
+    let k = if tokens.is_multiple_of(32_768) {
+        tokens / 1024
+    } else {
+        tokens.div_ceil(1000)
+    };
+    if k >= 1000 && k % 1000 < 50 {
+        format!("{}M context", k / 1000)
+    } else {
+        format!("{k}K context")
+    }
+}
+
+/// The slot's agent runs on the OpenAI-compatible API: it is on, and the
+/// agent runs on this Mac (an `inside` slot's signs in by itself).
+fn through_proxy(entry: &SlotEntry, cx: &App) -> bool {
+    cx.global::<Berth>().provider.provider.is_openai()
+        && entry.slot.placement != berth_slot::Placement::Inside.as_str()
+}
+
+/// The models a slot's agent can run on.
+fn slot_models(entry: &SlotEntry, cx: &App) -> Vec<ModelChoice> {
+    if through_proxy(entry, cx) {
+        provider_models(&cx.global::<Berth>().provider.provider)
+    } else {
+        claude_models(cx)
+    }
+}
+
+/// The slot's own model as it applies now: one chosen under the other
+/// provider waits for it, and the slot runs on the default meanwhile.
+fn slot_model(entry: &SlotEntry, cx: &App) -> Option<String> {
+    cx.global::<Berth>()
+        .provider
+        .provider
+        .slot_model_on(entry.slot.model.as_deref(), through_proxy(entry, cx))
+        .map(str::to_owned)
+}
+
+/// The app's default as it applies to the slot: the setting is the
+/// provider's under it, which an `inside` slot doesn't run on.
+fn slot_default(entry: &SlotEntry, default_model: Option<&str>, cx: &App) -> Option<String> {
+    let provider_on = cx.global::<Berth>().provider.provider.is_openai();
+    default_model
+        .filter(|_| !provider_on || through_proxy(entry, cx))
+        .map(str::to_owned)
 }
 
 /// A model's name as people read it: from its id when that's a Claude model
@@ -91,9 +166,12 @@ pub fn model_name(value: &str, models: &[ModelChoice]) -> String {
 
 /// What the composer's chip says for a slot: "Opus · High", "Default model".
 pub fn agent_label(entry: &SlotEntry, default_model: Option<&str>, cx: &App) -> String {
-    let models = models(cx);
-    let model = match (entry.slot.model.as_deref(), default_model) {
-        (Some(m), _) | (None, Some(m)) => model_name(m, &models),
+    let models = slot_models(entry, cx);
+    let model = match (
+        slot_model(entry, cx),
+        slot_default(entry, default_model, cx),
+    ) {
+        (Some(m), _) | (None, Some(m)) => model_name(&m, &models),
         (None, None) => "Default model".to_owned(),
     };
     match entry.slot.effort {
@@ -119,13 +197,15 @@ impl EventEmitter<DismissEvent> for AgentDialog {}
 impl AgentDialog {
     pub fn new(
         entry: &SlotEntry,
-        default_model: Option<String>,
+        default_model: Option<&str>,
         backend: BackendHandle,
         cx: &mut Context<'_, Self>,
     ) -> Self {
-        let mut models = models(cx);
+        let mut models = slot_models(entry, cx);
+        let model = slot_model(entry, cx);
+        let default_model = slot_default(entry, default_model, cx);
         // A model set some other way (an id) still shows, so it can be kept.
-        if let Some(m) = &entry.slot.model
+        if let Some(m) = &model
             && !models.iter().any(|c| &c.value == m)
         {
             models.push(ModelChoice {
@@ -140,7 +220,7 @@ impl AgentDialog {
             slot_title: slot_title(entry),
             default_model,
             models,
-            model: entry.slot.model.clone(),
+            model,
             effort: entry.slot.effort,
             backend,
             focus: cx.focus_handle(),
@@ -409,6 +489,17 @@ impl Render for AgentDialog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_windows_read_as_people_say_them() {
+        assert_eq!(context_note(65_536), "64K context");
+        assert_eq!(context_note(128_000), "128K context");
+        assert_eq!(context_note(262_144), "256K context");
+        assert_eq!(context_note(1_048_576), "1M context");
+        assert_eq!(context_note(1_000_000), "1M context");
+        assert_eq!(context_note(200_000), "200K context");
+        assert_eq!(context_note(131_072), "128K context");
+    }
 
     #[test]
     fn models_are_named_by_their_version() {
