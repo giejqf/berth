@@ -7,9 +7,12 @@
 
 use serde_json::{Value, json};
 
+use crate::Api;
 use crate::errors::ApiError;
 use crate::request::Names;
-use crate::response::{arguments, content_text, message_id, stop_reason, tool_id, usage};
+use crate::response::{
+    arguments, content_text, message_id, responses_finish, stop_reason, tool_id, usage,
+};
 
 /// One server-sent event for Claude Code.
 #[derive(Debug, Clone, PartialEq)]
@@ -73,6 +76,7 @@ struct Call {
 /// The answer so far, and the events it has made.
 #[derive(Debug)]
 pub(crate) struct Translator {
+    api: Api,
     id: String,
     model: String,
     names: Names,
@@ -88,8 +92,9 @@ pub(crate) struct Translator {
 }
 
 impl Translator {
-    pub(crate) fn new(model: &str, names: Names, estimate: u64) -> Self {
+    pub(crate) fn new(api: Api, model: &str, names: Names, estimate: u64) -> Self {
         Self {
+            api,
             id: message_id(None),
             model: model.to_owned(),
             names,
@@ -127,7 +132,7 @@ impl Translator {
         )
     }
 
-    /// Whether the provider said it was done (`[DONE]`).
+    /// Whether the provider said it was done (`[DONE]`, `response.completed`).
     pub(crate) fn done(&self) -> bool {
         self.done
     }
@@ -148,6 +153,9 @@ impl Translator {
         let Ok(chunk) = serde_json::from_str::<Value>(data) else {
             return Ok(Vec::new());
         };
+        if self.api == Api::Responses {
+            return self.responses_event(&chunk);
+        }
         if let Some(err) = chunk.get("error") {
             return Err(ApiError::in_stream(err));
         }
@@ -174,6 +182,84 @@ impl Translator {
             self.finish = Some(f.to_owned());
         }
         Ok(out)
+    }
+
+    /// One Responses API event: text deltas stream, function calls gather
+    /// by their output index, and `response.completed` (or `.incomplete`)
+    /// ends the answer with its counts.
+    fn responses_event(&mut self, ev: &Value) -> Result<Vec<Event>, ApiError> {
+        let field = |k: &str| ev.get(k).and_then(Value::as_str);
+        let index = ev.get("output_index").and_then(Value::as_u64);
+        match field("type").unwrap_or("") {
+            "response.output_text.delta" | "response.refusal.delta" => {
+                let delta = field("delta").unwrap_or("");
+                if !delta.is_empty() {
+                    return Ok(self.text_delta(delta));
+                }
+            }
+            kind @ ("response.output_item.added" | "response.output_item.done") => {
+                let item = ev.get("item").unwrap_or(&Value::Null);
+                let item_field = |k: &str| item.get(k).and_then(Value::as_str);
+                if item_field("type") == Some("function_call") {
+                    let next = self.calls.len() as u64;
+                    let call = self.call_at(index.unwrap_or(next));
+                    if call.id.is_none() {
+                        call.id = item_field("call_id").map(str::to_owned);
+                    }
+                    if call.name.is_empty() {
+                        call.name = item_field("name").unwrap_or("").to_owned();
+                    }
+                    // The finished item holds the whole arguments.
+                    if let Some(args) = item_field("arguments").filter(|a| !a.is_empty())
+                        && kind == "response.output_item.done"
+                    {
+                        call.args = args.to_owned();
+                    }
+                }
+            }
+            "response.function_call_arguments.delta" => {
+                let next = self.calls.len().saturating_sub(1) as u64;
+                let delta = field("delta").unwrap_or("");
+                self.output_chars += delta.len();
+                self.call_at(index.unwrap_or(next)).args.push_str(delta);
+            }
+            "response.function_call_arguments.done" => {
+                if let Some(args) = field("arguments") {
+                    let next = self.calls.len().saturating_sub(1) as u64;
+                    self.call_at(index.unwrap_or(next)).args = args.to_owned();
+                }
+            }
+            "response.completed" | "response.incomplete" => {
+                let resp = ev.get("response").unwrap_or(&Value::Null);
+                if let Some(u) = resp.get("usage").filter(|u| u.is_object()) {
+                    self.usage = Some(u.clone());
+                }
+                self.finish = Some(responses_finish(resp).unwrap_or("stop").to_owned());
+                self.done = true;
+            }
+            "response.failed" => {
+                let err = ev.pointer("/response/error").unwrap_or(ev);
+                return Err(ApiError::in_stream(err));
+            }
+            "error" => return Err(ApiError::in_stream(ev)),
+            _ => {}
+        }
+        Ok(Vec::new())
+    }
+
+    /// The call at output `index`, new if it isn't there yet.
+    fn call_at(&mut self, index: u64) -> &mut Call {
+        let at = match self.calls.iter().position(|k| k.index == index) {
+            Some(at) => at,
+            None => {
+                self.calls.push(Call {
+                    index,
+                    ..Call::default()
+                });
+                self.calls.len() - 1
+            }
+        };
+        &mut self.calls[at]
     }
 
     fn text_delta(&mut self, text: &str) -> Vec<Event> {
@@ -215,17 +301,7 @@ impl Translator {
                 (_, None) => 0,
             },
         };
-        let at = match self.calls.iter().position(|k| k.index == index) {
-            Some(at) => at,
-            None => {
-                self.calls.push(Call {
-                    index,
-                    ..Call::default()
-                });
-                self.calls.len() - 1
-            }
-        };
-        let call = &mut self.calls[at];
+        let call = self.call_at(index);
         if call.id.is_none() {
             call.id = id.map(str::to_owned);
         }
@@ -379,7 +455,12 @@ mod tests {
 
     #[test]
     fn text_streams_and_tool_calls_come_whole_at_the_end() {
-        let mut t = Translator::new("claude-opus-5-5", Names::default(), 500);
+        let mut t = Translator::new(
+            Api::ChatCompletions,
+            "claude-opus-5-5",
+            Names::default(),
+            500,
+        );
         assert_eq!(t.start().1["message"]["usage"]["input_tokens"], 500);
         let mut events = feed(
             &mut t,
@@ -430,8 +511,62 @@ mod tests {
     }
 
     #[test]
+    fn a_responses_api_stream_comes_back_as_the_same_events() {
+        let mut t = Translator::new(Api::Responses, "m", Names::default(), 0);
+        let mut events = feed(
+            &mut t,
+            &[
+                r#"{"type":"response.created","response":{"id":"resp_1","status":"in_progress","error":null}}"#,
+                r#"{"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_1"}}"#,
+                r#"{"type":"response.output_item.added","output_index":1,"item":{"type":"message","id":"msg_1","content":[]}}"#,
+                r#"{"type":"response.output_text.delta","output_index":1,"content_index":0,"delta":"Let me "}"#,
+                r#"{"type":"response.output_text.delta","output_index":1,"content_index":0,"delta":"look."}"#,
+                r#"{"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"Bash","arguments":""}}"#,
+                r#"{"type":"response.function_call_arguments.delta","output_index":2,"delta":"{\"command\":"}"#,
+                r#"{"type":"response.function_call_arguments.delta","output_index":2,"delta":"\"ls\"}"}"#,
+                r#"{"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","call_id":"call_1","name":"Bash","arguments":"{\"command\":\"ls\"}"}}"#,
+                r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":700,"output_tokens":20}}}"#,
+            ],
+        );
+        assert!(t.done() && !t.ended_early());
+        events.extend(t.finish());
+        let kinds: Vec<&str> = events.iter().map(|e| e.0).collect();
+        assert_eq!(
+            kinds,
+            [
+                "content_block_start",
+                "content_block_delta",
+                "content_block_delta",
+                "content_block_stop",
+                "content_block_start",
+                "content_block_delta",
+                "content_block_stop",
+                "message_delta",
+                "message_stop",
+            ]
+        );
+        assert_eq!(events[4].1["content_block"]["id"], "call_1");
+        assert_eq!(events[5].1["delta"]["partial_json"], r#"{"command":"ls"}"#);
+        assert_eq!(events[7].1["delta"]["stop_reason"], "tool_use");
+        assert_eq!(events[7].1["usage"]["input_tokens"], 700);
+
+        // Out of output budget; and a failure mid-way.
+        let mut t = Translator::new(Api::Responses, "m", Names::default(), 0);
+        feed(
+            &mut t,
+            &[
+                r#"{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}"#,
+            ],
+        );
+        assert_eq!(t.finish()[0].1["delta"]["stop_reason"], "max_tokens");
+        let mut t = Translator::new(Api::Responses, "m", Names::default(), 0);
+        let failed = t.data(r#"{"type":"response.failed","response":{"error":{"code":"server_error","message":"boom"}}}"#);
+        assert!(failed.is_err());
+    }
+
+    #[test]
     fn a_whole_call_in_one_chunk_without_an_index() {
-        let mut t = Translator::new("m", Names::default(), 0);
+        let mut t = Translator::new(Api::ChatCompletions, "m", Names::default(), 0);
         feed(
             &mut t,
             &[
@@ -453,10 +588,10 @@ mod tests {
 
     #[test]
     fn errors_mid_stream_and_dropped_connections_are_told_apart() {
-        let mut t = Translator::new("m", Names::default(), 0);
+        let mut t = Translator::new(Api::ChatCompletions, "m", Names::default(), 0);
         let err = t.data(r#"{"error":{"message":"Provider returned error","code":502}}"#);
         assert!(err.is_err());
-        let mut t = Translator::new("m", Names::default(), 0);
+        let mut t = Translator::new(Api::ChatCompletions, "m", Names::default(), 0);
         feed(&mut t, &[r#"{"choices":[{"delta":{"content":"par"}}]}"#]);
         assert!(t.ended_early());
     }

@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use berth_core::provider::KEY_SERVICE;
-use berth_core::{Provider, ProviderModel};
-use berth_proxy::{Proxy, Upstream};
+use berth_core::{Provider, ProviderApi, ProviderModel};
+use berth_proxy::{Api, Proxy, Upstream};
 
 use super::types::{ProviderCheck, ProviderEdit, ProviderInfo, ToolState, ToolStatus, UiEvent};
 use super::{Shared, lock};
@@ -55,6 +55,15 @@ impl Shared {
             model: p.default_model()?.to_owned(),
             fast_model: p.fast_model.clone().filter(|m| p.offers(m)),
             models: p.models.clone(),
+            api: match p.api {
+                ProviderApi::Responses => Api::Responses,
+                ProviderApi::ChatCompletions => Api::ChatCompletions,
+            },
+            contexts: p
+                .models
+                .iter()
+                .filter_map(|m| Some((m.clone(), p.context_of(m)?)))
+                .collect(),
         })
     }
 
@@ -175,6 +184,7 @@ impl Shared {
             }
             ProviderEdit::RemoveModel(id) => {
                 p.models.retain(|m| *m != id);
+                p.contexts.remove(&id);
                 for chosen in [&mut p.model, &mut p.fast_model] {
                     if chosen.as_deref() == Some(id.as_str()) {
                         *chosen = None;
@@ -183,6 +193,15 @@ impl Shared {
             }
             ProviderEdit::Model(m) => p.model = m,
             ProviderEdit::FastModel(m) => p.fast_model = m,
+            ProviderEdit::Api(api) => p.api = api,
+            ProviderEdit::Context(model, tokens) => match tokens {
+                Some(t) => {
+                    p.contexts.insert(model, t);
+                }
+                None => {
+                    p.contexts.remove(&model);
+                }
+            },
         }
         p.save(&self.core().store)?;
         Ok((before, p, recheck))

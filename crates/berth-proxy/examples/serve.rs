@@ -1,14 +1,16 @@
 //! The proxy on its own, to try a provider with the `claude` CLI:
 //!
 //! ```sh
-//! OPENAI_API_KEY=… cargo run -p berth-proxy --example serve -- https://api.deepseek.com deepseek-chat
+//! OPENAI_API_KEY=… cargo run -p berth-proxy --example serve -- https://api.openai.com/v1 gpt-5
 //! ```
 //!
-//! It prints the environment that points Claude Code at it.
+//! It speaks the Responses API; `OPENAI_API=chat` makes it Chat Completions
+//! (`https://api.deepseek.com deepseek-chat`). It prints the environment
+//! that points Claude Code at it.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use berth_proxy::{Proxy, Upstream};
+use berth_proxy::{Api, Proxy, Upstream};
 
 #[tokio::main]
 async fn main() {
@@ -30,6 +32,12 @@ async fn main() {
         models: vec![model.clone()],
         model,
         fast_model,
+        api: if std::env::var("OPENAI_API").as_deref() == Ok("chat") {
+            Api::ChatCompletions
+        } else {
+            Api::Responses
+        },
+        contexts: std::collections::HashMap::new(),
     }));
     println!(
         "ANTHROPIC_BASE_URL={} ANTHROPIC_AUTH_TOKEN={}",

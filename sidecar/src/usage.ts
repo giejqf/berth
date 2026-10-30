@@ -9,8 +9,15 @@ import type {
 
 import type { ContextCategory, QuotaStatus, QuotaWindow, SessionQuota } from "./protocol.js";
 
-export type ContextReport = Pick<SDKControlGetContextUsageResponse, "categories">;
+export type ContextReport = Pick<SDKControlGetContextUsageResponse, "categories"> &
+  Partial<Pick<SDKControlGetContextUsageResponse, "maxTokens">>;
 export type UsageReport = Pick<SDKControlGetUsageResponse, "subscription_type" | "rate_limits_available" | "rate_limits">;
+
+/** The window Claude Code works to, when it says (ADR 0025). */
+export function contextWindow(r: ContextReport): { max_tokens?: number } {
+  const max = r.maxTokens;
+  return typeof max === "number" && Number.isFinite(max) && max > 0 ? { max_tokens: Math.round(max) } : {};
+}
 
 /** `getContextUsage` rows as the protocol's categories. */
 export function contextCategories(r: ContextReport): ContextCategory[] {

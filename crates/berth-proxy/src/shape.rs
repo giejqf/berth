@@ -9,16 +9,18 @@
 
 use serde_json::{Map, Value};
 
+use crate::Api;
 use crate::errors::numbers;
 
 /// Parameters a request can go without.
-const OPTIONAL: [&str; 6] = [
+const OPTIONAL: [&str; 7] = [
     "temperature",
     "top_p",
     "stop",
     "parallel_tool_calls",
     "stream_options",
     "tool_choice",
+    "store",
 ];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -32,16 +34,18 @@ pub(crate) struct Shape {
 }
 
 impl Shape {
-    pub(crate) fn apply(&self, body: &mut Map<String, Value>, max_tokens: Option<u64>) {
+    /// The request in this shape, its output budget `max_tokens` (within
+    /// the model's cap) in the field `api` names for it.
+    pub(crate) fn apply(&self, body: &mut Map<String, Value>, max_tokens: Option<u64>, api: Api) {
         for p in &self.dropped {
             body.remove(*p);
         }
         if let Some(k) = max_tokens {
             let k = self.max_tokens.map_or(k, |cap| k.min(cap));
-            let field = if self.completion_field {
-                "max_completion_tokens"
-            } else {
-                "max_tokens"
+            let field = match api {
+                Api::Responses => "max_output_tokens",
+                Api::ChatCompletions if self.completion_field => "max_completion_tokens",
+                Api::ChatCompletions => "max_tokens",
             };
             body.insert(field.into(), k.into());
         }
@@ -137,7 +141,7 @@ mod tests {
         );
         let mut body = Map::new();
         if let Some(n) = next {
-            n.apply(&mut body, Some(32000));
+            n.apply(&mut body, Some(32000), Api::ChatCompletions);
         }
         assert_eq!(
             Value::Object(body),

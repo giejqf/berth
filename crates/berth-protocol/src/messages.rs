@@ -678,6 +678,12 @@ pub struct ContextCategory {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct SessionContext {
     pub categories: Vec<ContextCategory>,
+    /// The window Claude Code works to (`maxTokens`): the model's, or what
+    /// `CLAUDE_CODE_MAX_CONTEXT_TOKENS` set (ADR 0025). The parts can add up
+    /// to more than a small window, its compaction reserve included.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub max_tokens: Option<u64>,
 }
 
 /// Where a plan limit stands: under it, past a warning threshold, or reached.

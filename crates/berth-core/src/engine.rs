@@ -1310,6 +1310,7 @@ impl Engine {
             SidecarToApp::SessionContext(c) => {
                 let context = crate::ContextUsage {
                     categories: c.categories.clone(),
+                    max_tokens: c.max_tokens,
                     at: now_ms(),
                 };
                 store.set_workflow_context(workflow_id, &context)?;

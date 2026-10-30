@@ -22,13 +22,13 @@ use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::time::Instant;
 
-use crate::Upstream;
 use crate::errors::{ApiError, Overflow, upstream_message};
 use crate::models::listing;
 use crate::request::{Outgoing, estimate_request, translate};
 use crate::response;
 use crate::shape::Shape;
 use crate::stream::{Event, SseLines, Translator, events_for};
+use crate::{Api, Upstream};
 
 type Body = UnsyncBoxBody<Bytes, Infallible>;
 
@@ -248,7 +248,7 @@ async fn messages(state: &State, req: Request<Incoming>) -> Response<Body> {
     } else {
         requested
     };
-    let out = translate(&body, &model);
+    let out = translate(&body, &model, up.api);
     tracing::debug!(%model, stream = out.stream, "proxy request");
     let host = up.host();
     let resp = match send(state, &up, &model, &out).await {
@@ -261,7 +261,11 @@ async fn messages(state: &State, req: Request<Incoming>) -> Response<Body> {
         .and_then(|v| v.to_str().ok())
         .is_some_and(|c| c.contains("event-stream"));
     if out.stream && streamed {
-        return stream_response(resp, Translator::new(echoed, out.names, out.estimate), host);
+        return stream_response(
+            resp,
+            Translator::new(up.api, echoed, out.names, out.estimate),
+            host,
+        );
     }
     // A whole answer: asked for, or what the server sends regardless.
     let text = match resp.text().await {
@@ -278,7 +282,7 @@ async fn messages(state: &State, req: Request<Incoming>) -> Response<Body> {
     if let (Some(err), None) = (v.get("error"), v.get("choices")) {
         return error_response(&ApiError::in_stream(err));
     }
-    let message = response::message(&v, echoed, &out.names, out.estimate);
+    let message = response::message(&v, up.api, echoed, &out.names, out.estimate);
     if out.stream {
         sse_response(&events_for(&message))
     } else {
@@ -296,17 +300,15 @@ async fn send(
 ) -> Result<reqwest::Response, ApiError> {
     let host = up.host();
     let mut shape = state.shape(model);
-    // A smaller max_tokens for this request alone (its prompt left too
-    // little of the window).
-    let mut budget: Option<u64> = None;
+    let window = up.window(model);
+    // A smaller max_tokens for this request alone: what the model's window
+    // leaves after the prompt, as far as it is known.
+    let mut budget = window.and_then(|w| fit(out.max_tokens?, out.estimate, w));
     for _ in 0..4 {
         let max_tokens = budget.or(out.max_tokens);
         let mut body = out.body.clone();
-        shape.apply(&mut body, max_tokens);
-        let mut req = state
-            .client
-            .post(up.endpoint("/chat/completions"))
-            .json(&body);
+        shape.apply(&mut body, max_tokens, up.api);
+        let mut req = state.client.post(up.endpoint(up.api.path())).json(&body);
         if let Some(key) = up.api_key.as_deref().filter(|k| !k.is_empty()) {
             req = req.bearer_auth(key);
         }
@@ -341,13 +343,42 @@ async fn send(
             }
         }
         tracing::warn!(model, status, "the provider refused a request");
-        return Err(ApiError::from_upstream(status, &text, &host, out.estimate));
+        if up.api == Api::Responses && matches!(status, 404 | 405) {
+            let (message, _) = upstream_message(&text);
+            // "The model `x` does not exist" is about the model, not the API.
+            if !message.to_ascii_lowercase().contains("model") {
+                return Err(ApiError::new(
+                    404,
+                    "not_found_error",
+                    format!(
+                        "{host} has no Responses API ({}): choose Chat Completions in Berth's Settings › Model provider.",
+                        up.endpoint(up.api.path())
+                    ),
+                ));
+            }
+        }
+        return Err(ApiError::from_upstream(
+            status,
+            &text,
+            &host,
+            out.estimate,
+            window,
+        ));
     }
     Err(ApiError::new(
         400,
         "invalid_request_error",
         format!("{host} kept refusing the request"),
     ))
+}
+
+/// An output budget that leaves the prompt room in the model's `window`: the
+/// estimate, with a margin for its roughness. `None` when the budget fits
+/// already, or when what is left is too little to be worth asking for (the
+/// provider then says the prompt is too long, and Claude Code compacts).
+fn fit(max_tokens: u64, estimate: u64, window: u64) -> Option<u64> {
+    let room = window.checked_sub(estimate + estimate / 10 + 256)?;
+    (room >= 1024 && room < max_tokens).then_some(room)
 }
 
 fn stream_response(resp: reqwest::Response, mut t: Translator, host: String) -> Response<Body> {
@@ -474,4 +505,19 @@ pub(crate) fn describe(e: &reqwest::Error) -> String {
         source = s.source();
     }
     parts.join(": ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fit;
+
+    #[test]
+    fn the_output_budget_leaves_the_prompt_room_in_the_window() {
+        // 20k of prompt in a 32k window: 32k of output can't fit.
+        assert_eq!(fit(32_000, 20_000, 32_768), Some(10_512));
+        // Room enough already.
+        assert_eq!(fit(8_000, 20_000, 128_000), None);
+        // Next to nothing left: no use asking.
+        assert_eq!(fit(32_000, 31_000, 32_768), None);
+    }
 }

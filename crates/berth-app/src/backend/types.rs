@@ -452,6 +452,11 @@ pub enum ProviderEdit {
     Model(Option<String>),
     /// What Claude Code's quick requests run on; `None` is the agent's model.
     FastModel(Option<String>),
+    /// Responses or Chat Completions (ADR 0025).
+    Api(berth_core::ProviderApi),
+    /// A model's context window by hand; `None` goes back to what the
+    /// provider lists.
+    Context(String, Option<u64>),
 }
 
 /// What it takes for agents on this Mac to run again.

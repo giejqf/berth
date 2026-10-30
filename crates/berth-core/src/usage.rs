@@ -13,6 +13,9 @@ pub const EXTRA_USAGE: &str = "extra_usage";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextUsage {
     pub categories: Vec<ContextCategory>,
+    /// The window as Claude Code reported it, when it did (ADR 0025).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u64>,
     /// When it was measured (unix ms).
     pub at: i64,
 }
@@ -44,10 +47,13 @@ impl ContextUsage {
         self.sum(ContextKind::Buffer)
     }
 
-    /// The whole window: used, free and the compaction reserve.
+    /// The whole window: as Claude Code reported it, else used, free and
+    /// the compaction reserve (which add up to more than a small window).
     #[must_use]
     pub fn window(&self) -> u64 {
-        self.used() + self.free() + self.buffer()
+        self.max_tokens
+            .filter(|&m| m > 0)
+            .unwrap_or_else(|| self.used() + self.free() + self.buffer())
     }
 
     /// The share of the window in use, 0–1.
@@ -197,6 +203,7 @@ mod tests {
                 cat("Free space", 117_000, ContextKind::Free),
                 cat("Autocompact buffer", 33_000, ContextKind::Buffer),
             ],
+            max_tokens: None,
             at: 0,
         };
         assert_eq!((c.used(), c.window()), (50_000, 200_000));
@@ -205,9 +212,23 @@ mod tests {
         assert_eq!(names, ["Messages", "System prompt"]);
         let empty = ContextUsage {
             categories: vec![],
+            max_tokens: None,
             at: 0,
         };
         assert!(empty.fraction().abs() < f32::EPSILON);
+        // A small window, set for another provider's model: its parts and
+        // reserve add up to more than it, and the window is what counts.
+        let small = ContextUsage {
+            categories: vec![
+                cat("System tools", 41_600, ContextKind::Used),
+                cat("Free space", 0, ContextKind::Free),
+                cat("Autocompact buffer", 33_000, ContextKind::Buffer),
+            ],
+            max_tokens: Some(48_000),
+            at: 0,
+        };
+        assert_eq!(small.window(), 48_000);
+        assert!((small.fraction() - 0.866_666_7).abs() < 1e-3);
     }
 
     #[test]

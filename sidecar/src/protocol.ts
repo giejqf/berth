@@ -465,7 +465,13 @@ export type ContextCategory = {
  */
 name: string, tokens: number, kind: ContextKind, };
 
-export type SessionContext = { categories: Array<ContextCategory>, };
+export type SessionContext = { categories: Array<ContextCategory>, 
+/**
+ * The window Claude Code works to (`maxTokens`): the model's, or what
+ * `CLAUDE_CODE_MAX_CONTEXT_TOKENS` set (ADR 0025). The parts can add up
+ * to more than a small window, its compaction reserve included.
+ */
+max_tokens?: number, };
 
 export type QuotaStatus = "allowed" | "warning" | "rejected";
 

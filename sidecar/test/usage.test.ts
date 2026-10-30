@@ -69,12 +69,16 @@ describe("usage reports", () => {
       tokens: 40_000,
       kind: "used",
     });
+    // No window reported, none sent; one reported (ADR 0025) goes along.
+    expect(emitter.ofType("session.context")[0]?.max_tokens).toBeUndefined();
+    fake.context = { ...fake.context, maxTokens: 48_000 };
     expect(emitter.ofType("session.quota")).toHaveLength(1);
 
     session.turn("go");
     fake.send(sdk.result(0.1));
     await flush();
     expect(emitter.ofType("session.context")).toHaveLength(2);
+    expect(emitter.ofType("session.context")[1]?.max_tokens).toBe(48_000);
     expect(fake.usageCalls).toBe(1);
 
     fake.send({ type: "system", subtype: "compact_boundary", session_id: "abc", uuid: "u" });

@@ -1,12 +1,13 @@
 //! Claude Code's Messages API in front of an OpenAI-compatible API (ADR 0023).
 //!
 //! Berth's agents are Claude Code, always. This lets them run on a model
-//! behind any API that speaks OpenAI's Chat Completions: OpenAI, OpenRouter,
-//! DeepSeek, Groq, a local Ollama, LM Studio or vLLM. Claude Code sends its
-//! requests to a local server (`ANTHROPIC_BASE_URL`); each goes upstream
-//! translated, and its answer, streamed or not, comes back in the Messages
-//! API's shape. The provider's key never leaves this process: Claude Code
-//! holds only a token for the local server, new with each launch.
+//! behind an OpenAI-compatible API, speaking OpenAI's Responses API or Chat
+//! Completions ([`Api`]): OpenAI, OpenRouter, DeepSeek, Groq, a local
+//! Ollama, LM Studio or vLLM. Claude Code sends its requests to a local
+//! server (`ANTHROPIC_BASE_URL`); each goes upstream translated, and its
+//! answer, streamed or not, comes back in the Messages API's shape. The
+//! provider's key never leaves this process: Claude Code holds only a token
+//! for the local server, new with each launch (ADR 0023, ADR 0025).
 
 mod errors;
 mod models;
@@ -19,7 +20,30 @@ mod stream;
 pub use models::{CatalogModel, list_models};
 pub use server::Proxy;
 
+use std::collections::HashMap;
 use std::fmt;
+
+/// Which of OpenAI's APIs the provider speaks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Api {
+    /// `/responses`: OpenAI's current API, and the only one some models
+    /// (Codex) take.
+    #[default]
+    Responses,
+    /// `/chat/completions`: what most compatible servers speak.
+    ChatCompletions,
+}
+
+impl Api {
+    /// The endpoint requests go to, under the base URL.
+    #[must_use]
+    pub fn path(self) -> &'static str {
+        match self {
+            Self::Responses => "/responses",
+            Self::ChatCompletions => "/chat/completions",
+        }
+    }
+}
 
 /// The OpenAI-compatible API agents run on, and the models they ask for.
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -35,6 +59,11 @@ pub struct Upstream {
     pub fast_model: Option<String>,
     /// The models on offer, for Claude Code's model listing.
     pub models: Vec<String>,
+    pub api: Api,
+    /// Each model's context window, where known: a request's output budget
+    /// is cut to what the window leaves it, and a full window reads as
+    /// "prompt is too long" with its size.
+    pub contexts: HashMap<String, u64>,
 }
 
 impl fmt::Debug for Upstream {
@@ -45,12 +74,14 @@ impl fmt::Debug for Upstream {
             .field("model", &self.model)
             .field("fast_model", &self.fast_model)
             .field("models", &self.models)
+            .field("api", &self.api)
+            .field("contexts", &self.contexts)
             .finish()
     }
 }
 
 impl Upstream {
-    /// `path` (`/chat/completions`) under the base URL.
+    /// `path` (`/responses`) under the base URL.
     #[must_use]
     pub fn endpoint(&self, path: &str) -> String {
         let base = self.base_url.trim().trim_end_matches('/');
@@ -60,6 +91,12 @@ impl Upstream {
         } else {
             format!("{base}/v1{path}")
         }
+    }
+
+    /// The model's context window, where known.
+    #[must_use]
+    pub fn window(&self, model: &str) -> Option<u64> {
+        self.contexts.get(model).copied().filter(|&w| w > 0)
     }
 
     /// The host requests go to, as messages name it: `openrouter.ai`.

@@ -1,13 +1,17 @@
-//! A Messages API request as a Chat Completions request.
+//! A Messages API request as the provider's API takes it: Chat Completions
+//! or the Responses API ([`Api`]).
 //!
 //! What the provider can't take is left out: thinking (its signatures are
 //! Anthropic's), server tools (web search runs on Anthropic's side), cache
-//! markers. A tool's result becomes a `tool` message; images it returned
-//! follow in a user message, since tool messages carry text only.
+//! markers. A tool's result becomes a tool message (a `function_call_output`
+//! item); images it returned follow in a user message, since tool results
+//! carry text only.
 
 use std::collections::HashMap;
 
 use serde_json::{Map, Value, json};
+
+use crate::Api;
 
 /// Tool names as they go upstream, and back. OpenAI's are at most 64 of
 /// `[A-Za-z0-9_-]`; Claude Code's MCP tools can be longer.
@@ -77,11 +81,14 @@ pub(crate) struct Outgoing {
     pub estimate: u64,
 }
 
-pub(crate) fn translate(req: &Value, model: &str) -> Outgoing {
+pub(crate) fn translate(req: &Value, model: &str, api: Api) -> Outgoing {
     let mut names = Names::default();
-    let mut messages = Vec::new();
-    if let Some(system) = system_text(req.get("system")) {
-        messages.push(json!({ "role": "system", "content": system }));
+    let mut items = Vec::new();
+    let system = system_text(req.get("system"));
+    if api == Api::ChatCompletions
+        && let Some(system) = &system
+    {
+        items.push(json!({ "role": "system", "content": system }));
     }
     for m in req
         .get("messages")
@@ -91,19 +98,32 @@ pub(crate) fn translate(req: &Value, model: &str) -> Outgoing {
     {
         let content = m.get("content").unwrap_or(&Value::Null);
         match m.get("role").and_then(Value::as_str) {
-            Some("assistant") => assistant(content, &mut messages, &mut names),
-            _ => user(content, &mut messages),
+            Some("assistant") => assistant(content, &mut items, &mut names, api),
+            _ => user(content, &mut items, api),
         }
     }
 
     let mut body = Map::new();
     body.insert("model".into(), model.into());
-    body.insert("messages".into(), messages.into());
-    let tools = tools(req, &mut names);
+    match api {
+        Api::ChatCompletions => {
+            body.insert("messages".into(), items.into());
+        }
+        Api::Responses => {
+            if let Some(system) = system {
+                body.insert("instructions".into(), system.into());
+            }
+            body.insert("input".into(), items.into());
+            // Nothing kept on the provider's side: Claude Code sends the
+            // whole conversation each time.
+            body.insert("store".into(), false.into());
+        }
+    }
+    let tools = tools(req, &mut names, api);
     if !tools.is_empty() {
         body.insert("tools".into(), tools.into());
         if let Some(choice) = req.get("tool_choice") {
-            if let Some(c) = tool_choice(choice, &mut names) {
+            if let Some(c) = tool_choice(choice, &mut names, api) {
                 body.insert("tool_choice".into(), c);
             }
             if choice.get("disable_parallel_tool_use") == Some(&Value::Bool(true)) {
@@ -116,7 +136,9 @@ pub(crate) fn translate(req: &Value, model: &str) -> Outgoing {
             body.insert(key.into(), v.clone());
         }
     }
-    if let Some(stops) = req.get("stop_sequences").and_then(Value::as_array)
+    // The Responses API has no stop sequences.
+    if api == Api::ChatCompletions
+        && let Some(stops) = req.get("stop_sequences").and_then(Value::as_array)
         && !stops.is_empty()
     {
         body.insert("stop".into(), stops.iter().take(4).cloned().collect());
@@ -124,7 +146,9 @@ pub(crate) fn translate(req: &Value, model: &str) -> Outgoing {
     let stream = req.get("stream") == Some(&Value::Bool(true));
     if stream {
         body.insert("stream".into(), true.into());
-        body.insert("stream_options".into(), json!({ "include_usage": true }));
+        if api == Api::ChatCompletions {
+            body.insert("stream_options".into(), json!({ "include_usage": true }));
+        }
     }
     Outgoing {
         body,
@@ -172,13 +196,30 @@ fn kind(b: &Value) -> &str {
     b.get("type").and_then(Value::as_str).unwrap_or("")
 }
 
-fn text_part(text: &str) -> Value {
-    json!({ "type": "text", "text": text })
+/// What a user turn says: text, and images by URL (`data:` for inline ones).
+enum Part {
+    Text(String),
+    Image(String),
 }
 
-fn image_part(b: &Value) -> Option<Value> {
+impl Part {
+    fn wire(&self, api: Api) -> Value {
+        match (self, api) {
+            (Self::Text(t), Api::ChatCompletions) => json!({ "type": "text", "text": t }),
+            (Self::Text(t), Api::Responses) => json!({ "type": "input_text", "text": t }),
+            (Self::Image(u), Api::ChatCompletions) => {
+                json!({ "type": "image_url", "image_url": { "url": u } })
+            }
+            (Self::Image(u), Api::Responses) => {
+                json!({ "type": "input_image", "image_url": u, "detail": "auto" })
+            }
+        }
+    }
+}
+
+fn image_url(b: &Value) -> Option<String> {
     let source = b.get("source")?;
-    let url = match source.get("type").and_then(Value::as_str) {
+    Some(match source.get("type").and_then(Value::as_str) {
         Some("base64") => format!(
             "data:{};base64,{}",
             source.get("media_type")?.as_str()?,
@@ -186,8 +227,7 @@ fn image_part(b: &Value) -> Option<Value> {
         ),
         Some("url") => source.get("url")?.as_str()?.to_owned(),
         _ => return None,
-    };
-    Some(json!({ "type": "image_url", "image_url": { "url": url } }))
+    })
 }
 
 /// A document block as text: its own text when it has one, else a note
@@ -208,63 +248,71 @@ fn document_text(b: &Value) -> String {
     }
 }
 
-fn user(content: &Value, out: &mut Vec<Value>) {
-    let mut tool_messages = Vec::new();
-    // Images tools returned, then the user's own parts.
+/// A user turn: each tool result as a tool message (`function_call_output`
+/// in the Responses API), then a user message with the images tools
+/// returned and the user's own parts.
+fn user(content: &Value, out: &mut Vec<Value>, api: Api) {
     let mut returned = Vec::new();
     let mut parts = Vec::new();
     for b in blocks(content) {
         match b {
             Block::Text(t) => {
                 if !t.is_empty() {
-                    parts.push(text_part(t));
+                    parts.push(Part::Text(t.to_owned()));
                 }
             }
             Block::Other(v) => match kind(v) {
-                "image" => parts.extend(image_part(v)),
-                "document" => parts.push(text_part(&document_text(v))),
+                "image" => parts.extend(image_url(v).map(Part::Image)),
+                "document" => parts.push(Part::Text(document_text(v))),
                 "tool_result" => {
                     let id = v.get("tool_use_id").and_then(Value::as_str).unwrap_or("");
                     let (text, images) = tool_result(v);
-                    tool_messages
-                        .push(json!({ "role": "tool", "tool_call_id": id, "content": text }));
+                    out.push(match api {
+                        Api::ChatCompletions => {
+                            json!({ "role": "tool", "tool_call_id": id, "content": text })
+                        }
+                        Api::Responses => {
+                            json!({ "type": "function_call_output", "call_id": id, "output": text })
+                        }
+                    });
                     if !images.is_empty() {
-                        returned.push(text_part(&format!("The images tool call {id} returned:")));
-                        returned.extend(images);
+                        returned.push(Part::Text(format!("The images tool call {id} returned:")));
+                        returned.extend(images.into_iter().map(Part::Image));
                     }
                 }
                 _ => {}
             },
         }
     }
-    out.extend(tool_messages);
     returned.extend(parts);
     if returned.is_empty() {
         return;
     }
-    let all_text = returned.iter().all(|p| kind(p) == "text");
-    let content = if all_text {
+    let content: Value = if returned.iter().all(|p| matches!(p, Part::Text(_))) {
         returned
             .iter()
-            .filter_map(|p| p.get("text").and_then(Value::as_str))
+            .filter_map(|p| match p {
+                Part::Text(t) => Some(t.as_str()),
+                Part::Image(_) => None,
+            })
             .collect::<Vec<_>>()
             .join("\n\n")
             .into()
     } else {
-        Value::Array(returned)
+        returned.iter().map(|p| p.wire(api)).collect()
     };
     out.push(json!({ "role": "user", "content": content }));
 }
 
-/// A tool result's text, and the images it returned.
-fn tool_result(b: &Value) -> (String, Vec<Value>) {
+/// A tool result's text, and the images it returned (their URLs).
+fn tool_result(b: &Value) -> (String, Vec<String>) {
     let mut text = Vec::new();
     let mut images = Vec::new();
     for part in blocks(b.get("content").unwrap_or(&Value::Null)) {
         match part {
             Block::Text(t) => text.push(t.to_owned()),
             Block::Other(v) => match kind(v) {
-                "image" => images.extend(image_part(v)),
+                "image" => images.extend(image_url(v)),
                 "document" => text.push(document_text(v)),
                 _ => {}
             },
@@ -284,20 +332,36 @@ fn tool_result(b: &Value) -> (String, Vec<Value>) {
     (text, images)
 }
 
-fn assistant(content: &Value, out: &mut Vec<Value>, names: &mut Names) {
+/// An assistant turn: its text and its tool calls. One message with
+/// `tool_calls` in Chat Completions; a message, then a `function_call` item
+/// for each call, in the Responses API.
+fn assistant(content: &Value, out: &mut Vec<Value>, names: &mut Names, api: Api) {
     let mut text = String::new();
     let mut calls = Vec::new();
     for b in blocks(content) {
         match b {
             Block::Text(t) => text.push_str(t),
             Block::Other(v) if kind(v) == "tool_use" => {
-                let name = v.get("name").and_then(Value::as_str).unwrap_or("");
-                let input = v.get("input").cloned().unwrap_or_else(|| json!({}));
-                calls.push(json!({
-                    "id": v.get("id").and_then(Value::as_str).unwrap_or(""),
-                    "type": "function",
-                    "function": { "name": names.wire(name), "arguments": input.to_string() },
-                }));
+                let name = names.wire(v.get("name").and_then(Value::as_str).unwrap_or(""));
+                let id = v.get("id").and_then(Value::as_str).unwrap_or("");
+                let args = v
+                    .get("input")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}))
+                    .to_string();
+                calls.push(match api {
+                    Api::ChatCompletions => json!({
+                        "id": id,
+                        "type": "function",
+                        "function": { "name": name, "arguments": args },
+                    }),
+                    Api::Responses => json!({
+                        "type": "function_call",
+                        "call_id": id,
+                        "name": name,
+                        "arguments": args,
+                    }),
+                });
             }
             // Thinking and server tools: the provider can't take them back.
             Block::Other(_) => {}
@@ -306,55 +370,76 @@ fn assistant(content: &Value, out: &mut Vec<Value>, names: &mut Names) {
     if text.is_empty() && calls.is_empty() {
         return;
     }
-    let mut m = Map::new();
-    m.insert("role".into(), "assistant".into());
-    m.insert(
-        "content".into(),
-        if text.is_empty() {
-            Value::Null
-        } else {
-            text.into()
-        },
-    );
-    if !calls.is_empty() {
-        m.insert("tool_calls".into(), calls.into());
+    match api {
+        Api::ChatCompletions => {
+            let mut m = Map::new();
+            m.insert("role".into(), "assistant".into());
+            m.insert(
+                "content".into(),
+                if text.is_empty() {
+                    Value::Null
+                } else {
+                    text.into()
+                },
+            );
+            if !calls.is_empty() {
+                m.insert("tool_calls".into(), calls.into());
+            }
+            out.push(Value::Object(m));
+        }
+        Api::Responses => {
+            if !text.is_empty() {
+                out.push(json!({ "role": "assistant", "content": text }));
+            }
+            out.extend(calls);
+        }
     }
-    out.push(Value::Object(m));
 }
 
 /// Claude Code's tools as functions. Server tools (web search, code
 /// execution) run on Anthropic's side and have no schema here: left out.
-fn tools(req: &Value, names: &mut Names) -> Vec<Value> {
+/// The Responses API's functions are flat, and strict unless told not to
+/// be (Claude Code's schemas aren't written for strict mode).
+fn tools(req: &Value, names: &mut Names, api: Api) -> Vec<Value> {
     req.get("tools")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(|t| {
             let mut schema = t.get("input_schema")?.clone();
-            let name = t.get("name")?.as_str()?;
+            let name = names.wire(t.get("name")?.as_str()?);
             if let Some(o) = schema.as_object_mut() {
                 o.remove("$schema");
             }
-            Some(json!({
-                "type": "function",
-                "function": {
-                    "name": names.wire(name),
-                    "description": t.get("description").and_then(Value::as_str).unwrap_or(""),
+            let description = t.get("description").and_then(Value::as_str).unwrap_or("");
+            Some(match api {
+                Api::ChatCompletions => json!({
+                    "type": "function",
+                    "function": { "name": name, "description": description, "parameters": schema },
+                }),
+                Api::Responses => json!({
+                    "type": "function",
+                    "name": name,
+                    "description": description,
                     "parameters": schema,
-                },
-            }))
+                    "strict": false,
+                }),
+            })
         })
         .collect()
 }
 
-fn tool_choice(choice: &Value, names: &mut Names) -> Option<Value> {
+fn tool_choice(choice: &Value, names: &mut Names, api: Api) -> Option<Value> {
     Some(match choice.get("type").and_then(Value::as_str)? {
         "auto" => "auto".into(),
         "any" => "required".into(),
         "none" => "none".into(),
         "tool" => {
-            let name = choice.get("name")?.as_str()?;
-            json!({ "type": "function", "function": { "name": names.wire(name) } })
+            let name = names.wire(choice.get("name")?.as_str()?);
+            match api {
+                Api::ChatCompletions => json!({ "type": "function", "function": { "name": name } }),
+                Api::Responses => json!({ "type": "function", "name": name }),
+            }
         }
         _ => return None,
     })
@@ -429,7 +514,7 @@ mod tests {
 
     #[test]
     fn a_conversation_becomes_chat_messages() {
-        let out = translate(&conversation(), "deepseek-chat");
+        let out = translate(&conversation(), "deepseek-chat", Api::ChatCompletions);
         let body = Value::Object(out.body);
         assert_eq!(body["model"], "deepseek-chat");
         let m = body["messages"].as_array().cloned().unwrap_or_default();
@@ -463,8 +548,51 @@ mod tests {
     }
 
     #[test]
+    fn a_conversation_becomes_responses_api_input() {
+        let out = translate(&conversation(), "gpt-5-codex", Api::Responses);
+        let body = Value::Object(out.body);
+        assert_eq!(body["instructions"], "You are Claude Code.\n\nBe brief.");
+        assert_eq!(body["store"], false);
+        assert!(body.get("messages").is_none() && body.get("stream_options").is_none());
+        let input = body["input"].as_array().cloned().unwrap_or_default();
+        assert_eq!(
+            input[0],
+            json!({ "role": "user", "content": "List the files" })
+        );
+        assert_eq!(
+            input[1],
+            json!({ "role": "assistant", "content": "Listing them." })
+        );
+        assert_eq!(
+            input[2],
+            json!({ "type": "function_call", "call_id": "toolu_1", "name": "Bash", "arguments": r#"{"command":"ls"}"# })
+        );
+        assert_eq!(
+            input[3],
+            json!({ "type": "function_call_output", "call_id": "toolu_1", "output": "a.txt" })
+        );
+        let parts = input[4]["content"].as_array().cloned().unwrap_or_default();
+        assert_eq!(parts[0]["type"], "input_text");
+        assert_eq!(parts[1]["type"], "input_image");
+        assert_eq!(parts[1]["image_url"], "data:image/png;base64,iVBOR");
+        let tool = &body["tools"][0];
+        assert_eq!(tool["name"], "Bash");
+        assert_eq!(tool["strict"], false);
+        assert!(tool["parameters"].get("$schema").is_none());
+        assert_eq!(body["tool_choice"], "auto");
+        assert_eq!(
+            tool_choice(
+                &json!({ "type": "tool", "name": "Bash" }),
+                &mut Names::default(),
+                Api::Responses
+            ),
+            Some(json!({ "type": "function", "name": "Bash" }))
+        );
+    }
+
+    #[test]
     fn tools_lose_server_tools_and_long_names_fit() {
-        let out = translate(&conversation(), "m");
+        let out = translate(&conversation(), "m", Api::ChatCompletions);
         let tools = out.body["tools"].as_array().cloned().unwrap_or_default();
         assert_eq!(tools.len(), 2);
         assert!(tools[0]["function"]["parameters"].get("$schema").is_none());
@@ -494,11 +622,15 @@ mod tests {
     fn a_forced_tool_maps_to_a_function() {
         let mut names = Names::default();
         assert_eq!(
-            tool_choice(&json!({ "type": "tool", "name": "Bash" }), &mut names),
+            tool_choice(
+                &json!({ "type": "tool", "name": "Bash" }),
+                &mut names,
+                Api::ChatCompletions
+            ),
             Some(json!({ "type": "function", "function": { "name": "Bash" } }))
         );
         assert_eq!(
-            tool_choice(&json!({ "type": "any" }), &mut names),
+            tool_choice(&json!({ "type": "any" }), &mut names, Api::ChatCompletions),
             Some("required".into())
         );
     }

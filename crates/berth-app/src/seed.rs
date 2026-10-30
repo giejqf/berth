@@ -571,6 +571,7 @@ fn seed_usage(store: &Store, workflows: [&str; 3], scenario: &str) -> Result<()>
                 part("Free space", 167_000 - used, ContextKind::Free),
                 part("Autocompact buffer", 33_000, ContextKind::Buffer),
             ],
+            max_tokens: None,
             at: now - 4 * 60_000,
         };
         store.set_workflow_context(wf, &context)?;

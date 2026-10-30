@@ -1453,11 +1453,20 @@ fn context_reports_are_kept_on_the_workflow() {
                 kind: berth_protocol::ContextKind::Free,
             },
         ],
+        max_tokens: None,
     });
     let fx = engine.apply(&store, &wf, &report).unwrap();
     assert!(fx.iter().any(|e| matches!(e, Effect::FlowChanged { .. })));
     let context = store.workflow_view(&wf).unwrap().context.unwrap();
     assert_eq!((context.used(), context.window()), (30_000, 200_000));
+    // The window Claude Code reports is kept with it (ADR 0025).
+    let small = SidecarToApp::SessionContext(berth_protocol::SessionContext {
+        categories: vec![],
+        max_tokens: Some(48_000),
+    });
+    engine.apply(&store, &wf, &small).unwrap();
+    let context = store.workflow_view(&wf).unwrap().context.unwrap();
+    assert_eq!(context.window(), 48_000);
 }
 
 #[test]

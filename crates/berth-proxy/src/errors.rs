@@ -24,10 +24,29 @@ impl ApiError {
         json!({ "type": "error", "error": { "type": self.kind, "message": self.message } })
     }
 
-    /// The provider answered `status` with `body`.
-    pub(crate) fn from_upstream(status: u16, body: &str, host: &str, estimate: u64) -> Self {
+    /// The provider answered `status` with `body`. `window` is the model's
+    /// context window where known, for an overflow that doesn't say it.
+    pub(crate) fn from_upstream(
+        status: u16,
+        body: &str,
+        host: &str,
+        estimate: u64,
+        window: Option<u64>,
+    ) -> Self {
         let (message, _) = upstream_message(body);
-        if let Some(o) = Overflow::read(&message) {
+        let overflow = Overflow::read(&message).or_else(|| {
+            body.contains("context_length_exceeded")
+                .then_some(Overflow {
+                    maximum: None,
+                    requested: None,
+                    prompt: None,
+                })
+        });
+        if let Some(o) = overflow {
+            let o = Overflow {
+                maximum: o.maximum.or(window),
+                ..o
+            };
             return Self::new(400, "invalid_request_error", o.too_long(estimate));
         }
         let message = format!("{host}: {message}");
@@ -230,13 +249,13 @@ mod tests {
     #[test]
     fn statuses_map_to_what_claude_code_retries() {
         let body = r#"{"error":{"message":"Rate limit reached","type":"requests"}}"#;
-        let e = ApiError::from_upstream(429, body, "api.openai.com", 0);
+        let e = ApiError::from_upstream(429, body, "api.openai.com", 0, None);
         assert_eq!((e.status, e.kind), (429, "rate_limit_error"));
         assert_eq!(e.message, "api.openai.com: Rate limit reached");
-        let e = ApiError::from_upstream(503, "upstream down", "x", 0);
+        let e = ApiError::from_upstream(503, "upstream down", "x", 0, None);
         assert_eq!((e.status, e.kind), (529, "overloaded_error"));
         assert_eq!(e.message, "x: upstream down");
-        let e = ApiError::from_upstream(401, r#"{"error":"Invalid API key"}"#, "x", 0);
+        let e = ApiError::from_upstream(401, r#"{"error":"Invalid API key"}"#, "x", 0, None);
         assert_eq!(
             (e.status, e.kind, e.message.as_str()),
             (401, "authentication_error", "x: Invalid API key")
@@ -246,7 +265,7 @@ mod tests {
     #[test]
     fn a_full_context_window_reads_as_a_prompt_too_long() {
         let openai = r#"{"error":{"message":"This model's maximum context length is 128000 tokens. However, your messages resulted in 130512 tokens. Please reduce the length of the messages.","code":"context_length_exceeded"}}"#;
-        let e = ApiError::from_upstream(400, openai, "api.openai.com", 0);
+        let e = ApiError::from_upstream(400, openai, "api.openai.com", 0, None);
         assert_eq!(
             e.message,
             "prompt is too long: 130512 tokens > 128000 maximum"
@@ -266,6 +285,19 @@ mod tests {
             Some("prompt is too long: 36000 tokens > 32768 maximum")
         );
         assert!(Overflow::read("Invalid API key").is_none());
+    }
+
+    #[test]
+    fn an_overflow_without_numbers_takes_the_window_set_for_the_model() {
+        let responses = r#"{"error":{"message":"Your input exceeds the context window of this model. Please adjust your input and try again.","type":"invalid_request_error","code":"context_length_exceeded"}}"#;
+        let e = ApiError::from_upstream(400, responses, "api.openai.com", 150_000, Some(128_000));
+        assert_eq!(
+            e.message,
+            "prompt is too long: 150000 tokens > 128000 maximum"
+        );
+        let coded = r#"{"error":{"message":"Bad request","code":"context_length_exceeded"}}"#;
+        let e = ApiError::from_upstream(400, coded, "x", 9_000, Some(8_192));
+        assert_eq!(e.message, "prompt is too long: 9000 tokens > 8192 maximum");
     }
 
     #[test]

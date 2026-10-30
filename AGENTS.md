@@ -58,7 +58,7 @@ If a design decision is not here, it has not been made. Record new decisions her
 | **Integration** | First-class, app-owned: **GitHub** via `gh`. PR, Issue, Branch, Commit, Comment are typed entities in SQLite. |
 | **Connector** | User-defined, global, extensible: a CLI tool plus a `SKILL.md` (§8). Linear, PostHog, etc. Not MCP. |
 | **Sidecar** | The TypeScript process that hosts the Claude Agent SDK and Berth's agent tools. One sidecar per active session. |
-| **Model provider** | What agents on this Mac run on: Claude Code's own account, or an OpenAI-compatible API (OpenAI, OpenRouter, DeepSeek, Ollama, …) whose Chat Completions Berth's proxy speaks for Claude Code (ADR 0023). |
+| **Model provider** | What agents on this Mac run on: Claude Code's own account, or an OpenAI-compatible API (OpenAI, OpenRouter, DeepSeek, Ollama, …) whose Responses API or Chat Completions Berth's proxy speaks for Claude Code (ADR 0023, ADR 0025). |
 
 ---
 
@@ -87,8 +87,9 @@ spawns the sidecar directly. For `inside` placement the app runs
 over that pipe. This is why there is no Unix socket: one transport works in both placements.
 
 Under an OpenAI-compatible model provider, Claude Code on the host sends its model
-requests to `berth-proxy` on `127.0.0.1` (`ANTHROPIC_BASE_URL`), which sends them on as
-Chat Completions (ADR 0023). Nothing else about a session changes.
+requests to `berth-proxy` on `127.0.0.1` (`ANTHROPIC_BASE_URL`), which sends them on in
+the Responses API or as Chat Completions (ADR 0023, ADR 0025). Nothing else about a
+session changes.
 
 ### 3.1 Repo layout
 
@@ -124,7 +125,7 @@ berth/
 │   ├── berth-git/               tree snapshots, diff parsing, worktree helpers
 │   ├── berth-gh/                `gh --json` wrapper, GitHub entity sync
 │   ├── berth-connectors/        connector discovery, skill install, Keychain secrets
-│   ├── berth-proxy/             Messages API ⇄ Chat Completions proxy for the model provider
+│   ├── berth-proxy/             Messages API ⇄ Responses / Chat Completions proxy for the model provider
 │   └── berth-svg/               build tooling: renders packaging/*.svg to PNG (resvg)
 ├── sidecar/
 │   ├── package.json             pnpm, Node 22+, TypeScript strict
@@ -167,7 +168,7 @@ berth/
 | Terminal | `alacritty_terminal` (Apache-2.0) for the PTY, the parser and the grid; Berth draws it | One shell per terminal on a PTY thread; the view only paints cells and sends bytes (ADR 0005). |
 | Visual system | Gruvbox tokens in `theme.rs` (dark and light), IBM Plex Sans 13/18 and JetBrains Mono 12, bundled (SIL OFL 1.1: fonts are data, compatible with MIT) | Sizes follow the design *as rendered* (its CSS adds padding/borders to stated widths). Text renders without CoreGraphics stroke dilation: Berth sets `AppleFontSmoothing = 0` in its own defaults domain at launch (ADR 0003). |
 | GitHub | `gh` CLI with `--json`, reusing the user's auth | No GitHub API client crate. |
-| Model provider | Claude Code's account, or an OpenAI-compatible API through `berth-proxy` (hyper server, reqwest client with rustls and the Mac's certificates and proxy settings) | The proxy listens on `127.0.0.1` with a per-launch token; the API key stays in the Keychain and the app (ADR 0023). |
+| Model provider | Claude Code's account, or an OpenAI-compatible API through `berth-proxy` (hyper server, reqwest client with rustls and the Mac's certificates and proxy settings), in its Responses API or Chat Completions | The proxy listens on `127.0.0.1` with a per-launch token; the API key stays in the Keychain and the app (ADR 0023, ADR 0025). |
 | Secrets | macOS Keychain via `security-framework` | Never written to SQLite or disk. |
 | Sidecar runtime | Node 22+, pnpm, `tsx` in dev, bundled with `esbuild` for release | Bundle shipped inside the app at `Contents/Resources/sidecar/`, with the SDK's native `claude` next to it. Claude binary: `$BERTH_CLAUDE_PATH`, else `claude` beside the bundle, else the SDK's own. Node: `node` on the login shell's `PATH` (`shell_env.rs`: read at launch, 3 s at most, while the main thread sets the font default; a shell that takes longer is stopped with what it started, and Berth goes on with the `PATH` it was given), else where Homebrew, MacPorts, Volta, mise, asdf, nodenv, n, nvm or fnm put it (`backend/launch.rs`; nvm's setup in `~/.zshrc` never reaches a login shell), looked up for each sidecar; without it, or older than 22, host agents don't start and the UI says so. TypeScript 6 (typescript-eslint does not support 7 yet), zod 4. |
 | Dev overrides | `BERTH_HOME` (app data), `BERTH_CONFIG_DIR` (slots/connectors), `BERTH_LOG_DIR`, `BERTH_SECRETS=memory`, `BERTH_SIDECAR` (command line), `BERTH_THEME=light\|dark`, `BERTH_DEV_SEED=<scenario>` (devtools) | Never needed in normal use. |
@@ -663,8 +664,9 @@ workflow_links   workflow_id, entity_id, role(origin|outcome)
 connectors       name, path, enabled
 settings         key, value          # last_repo, recent_repos, model, models, quota, commands:<repo_id>, account,
                                      # claude_identity, review_width, keep_awake, provider,
-                                     # openai_base_url, openai_models, openai_model,
-                                     # openai_fast_model, openai_catalog (ADR 0023)
+                                     # openai_base_url, openai_api, openai_models, openai_model,
+                                     # openai_fast_model, openai_contexts, openai_catalog
+                                     # (ADR 0023, ADR 0025)
 ```
 
 Timestamps are unix epoch milliseconds. `nodes.raw_first/raw_last` are `raw_events.id`
@@ -725,7 +727,7 @@ round.ended      { terminal_kind, cost_usd, duration_ms, nudges, last_text? }
 session.cost     { total_usd }
 session.error    { message, fatal }
 session.models   { models: [{ value, display_name, description, efforts }] }   # supportedModels()
-session.context  { categories: [{ name, tokens, kind: used|free|buffer|deferred }] }   # getContextUsage (ADR 0014)
+session.context  { categories: [{ name, tokens, kind: used|free|buffer|deferred }], max_tokens? }   # getContextUsage (ADR 0014); max_tokens: its window (ADR 0025)
 session.quota    { complete, available, plan?, windows: [{ key, label?, utilization?, resets_at?, status? }] }   # plan limits
 sessions.listed  { sessions: [{ session_id, title, first_prompt?, cwd?, git_branch?, last_modified }] }   # reply to sessions.list
 node.compacted   { trigger, pre_tokens, post_tokens? }   # compact_boundary (ADR 0015)
@@ -943,17 +945,21 @@ settles nothing (ADR 0013).
   background tasks go on until stopped here.
 - **Model provider** (ADR 0023; `crates/berth-proxy`, `backend/provider.rs`,
   `berth_core::provider`): Settings › Model provider switches agents on this Mac
-  between Claude Code's account and an OpenAI-compatible API: its base URL, an API key
+  between Claude Code's account and an OpenAI-compatible API: its base URL, which API
+  it speaks (Responses, the default, or Chat Completions; ADR 0025), an API key
   (Keychain, `com.berth.provider.openai`; a local server may need none), the models on
-  offer (searched in its `/models` list, or typed), and the one for Claude Code's
-  quick requests (titles, summaries, suggestions; else the agent's model). The first
+  offer (searched in its `/models` list, or typed), each one's context window (as set
+  beside it, else as the provider lists it), and the one for Claude Code's quick
+  requests (titles, summaries, suggestions; else the agent's model). The first
   host session to need it starts the proxy; each gets `ANTHROPIC_BASE_URL`, the
-  proxy's token, Claude's model names mapped to its model and the model's window when
-  the provider lists it, and loses keys that would win over the proxy. The proxy
-  translates both ways (text streams, tool calls whole, images, tool results; no
-  thinking or server tools), reads providers' errors as Anthropic's (a full window is
-  "prompt is too long", so Claude Code compacts), and learns what each model refuses
-  (`max_completion_tokens`, an output cap, a parameter) by sending again. The picker
+  proxy's token, Claude's model names mapped to its model and the model's window
+  (`CLAUDE_CODE_MAX_CONTEXT_TOKENS`), and loses keys that would win over the proxy.
+  The proxy translates both ways (text streams, tool calls whole, images, tool
+  results; no thinking or server tools), cuts the output budget to what the window
+  leaves the prompt, reads providers' errors as Anthropic's (a full window is "prompt
+  is too long", so Claude Code compacts), and learns what each model refuses
+  (`max_completion_tokens`, an output cap, a parameter) by sending again. The usage
+  ring's share is of the window Claude Code reports (`session.context.max_tokens`). The picker
   and Settings' default offer the provider's models; a slot keeps its model per
   provider. Switching restarts host sessions as an account switch does (ADR 0017);
   plan limits and the account hide under the provider, and the Claude Code row says
@@ -1191,5 +1197,6 @@ owns it? what node type does it produce?
 - Pushing review comments to Linear/PostHog (GitHub only).
 - Agent backends other than Claude Code.
 - `inside` slots' agents on the model provider (the proxy listens on the host's
-  loopback); model APIs other than Chat Completions (OpenAI's Responses, Gemini's own).
+  loopback); model APIs other than OpenAI's Responses and Chat Completions (Gemini's
+  own); passing reasoning items back to a provider across turns.
 

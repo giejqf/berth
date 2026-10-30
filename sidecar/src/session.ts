@@ -44,7 +44,14 @@ import type {
 } from "./protocol.js";
 import { AsyncQueue } from "./queue.js";
 import { TaskTracker } from "./tasks.js";
-import { type ContextReport, type UsageReport, contextCategories, quotaFromRateLimit, quotaFromUsage } from "./usage.js";
+import {
+  type ContextReport,
+  type UsageReport,
+  contextCategories,
+  contextWindow,
+  quotaFromRateLimit,
+  quotaFromUsage,
+} from "./usage.js";
 import { berthToolName, createBerthServer, type CallContext, type ToolHost, type ToolOutcome } from "./tools.js";
 
 export const BERTH_SYSTEM_PROMPT = `You are working inside Berth. The user never reads or edits code: they follow your decisions, answer your questions, review diffs, and ship pull requests.
@@ -706,7 +713,7 @@ export class Session implements ToolHost {
         this.contextAgain = false;
         // `summary` answers from the last response's usage: no token-count calls.
         const r = await q.getContextUsage({ detail: "summary" });
-        this.emitter.emit({ type: "session.context", categories: contextCategories(r) });
+        this.emitter.emit({ type: "session.context", categories: contextCategories(r), ...contextWindow(r) });
       } while (this.contextAgain);
     } catch (e) {
       this.log.warn({ err: e }, "getContextUsage failed");

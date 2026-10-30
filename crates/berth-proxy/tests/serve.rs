@@ -6,7 +6,7 @@
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 
-use berth_proxy::{Proxy, Upstream, list_models};
+use berth_proxy::{Api, Proxy, Upstream, list_models};
 use bytes::Bytes;
 use http_body_util::{BodyExt as _, Full};
 use hyper::body::Incoming;
@@ -75,6 +75,12 @@ async fn answer(req: Request<Incoming>, log: &Seen) -> Response<Full<Bytes>> {
             json!({ "data": [{ "id": "fake-coder", "context_length": 65536 }] }).to_string(),
         );
     }
+    if path == "/v1/responses" {
+        return responses(&body, respond);
+    }
+    if path != "/v1/chat/completions" {
+        return respond(404, "text/plain", "404 page not found".to_owned());
+    }
     if body["max_tokens"].as_u64().unwrap_or(0) > 8192 {
         return respond(
             400,
@@ -103,7 +109,34 @@ async fn answer(req: Request<Incoming>, log: &Seen) -> Response<Full<Bytes>> {
     )
 }
 
-async fn proxy(base: &str) -> Proxy {
+/// The Responses API: text and a function call, streamed as its events.
+fn responses(
+    body: &Value,
+    respond: impl Fn(u16, &str, String) -> Response<Full<Bytes>>,
+) -> Response<Full<Bytes>> {
+    if body["max_output_tokens"].as_u64().unwrap_or(0) > 8192 {
+        return respond(
+            400,
+            "application/json",
+            json!({ "error": { "message": "max_output_tokens is too large: this model supports at most 8192" } }).to_string(),
+        );
+    }
+    let events = [
+        json!({ "type": "response.created", "response": { "id": "resp_1", "status": "in_progress", "error": null } }),
+        json!({ "type": "response.output_item.added", "output_index": 0, "item": { "type": "message", "content": [] } }),
+        json!({ "type": "response.output_text.delta", "output_index": 0, "content_index": 0, "delta": "On it." }),
+        json!({ "type": "response.output_item.added", "output_index": 1, "item": { "type": "function_call", "call_id": "call_r1", "name": "Bash", "arguments": "" } }),
+        json!({ "type": "response.function_call_arguments.delta", "output_index": 1, "delta": "{\"command\":\"ls\"}" }),
+        json!({ "type": "response.completed", "response": { "status": "completed", "usage": { "input_tokens": 222, "output_tokens": 9 } } }),
+    ];
+    let text: String = events
+        .iter()
+        .map(|e| format!("event: {}\ndata: {e}\n\n", e["type"].as_str().unwrap()))
+        .collect();
+    respond(200, "text/event-stream", text)
+}
+
+async fn proxy_on(base: &str, api: Api, window: Option<u64>) -> Proxy {
     let proxy = Proxy::start().await.unwrap();
     proxy.configure(Some(Upstream {
         base_url: base.to_owned(),
@@ -111,8 +144,16 @@ async fn proxy(base: &str) -> Proxy {
         model: "fake-coder".to_owned(),
         fast_model: None,
         models: vec!["fake-coder".to_owned()],
+        api,
+        contexts: window
+            .map(|w| [("fake-coder".to_owned(), w)].into())
+            .unwrap_or_default(),
     }));
     proxy
+}
+
+async fn proxy(base: &str) -> Proxy {
+    proxy_on(base, Api::ChatCompletions, None).await
 }
 
 fn request(stream: bool) -> Value {
@@ -231,6 +272,7 @@ async fn only_the_token_gets_in_and_errors_read_as_anthropic_s() {
         base_url: base.clone(),
         api_key: Some("sk-wrong".to_owned()),
         model: "fake-coder".to_owned(),
+        api: Api::ChatCompletions,
         ..Upstream::default()
     }));
     let resp = client
@@ -286,5 +328,70 @@ async fn models_list_with_their_windows() {
     assert!(
         err.contains("401") && err.contains("Incorrect API key"),
         "{err}"
+    );
+}
+
+fn events_of(text: &str) -> Vec<Value> {
+    text.lines()
+        .filter_map(|l| l.strip_prefix("data: "))
+        .map(|d| serde_json::from_str(d).unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_responses_api_answer_streams_back_and_the_window_cuts_the_budget() {
+    let (base, seen) = fake_upstream().await;
+    let proxy = proxy_on(&base, Api::Responses, Some(16_384)).await;
+    let text = reqwest::Client::new()
+        .post(format!("{}/v1/messages", proxy.base_url()))
+        .header("x-api-key", proxy.token())
+        .json(&request(true))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let events = events_of(&text);
+    let tool = events
+        .iter()
+        .find(|e| e["type"] == "content_block_start" && e["content_block"]["type"] == "tool_use")
+        .unwrap();
+    assert_eq!(tool["content_block"]["id"], "call_r1");
+    let end = events
+        .iter()
+        .find(|e| e["type"] == "message_delta")
+        .unwrap();
+    assert_eq!(end["delta"]["stop_reason"], "tool_use");
+    assert_eq!(end["usage"]["input_tokens"], 222);
+
+    // 32000 of output can't fit a 16k window: the request went out cut to
+    // what the window leaves, then to the 8192 the model takes.
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[0].0, "/v1/responses");
+    let first = seen[0].1["max_output_tokens"].as_u64().unwrap();
+    assert!(first < 16_384 && first > 8192, "{first}");
+    assert_eq!(seen[1].1["max_output_tokens"], 8192);
+    assert_eq!(seen[0].1["input"][0]["content"], "list the files");
+}
+
+#[tokio::test]
+async fn a_server_without_the_responses_api_says_which_to_choose() {
+    let (base, _) = fake_upstream().await;
+    let proxy = proxy_on(&format!("{base}/other"), Api::Responses, None).await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/messages", proxy.base_url()))
+        .header("x-api-key", proxy.token())
+        .json(&request(false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+    let v: Value = resp.json().await.unwrap();
+    let message = v["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("no Responses API") && message.contains("Chat Completions"),
+        "{message}"
     );
 }

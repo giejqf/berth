@@ -3,10 +3,14 @@
 //! The agent is Claude Code either way; only the model behind it changes.
 //!
 //! Settings: `provider` ("openai", else Claude Code's account),
-//! `openai_base_url`, `openai_models` (the ids on offer, JSON), `openai_model`
+//! `openai_base_url`, `openai_api` ("chat" for Chat Completions, else the
+//! Responses API), `openai_models` (the ids on offer, JSON), `openai_model`
 //! (the default), `openai_fast_model` (Claude Code's quick requests),
-//! `openai_catalog` (what the provider listed at its last check, JSON). The
-//! key is in the Keychain ([`KEY_SERVICE`]).
+//! `openai_contexts` (context windows set by hand, JSON), `openai_catalog`
+//! (what the provider listed at its last check, JSON). The key is in the
+//! Keychain ([`KEY_SERVICE`]).
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +28,16 @@ pub enum ProviderKind {
     OpenAi,
 }
 
+/// Which of OpenAI's APIs the provider is spoken to in (ADR 0025).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProviderApi {
+    /// `/responses`.
+    #[default]
+    Responses,
+    /// `/chat/completions`.
+    ChatCompletions,
+}
+
 /// One model the provider listed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderModel {
@@ -39,6 +53,7 @@ pub struct ProviderModel {
 pub struct Provider {
     pub kind: ProviderKind,
     pub base_url: String,
+    pub api: ProviderApi,
     /// The models on offer, in the order they were added.
     pub models: Vec<String>,
     /// The default for slots without their own; else the first on offer.
@@ -46,6 +61,8 @@ pub struct Provider {
     /// What Claude Code's quick requests (titles, summaries) run on; else
     /// the agent's own model.
     pub fast_model: Option<String>,
+    /// Context windows set by hand, by model: over what the provider lists.
+    pub contexts: BTreeMap<String, u64>,
     pub catalog: Vec<ProviderModel>,
 }
 
@@ -66,9 +83,18 @@ impl Provider {
         let catalog = text("openai_catalog")?
             .and_then(|j| serde_json::from_str(&j).ok())
             .unwrap_or_default();
+        let contexts = text("openai_contexts")?
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default();
+        let api = match text("openai_api")?.as_deref() {
+            Some("chat") => ProviderApi::ChatCompletions,
+            _ => ProviderApi::Responses,
+        };
         Ok(Self {
             kind,
             base_url: text("openai_base_url")?.unwrap_or_default(),
+            api,
+            contexts,
             models,
             model: text("openai_model")?,
             fast_model: text("openai_fast_model")?,
@@ -93,6 +119,13 @@ impl Provider {
         )?;
         put("openai_model", self.model.as_deref())?;
         put("openai_fast_model", self.fast_model.as_deref())?;
+        let api = (self.api == ProviderApi::ChatCompletions).then_some("chat");
+        put("openai_api", api)?;
+        let contexts = serde_json::to_string(&self.contexts).unwrap_or_default();
+        put(
+            "openai_contexts",
+            (!self.contexts.is_empty()).then_some(&*contexts),
+        )?;
         let catalog = serde_json::to_string(&self.catalog).unwrap_or_default();
         put(
             "openai_catalog",
@@ -162,9 +195,18 @@ impl Provider {
         }
     }
 
-    /// The context window the provider gives for `model`.
+    /// `model`'s context window: as set by hand, else as the provider lists it.
     #[must_use]
     pub fn context_of(&self, model: &str) -> Option<u64> {
+        self.contexts
+            .get(model)
+            .copied()
+            .or_else(|| self.listed_context(model))
+    }
+
+    /// The context window the provider lists for `model`.
+    #[must_use]
+    pub fn listed_context(&self, model: &str) -> Option<u64> {
         self.catalog
             .iter()
             .find(|m| m.id == model)
@@ -180,6 +222,25 @@ impl Provider {
             .and_then(|m| m.name.clone())
             .unwrap_or_else(|| model.to_owned())
     }
+}
+
+/// A context window as people write it: "128000", "128k", "128K", "1m",
+/// "1.5M", "131,072". `None` for anything else, or nothing.
+#[must_use]
+pub fn parse_tokens(text: &str) -> Option<u64> {
+    let t = text
+        .trim()
+        .replace([',', '_', ' '], "")
+        .to_ascii_lowercase();
+    let t = t.strip_suffix("tokens").unwrap_or(&t);
+    let (number, unit) = match t.chars().last()? {
+        'k' => (&t[..t.len() - 1], 1_000.0),
+        'm' => (&t[..t.len() - 1], 1_000_000.0),
+        _ => (t, 1.0),
+    };
+    let n: f64 = number.parse().ok()?;
+    let tokens = (n * unit).round();
+    (1.0..1e10).contains(&tokens).then_some(tokens as u64)
 }
 
 #[cfg(test)]
@@ -245,6 +306,8 @@ mod tests {
         assert_eq!(Provider::load(&store)?, Provider::default());
         let mut p = openai();
         p.fast_model = Some("deepseek/deepseek-chat".into());
+        p.api = ProviderApi::ChatCompletions;
+        p.contexts.insert("deepseek/deepseek-chat".into(), 65_536);
         p.catalog = vec![ProviderModel {
             id: "qwen/qwen3-coder".into(),
             name: Some("Qwen3 Coder".into()),
@@ -254,6 +317,8 @@ mod tests {
         let back = Provider::load(&store)?;
         assert_eq!(back, p);
         assert_eq!(back.context_of("qwen/qwen3-coder"), Some(262_144));
+        assert_eq!(back.context_of("deepseek/deepseek-chat"), Some(65_536));
+        assert_eq!(Provider::default().api, ProviderApi::Responses);
         assert_eq!(back.name_of("qwen/qwen3-coder"), "Qwen3 Coder");
         // Back to Claude: the provider's setup stays for next time.
         Provider {
@@ -264,5 +329,23 @@ mod tests {
         let claude = Provider::load(&store)?;
         assert!(!claude.is_openai() && claude.models == back.models);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod token_tests {
+    use super::parse_tokens;
+
+    #[test]
+    fn windows_read_as_people_write_them() {
+        assert_eq!(parse_tokens("128000"), Some(128_000));
+        assert_eq!(parse_tokens("128k"), Some(128_000));
+        assert_eq!(parse_tokens(" 1M "), Some(1_000_000));
+        assert_eq!(parse_tokens("1.5m"), Some(1_500_000));
+        assert_eq!(parse_tokens("131,072"), Some(131_072));
+        assert_eq!(parse_tokens("64k tokens"), Some(64_000));
+        assert_eq!(parse_tokens(""), None);
+        assert_eq!(parse_tokens("lots"), None);
+        assert_eq!(parse_tokens("0"), None);
     }
 }

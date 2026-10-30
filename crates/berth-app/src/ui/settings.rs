@@ -11,7 +11,7 @@ use gpui::{
 };
 use gpui_component::input::{InputEvent, InputState};
 
-use berth_core::{ProviderKind, ProviderModel};
+use berth_core::{ProviderApi, ProviderKind, ProviderModel};
 
 use super::kit::{Btn, Size, TypeExt as _, caption, dot, icon, input_frame, radio};
 use super::modal::{self, ConfirmDialog};
@@ -31,6 +31,8 @@ pub struct SettingsForm {
     model_search: Entity<InputState>,
     /// The URL field shows the saved one once it has arrived.
     url_shown: bool,
+    /// Each offered model's context window field, by model id (ADR 0025).
+    contexts: HashMap<String, Entity<InputState>>,
     secrets: HashMap<(String, String), Entity<InputState>>,
     editing: HashSet<String>,
     focus: FocusHandle,
@@ -96,8 +98,11 @@ impl SettingsForm {
             },
         )
         .detach();
-        cx.observe_global_in::<Berth>(window, Self::show_saved_url)
-            .detach();
+        cx.observe_global_in::<Berth>(window, |this, window, cx| {
+            this.show_saved_url(window, cx);
+            this.ensure_context_inputs(window, cx);
+        })
+        .detach();
         {
             let s = state.read(cx);
             s.backend.send(Command::LoadSettings);
@@ -118,6 +123,7 @@ impl SettingsForm {
             provider_key,
             model_search,
             url_shown: false,
+            contexts: HashMap::new(),
             secrets: HashMap::new(),
             editing: HashSet::new(),
             focus: cx.focus_handle(),
@@ -126,7 +132,80 @@ impl SettingsForm {
         };
         this.ensure_secret_inputs(window, cx);
         this.show_saved_url(window, cx);
+        this.ensure_context_inputs(window, cx);
         this
+    }
+
+    /// A context window field for each model on offer, showing the window
+    /// set by hand; a model taken off loses its field.
+    fn ensure_context_inputs(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let p = cx.global::<Berth>().provider.provider.clone();
+        self.contexts.retain(|m, _| p.offers(m));
+        for model in &p.models {
+            if self.contexts.contains_key(model) {
+                continue;
+            }
+            let placeholder = match p.listed_context(model) {
+                Some(n) => format!("{} listed", tokens_text(n)),
+                None => "Unknown".to_owned(),
+            };
+            let set = p.contexts.get(model).map(|&n| tokens_text(n));
+            let input = cx.new(|cx| {
+                let mut i = InputState::new(window, cx).placeholder(placeholder);
+                if let Some(v) = set {
+                    i.set_value(v, window, cx);
+                }
+                i
+            });
+            let m = model.clone();
+            cx.subscribe_in(
+                &input,
+                window,
+                move |this, input, e: &InputEvent, window, cx| {
+                    if matches!(e, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                        this.save_context(&m, input, window, cx);
+                    }
+                },
+            )
+            .detach();
+            self.contexts.insert(model.clone(), input);
+        }
+    }
+
+    /// Keep what the field says as `model`'s window: empty goes back to what
+    /// the provider lists; what isn't a number of tokens is put back.
+    fn save_context(
+        &mut self,
+        model: &str,
+        input: &Entity<InputState>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let text = input.read(cx).value().trim().to_owned();
+        let saved = cx
+            .global::<Berth>()
+            .provider
+            .provider
+            .contexts
+            .get(model)
+            .copied();
+        let tokens = berth_core::provider::parse_tokens(&text);
+        match (text.is_empty(), tokens) {
+            (true, _) if saved.is_some() => {
+                self.edit_provider(ProviderEdit::Context(model.to_owned(), None), cx);
+            }
+            (false, Some(n)) => {
+                if saved != Some(n) {
+                    self.edit_provider(ProviderEdit::Context(model.to_owned(), Some(n)), cx);
+                }
+                input.update(cx, |i, cx| i.set_value(tokens_text(n), window, cx));
+            }
+            (false, None) => {
+                let back = saved.map(tokens_text).unwrap_or_default();
+                input.update(cx, |i, cx| i.set_value(back, window, cx));
+            }
+            (true, _) => {}
+        }
     }
 
     fn edit_provider(&self, edit: ProviderEdit, cx: &App) {
@@ -499,12 +578,70 @@ impl SettingsForm {
                 .min_w_0()
                 .gap(px(4.))
                 .child(div().flex().child(field(&self.provider_url, cx)))
+                .child(div().ty(ty::META).text_color(t.text3).child(
+                    "Its API's root, as https://api.openai.com/v1 or http://localhost:11434/v1",
+                )),
+        );
+        let api_seg = |id: &'static str,
+                       label: &'static str,
+                       api: ProviderApi,
+                       cx: &mut Context<'_, Self>| {
+            let active = p.api == api;
+            div()
+                .id(id)
+                .h(px(24.))
+                .px(px(10.))
+                .flex()
+                .items_center()
+                .rounded(px(4.))
+                .ty(ty::META)
+                .cursor_pointer()
+                .when(active, |d| d.bg(t.win).text_color(t.text).medium())
+                .when(!active, |d| d.text_color(t.text2))
+                .child(label)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.edit_provider(ProviderEdit::Api(api), cx);
+                }))
+        };
+        let api_note = match p.api {
+            ProviderApi::Responses => {
+                "OpenAI's current API, and the only one Codex models take; not every server has it."
+            }
+            ProviderApi::ChatCompletions => {
+                "What most compatible servers speak: DeepSeek, Ollama, vLLM, LM Studio."
+            }
+        };
+        let api = field_row(t, "API", false).child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .gap(px(4.))
                 .child(
-                    div()
-                        .ty(ty::META)
-                        .text_color(t.text3)
-                        .child("Where its /chat/completions is: https://openrouter.ai/api/v1, http://localhost:11434/v1"),
-                ),
+                    div().flex().child(
+                        div()
+                            .flex()
+                            .flex_none()
+                            .gap(px(2.))
+                            .p(px(2.))
+                            .bg(t.raised)
+                            .rounded(px(6.))
+                            .child(api_seg(
+                                "provider-api-responses",
+                                "Responses",
+                                ProviderApi::Responses,
+                                cx,
+                            ))
+                            .child(api_seg(
+                                "provider-api-chat",
+                                "Chat Completions",
+                                ProviderApi::ChatCompletions,
+                                cx,
+                            )),
+                    ),
+                )
+                .child(div().ty(ty::META).text_color(t.text3).child(api_note)),
         );
         let key_note = if info.key_set {
             "A key is stored in the Keychain; saving another replaces it."
@@ -546,34 +683,61 @@ impl SettingsForm {
                 .child(div().ty(ty::META).text_color(t.text3).child(key_note)),
         );
 
-        let mut chips = div().flex().flex_wrap().gap(px(6.));
-        for id in &p.models {
+        // A row a model: its id, its context window, and remove.
+        let mut chips = div()
+            .flex()
+            .flex_col()
+            .border_1()
+            .border_color(t.border)
+            .rounded(px(6.));
+        for (n, id) in p.models.iter().enumerate() {
             let remove = id.clone();
             let hover = t.border;
+            let context = self.contexts.get(id).map(|input| {
+                let handle = input.read(cx).focus_handle(cx);
+                input_frame(t, handle.is_focused(window), false, handle)
+                    .w(px(112.))
+                    .flex_none()
+                    .h(px(24.))
+                    .px(px(6.))
+                    .items_center()
+                    .ty(ty::META)
+                    .child(super::kit::bare_input(input))
+            });
             chips = chips.child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(2.))
-                    .h(px(24.))
-                    .pl(px(8.))
-                    .pr(px(3.))
-                    .rounded(px(4.))
-                    .border_1()
-                    .border_color(t.border)
-                    .bg(t.raised)
-                    .child(div().font_family(MONO).ty(ty::META).child(id.clone()))
+                    .gap(px(8.))
+                    .h(px(34.))
+                    .pl(px(10.))
+                    .pr(px(4.))
+                    .when(n > 0, |d| d.border_t_1().border_color(t.border))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .font_family(MONO)
+                            .ty(ty::META)
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .child(id.clone()),
+                    )
+                    .child(div().ty(ty::META).text_color(t.text3).child("context"))
+                    .children(context)
                     .child(
                         div()
                             .id(SharedString::from(format!("provider-remove-{id}")))
-                            .size(px(18.))
+                            .size(px(22.))
                             .flex()
+                            .flex_none()
                             .items_center()
                             .justify_center()
-                            .rounded(px(3.))
+                            .rounded(px(4.))
                             .cursor_pointer()
                             .hover(move |s| s.bg(hover))
-                            .child(icon("x", 10., t.text2))
+                            .child(icon("x", 11., t.text2))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.edit_provider(ProviderEdit::RemoveModel(remove.clone()), cx);
                             })),
@@ -655,6 +819,11 @@ impl SettingsForm {
                 .when(!matches.is_empty(), |d| d.child(found))
                 .when_some(hint, |d, h| {
                     d.child(div().ty(ty::META).text_color(t.text3).child(h))
+                })
+                .when(!p.models.is_empty(), |d| {
+                    d.child(div().ty(ty::META).text_color(t.text3).child(
+                        "Context: the model's window in tokens (128k, 1m); empty takes what the provider lists. Claude Code compacts before it fills. From the next session on.",
+                    ))
                 }),
         );
 
@@ -722,12 +891,13 @@ impl SettingsForm {
                 group(t)
                     .child(status)
                     .child(url)
+                    .child(api)
                     .child(key)
                     .child(models)
                     .children(quick),
             )
             .child(div().ty(ty::META).text_color(t.text3).child(
-                "Berth hands Claude Code's requests to this API as Chat Completions, on this Mac; the key never leaves Berth. Agents in inside slots sign in by themselves.",
+                "Berth hands Claude Code's requests to this API in its own terms, on this Mac; the key never leaves Berth. Agents in inside slots sign in by themselves.",
             ));
         section
     }
@@ -751,6 +921,17 @@ fn model_matches<'a>(info: &'a ProviderInfo, query: &str) -> Vec<&'a ProviderMod
         })
         .take(6)
         .collect()
+}
+
+/// A window as it reads in its field: "128k", "1M", or the number.
+fn tokens_text(n: u64) -> String {
+    if n.is_multiple_of(1_000_000) {
+        format!("{}M", n / 1_000_000)
+    } else if n.is_multiple_of(1_000) {
+        format!("{}k", n / 1_000)
+    } else {
+        n.to_string()
+    }
 }
 
 /// A labelled row of the provider's setup: the label beside its fields.

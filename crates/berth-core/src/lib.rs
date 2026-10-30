@@ -24,6 +24,6 @@ pub mod usage;
 pub use engine::{AnswerDelivery, Effect, Engine, Posted, Recipient, Rewound, Sender, Submission};
 pub use error::{CoreError, Result};
 pub use model::*;
-pub use provider::{Provider, ProviderKind, ProviderModel};
+pub use provider::{Provider, ProviderApi, ProviderKind, ProviderModel};
 pub use store::{NewRawEvent, NewReviewComment, Store};
 pub use usage::{ContextUsage, Quota};
