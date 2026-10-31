@@ -988,11 +988,12 @@ settles nothing (ADR 0013).
   (`resumeDropsTurn`, `workflows.resume_drops`), so Claude Code refuses to drop anything
   else; on a refusal the sidecar resumes the whole conversation and sends the turn
   again, and the rewind note tells the agent what was dropped.
-- **Signing in** (ADR 0017): Berth's agents on this Mac run as the `claude` CLI's
-  account. **Sign in to Claude Code** / **Switch Claude account** (`ui/sign_in.rs`;
-  Settings › Claude Code, ⌘K, and wherever signing in is needed) picks a Claude
-  subscription, the Anthropic Console or SSO and finishes in Terminal (`claude auth
-  login`); a switch needs no sign-out first. Windows coming to the front check again
+- **Signing in** (ADR 0017, ADR 0030): Berth's agents on this Mac run as the `claude`
+  CLI's account. Berth has no sign-in of its own and never handles a credential:
+  **Sign in to Claude Code** / **Switch Claude account** (Settings › Claude Code, ⌘K,
+  and wherever signing in is needed) opens Claude Code's own login in Terminal
+  (`claude "/login"`), where the user picks a Claude account, the Anthropic Console or
+  a cloud platform; a switch needs no sign-out first. Berth restricts none of them. Windows coming to the front check again
   (at most every 5 s). While signed out, the composer and New workflow say so with
   Sign in… and send nothing for a host slot (`inside` slots sign in themselves), and
   the backend refuses to start a host session. When the account changes

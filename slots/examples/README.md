@@ -95,8 +95,8 @@ does. macOS ships bash 3.2, so the examples avoid newer bash features.
 These come from the environment Berth runs in, or edit the defaults in the script.
 
 - `docker`: `BERTH_DOCKER_IMAGE` (default `node:22-bookworm`; needs `node`, and
-  `apt-get` or a preinstalled `git`). Claude auth comes from `ANTHROPIC_API_KEY` or
-  `CLAUDE_CODE_OAUTH_TOKEN`; `GH_TOKEN` is forwarded for `gh`. The checkout is a
+  `apt-get` or a preinstalled `git`). Claude auth comes from `ANTHROPIC_API_KEY` (an
+  Anthropic Console key); `GH_TOKEN` is forwarded for `gh`. The checkout is a
   clone (not a worktree) at `$BERTH_SLOT_STATE/checkout`, mounted at `/workspace`.
 - `vm`: `BERTH_LIMA_TEMPLATE` (default `template:docker`) and `BERTH_LIMA_INSTANCE`
   to share one existing VM across slots instead of creating `berth-<slot id>`. A

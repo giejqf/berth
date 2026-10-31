@@ -1,6 +1,6 @@
 # ADR 0017: Signing Claude Code in, and switching accounts
 
-- Status: accepted
+- Status: accepted; decision 2 replaced by ADR 0030 (Claude Code's own login)
 - Date: 2026-10-20
 - Touches: AGENTS.md §6.3, §9, §11
 

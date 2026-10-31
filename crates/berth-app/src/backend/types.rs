@@ -193,11 +193,9 @@ pub enum Command {
         tool: String,
         sign_in: bool,
     },
-    /// Sign Claude Code in (in Terminal) the chosen way; with an account
-    /// signed in already, this switches to another.
-    ClaudeSignIn {
-        method: LoginMethod,
-    },
+    /// Open Claude Code's own login in Terminal, where the user picks the
+    /// account; with one signed in already, this switches (ADR 0030).
+    ClaudeSignIn,
     /// Show `~/.config/berth/connectors` in Finder.
     RevealConnectors,
     /// Change the model provider's setup (ADR 0023).
@@ -427,30 +425,6 @@ pub struct ToolStatus {
     /// Why agents on this Mac can't run (Claude Code missing or signed out,
     /// no Node.js); `None` while it is checking or could not tell.
     pub blocks_agents: Option<&'static str>,
-}
-
-/// How `claude auth login` signs in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LoginMethod {
-    /// A Claude subscription (Pro, Max, Team, Enterprise): the default.
-    Subscription,
-    /// The Anthropic Console: API usage billing.
-    Console,
-    /// The organization's single sign-on.
-    Sso,
-}
-
-impl LoginMethod {
-    pub const ALL: [Self; 3] = [Self::Subscription, Self::Console, Self::Sso];
-
-    #[must_use]
-    pub fn flag(self) -> &'static str {
-        match self {
-            Self::Subscription => "--claudeai",
-            Self::Console => "--console",
-            Self::Sso => "--sso",
-        }
-    }
 }
 
 impl ToolStatus {

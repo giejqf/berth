@@ -9,10 +9,12 @@
 # - Container: `berth-$BERTH_SLOT_ID` from ${BERTH_DOCKER_IMAGE:-node:22-bookworm},
 #   checkout bind-mounted at /workspace, sidecar bundle at the same path as on the
 #   host (the app runs `slot.sh exec -- node "$BERTH_SIDECAR_BUNDLE/sidecar.mjs"`).
-# - Auth: ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN (and GH_TOKEN) are forwarded
-#   from the environment at exec time, as is every BERTH_* variable and every
-#   variable named in $BERTH_FORWARD_ENV (connector secrets). Values never appear
-#   on a command line: `docker exec -e NAME` reads them from this process's env.
+# - Auth: ANTHROPIC_API_KEY (and GH_TOKEN) are forwarded from the environment at
+#   exec time, as is every BERTH_* variable and every variable named in
+#   $BERTH_FORWARD_ENV (connector secrets). Values never appear on a command
+#   line: `docker exec -e NAME` reads them from this process's env. A Claude
+#   subscription's token isn't passed on: it is for Claude Code on this Mac
+#   (ADR 0030).
 #
 # Must work with macOS's bash 3.2.
 set -euo pipefail
@@ -28,7 +30,7 @@ checkout="$BERTH_SLOT_STATE/checkout"
 container="berth-$BERTH_SLOT_ID"
 image="${BERTH_DOCKER_IMAGE:-node:22-bookworm}"
 workdir=/workspace
-auth_vars="ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN GH_TOKEN"
+auth_vars="ANTHROPIC_API_KEY GH_TOKEN"
 
 die() {
     printf 'docker slot: %s\n' "$1" >&2

@@ -792,15 +792,9 @@ impl RepoWindow {
         self.open_modal(form, window, cx);
     }
 
-    fn claude_account(
-        &mut self,
-        _: &ClaudeAccount,
-        window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let backend = self.state.read(cx).backend.clone();
-        let dialog = cx.new(|cx| super::sign_in::SignInDialog::new(backend, cx));
-        self.open_modal(dialog, window, cx);
+    /// Claude Code's own login, in Terminal (ADR 0030).
+    fn claude_account(&mut self, _: &ClaudeAccount, _: &mut Window, cx: &mut Context<'_, Self>) {
+        self.state.read(cx).backend.send(Command::ClaudeSignIn);
     }
 
     fn palette(&mut self, _: &CommandPalette, window: &mut Window, cx: &mut Context<'_, Self>) {

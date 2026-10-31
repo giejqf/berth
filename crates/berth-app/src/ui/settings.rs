@@ -15,7 +15,6 @@ use berth_core::{ProviderApi, ProviderKind, ProviderModel};
 
 use super::kit::{Btn, Size, TypeExt as _, caption, dot, icon, input_frame, radio};
 use super::modal::{self, ConfirmDialog};
-use super::sign_in::SignInDialog;
 use super::{Berth, EnvGlobal, RepoState};
 use crate::backend::{Command, ProviderCheck, ProviderEdit, ProviderInfo, ToolState, ToolStatus};
 use crate::keymap::Confirm;
@@ -37,7 +36,6 @@ pub struct SettingsForm {
     editing: HashSet<String>,
     focus: FocusHandle,
     confirm: Option<Entity<ConfirmDialog>>,
-    sign_in: Option<Entity<SignInDialog>>,
 }
 
 impl EventEmitter<DismissEvent> for SettingsForm {}
@@ -128,7 +126,6 @@ impl SettingsForm {
             editing: HashSet::new(),
             focus: cx.focus_handle(),
             confirm: None,
-            sign_in: None,
         };
         this.ensure_secret_inputs(window, cx);
         this.show_saved_url(window, cx);
@@ -334,7 +331,7 @@ impl SettingsForm {
             Btn::new("tool-claude-switch")
                 .size(Size::S26)
                 .label("Switch account…")
-                .on_click(cx.listener(|this, _, window, cx| this.open_sign_in(window, cx)))
+                .on_click(cx.listener(|this, _, _, cx| this.open_sign_in(cx)))
         });
         // Agents can't run without Node.js (or with an old one): where to get it.
         let get_node = (tool == "node" && s.blocks_agents.is_some()).then(|| {
@@ -369,7 +366,7 @@ impl SettingsForm {
                     .label(label)
                     .on_click(cx.listener(move |this, _, window, cx| match sign_in {
                         None => this.state.read(cx).backend.send(Command::CheckEnvironment),
-                        Some(true) if tool == "claude" => this.open_sign_in(window, cx),
+                        Some(true) if tool == "claude" => this.open_sign_in(cx),
                         Some(true) => this.state.read(cx).backend.send(Command::ToolAuth {
                             tool: tool.to_owned(),
                             sign_in: true,
@@ -379,18 +376,8 @@ impl SettingsForm {
             )
     }
 
-    fn open_sign_in(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
-        let backend = self.state.read(cx).backend.clone();
-        let dialog = cx.new(|cx| SignInDialog::new(backend, cx));
-        cx.subscribe_in(&dialog, window, |this, _, _: &DismissEvent, window, cx| {
-            this.sign_in = None;
-            window.focus(&this.focus, cx);
-            cx.notify();
-        })
-        .detach();
-        window.focus(&dialog.read(cx).focus_handle(cx), cx);
-        self.sign_in = Some(dialog);
-        cx.notify();
+    fn open_sign_in(&mut self, cx: &mut Context<'_, Self>) {
+        self.state.read(cx).backend.send(Command::ClaudeSignIn);
     }
 
     fn confirm_sign_out(
@@ -985,9 +972,6 @@ impl Render for SettingsForm {
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         if let Some(c) = &self.confirm {
             return c.clone().into_any_element();
-        }
-        if let Some(d) = &self.sign_in {
-            return d.clone().into_any_element();
         }
         let t = Tokens::get(cx);
         let env = cx

@@ -20,7 +20,6 @@ use super::RepoState;
 use super::kit::{Btn, Size, TypeExt as _, icon, input_frame, radio, slot_number, spinner};
 use super::modal;
 use super::nodes::web_link;
-use super::sign_in::SignInDialog;
 use crate::backend::{
     AgentFix, Command, NewWorkflow, OriginChoice, OriginSource, SlotTrust, SlotTypeInfo,
 };
@@ -53,8 +52,6 @@ pub struct NewWorkflowForm {
     /// the dialog's Confirm (the input passes the key on).
     submitted: bool,
     focus: FocusHandle,
-    /// Signing Claude Code in, over the form (ADR 0017).
-    sign_in: Option<Entity<SignInDialog>>,
 }
 
 impl EventEmitter<DismissEvent> for NewWorkflowForm {}
@@ -123,7 +120,6 @@ impl NewWorkflowForm {
             reuse: None,
             submitted: false,
             focus: cx.focus_handle(),
-            sign_in: None,
         }
     }
 
@@ -149,18 +145,8 @@ impl NewWorkflowForm {
         why.filter(|_| host)
     }
 
-    fn open_sign_in(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
-        let backend = self.state.read(cx).backend.clone();
-        let dialog = cx.new(|cx| SignInDialog::new(backend, cx));
-        cx.subscribe_in(&dialog, window, |this, _, _: &DismissEvent, window, cx| {
-            this.sign_in = None;
-            window.focus(&this.focus, cx);
-            cx.notify();
-        })
-        .detach();
-        window.focus(&dialog.read(cx).focus_handle(cx), cx);
-        self.sign_in = Some(dialog);
-        cx.notify();
+    fn open_sign_in(&mut self, cx: &mut Context<'_, Self>) {
+        self.state.read(cx).backend.send(Command::ClaudeSignIn);
     }
 
     /// Start in an existing slot (`None`: let the user pick one).
@@ -526,9 +512,6 @@ fn title_case(name: &str) -> String {
 
 impl Render for NewWorkflowForm {
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
-        if let Some(d) = &self.sign_in {
-            return d.clone().into_any_element();
-        }
         let t = Tokens::get(cx);
         let sources = self.sources(cx);
         let state = self.state.read(cx);
@@ -1052,7 +1035,7 @@ impl Render for NewWorkflowForm {
                                 .size(Size::S32)
                                 .label(super::sign_in::fix_label(fix))
                                 .on_click(cx.listener(move |this, _, window, cx| match fix {
-                                    AgentFix::SignIn => this.open_sign_in(window, cx),
+                                    AgentFix::SignIn => this.open_sign_in(cx),
                                     AgentFix::GetNode => cx.open_url(super::sign_in::NODE_URL),
                                     AgentFix::SetUpProvider => window.dispatch_action(
                                         Box::new(crate::keymap::OpenSettings),

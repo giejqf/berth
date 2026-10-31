@@ -243,7 +243,7 @@ impl Shared {
             | Command::CheckEnvironment
             | Command::RefreshEnvironment
             | Command::ToolAuth { .. }
-            | Command::ClaudeSignIn { .. }
+            | Command::ClaudeSignIn
             | Command::EditProvider(_)
             | Command::CheckProvider
             | Command::RevealConnectors => return None,
@@ -567,7 +567,7 @@ impl Shared {
                 Ok(())
             }
             Command::ToolAuth { tool, sign_in } => self.tool_auth(&tool, sign_in).await,
-            Command::ClaudeSignIn { method } => self.claude_sign_in(method).await,
+            Command::ClaudeSignIn => self.claude_sign_in().await,
             Command::RevealConnectors => {
                 let dir = berth_connectors::default_connectors_dir();
                 std::fs::create_dir_all(&dir)?;

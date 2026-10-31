@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 
 use super::launch::{NODE_MIN_MAJOR, NODE_MISSING, SidecarLaunch, find_node, version, which};
-use super::types::{AgentFix, EnvStatus, LoginMethod, ToolState, ToolStatus, UiEvent};
+use super::types::{AgentFix, EnvStatus, ToolState, ToolStatus, UiEvent};
 use super::{Shared, lock};
 
 const CHECK_TIMEOUT: Duration = Duration::from_secs(8);
@@ -79,7 +79,7 @@ impl Shared {
         match (tool, sign_in) {
             // Interactive logins run in Terminal: a `.command` file opens there.
             ("gh", true) => open_in_terminal("gh auth login")?,
-            ("claude", true) => return self.claude_sign_in(LoginMethod::Subscription).await,
+            ("claude", true) => return self.claude_sign_in().await,
             ("gh", false) => {
                 run(
                     Path::new("gh"),
@@ -98,15 +98,16 @@ impl Shared {
         Ok(())
     }
 
-    /// `claude auth login` in Terminal. Signed in already, it replaces the
-    /// account, so a switch needs no sign-out first (and abandoning it leaves
-    /// the old one). Berth sees the result when one of its windows comes back
-    /// to the front.
-    pub(super) async fn claude_sign_in(self: &Arc<Self>, method: LoginMethod) -> Result<()> {
+    /// Claude Code's own login in Terminal (`claude "/login"`): the user picks
+    /// a Claude account, the Anthropic Console or a cloud platform there, and
+    /// Berth offers no sign-in of its own (ADR 0030). Signed in already, it
+    /// replaces the account, so a switch needs no sign-out first. Berth sees
+    /// the result when one of its windows comes back to the front.
+    pub(super) async fn claude_sign_in(self: &Arc<Self>) -> Result<()> {
         self.agent_installed(true).await?;
         let bin =
             claude_binary(&self.launch).map_or_else(|| "claude".to_owned(), |p| shell_quote(&p));
-        open_in_terminal(&format!("{bin} auth login {}", method.flag()))?;
+        open_in_terminal(&format!("cd \"$HOME\" && {bin} /login"))?;
         self.check_environment().await;
         Ok(())
     }

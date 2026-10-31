@@ -4,16 +4,15 @@
 use std::sync::Arc;
 
 use gpui::{
-    App, AppContext as _, ClickEvent, Context, DismissEvent, Entity, Focusable as _, Image,
-    ImageFormat, ImageSource, InteractiveElement as _, IntoElement, ObjectFit, ParentElement as _,
-    Render, SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window,
-    div, img, prelude::FluentBuilder as _, px,
+    App, ClickEvent, Context, Image, ImageFormat, ImageSource, InteractiveElement as _,
+    IntoElement, ObjectFit, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, div, img,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_component::TitleBar;
 
 use super::kit::{Btn, Size, TypeExt as _, caption, icon};
 use super::repo_window::tilde;
-use super::sign_in::SignInDialog;
 use super::{Berth, EnvGlobal, prompt_open_repository};
 use crate::backend::{Command, RecentRepo, ToolState, ToolStatus};
 use crate::theme::{MONO, SANS, Tokens, ty};
@@ -24,8 +23,6 @@ pub struct Welcome {
     recent: Vec<RecentRepo>,
     error: Option<String>,
     logo: Arc<Image>,
-    /// Signing Claude Code in, over the window (ADR 0017).
-    sign_in: Option<Entity<SignInDialog>>,
 }
 
 impl Welcome {
@@ -46,20 +43,7 @@ impl Welcome {
             recent,
             error,
             logo: Arc::new(Image::from_bytes(ImageFormat::Png, LOGO.to_vec())),
-            sign_in: None,
         }
-    }
-
-    fn open_sign_in(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
-        let dialog = cx.new(|cx| SignInDialog::new(Berth::backend(cx), cx));
-        cx.subscribe_in(&dialog, window, |this, _, _: &DismissEvent, _, cx| {
-            this.sign_in = None;
-            cx.notify();
-        })
-        .detach();
-        window.focus(&dialog.read(cx).focus_handle(cx), cx);
-        self.sign_in = Some(dialog);
-        cx.notify();
     }
 }
 
@@ -296,7 +280,7 @@ impl Render for Welcome {
                             .child(div().ml_auto().ty(ty::META).text_color(t.text2).child(format!("{ready} of 3 ready"))),
                     )
                     .child(check_row(&t, "Claude Code", &env.claude, Some(if env.claude.switchable {
-                        ("Sign in…", Box::new(cx.listener(|this, _, window, cx| this.open_sign_in(window, cx))) as Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>)
+                        ("Sign in…", Box::new(|_: &ClickEvent, _: &mut Window, cx: &mut App| Berth::backend(cx).send(Command::ClaudeSignIn)) as Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>)
                     } else {
                         ("Check again", Box::new(|_: &ClickEvent, _: &mut Window, cx: &mut App| Berth::backend(cx).send(Command::CheckEnvironment)))
                     }), false))
@@ -353,16 +337,5 @@ impl Render for Welcome {
                     .child(left)
                     .child(right),
             )
-            .when_some(self.sign_in.clone(), |d, dialog| {
-                let weak = dialog.downgrade();
-                d.child(super::modal::overlay(
-                    &t,
-                    dialog.entity_id(),
-                    dialog.into_any_element(),
-                    move |_, cx| {
-                        let _ = weak.update(cx, |_, cx| cx.emit(DismissEvent));
-                    },
-                ))
-            })
     }
 }
