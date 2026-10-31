@@ -221,6 +221,9 @@ pub struct NewWorkflow {
     /// The window a new slot shows in; `None` is the repo's first.
     pub window_id: Option<String>,
     pub origin: Origin,
+    /// The workflow it comes from: a follow-up of it, or a slot its agent
+    /// asked for (ADR 0027).
+    pub from_workflow: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

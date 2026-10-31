@@ -6,8 +6,11 @@
 //! `artifact` (`done`, the first workflow ending in a Claude artifact),
 //! `findings` (the third slot waits on decisions about a code review),
 //! `usage-api` (`question`, signed in with an API key: no plan limits),
-//! `commands` (the third slot ran `/context` and `/compact`), `empty`
-//! (a repo without workflows), `welcome` (only recent repositories).
+//! `commands` (the third slot ran `/context` and `/compact`), `links`
+//! (`done`, and a fourth slot the third's agent asked for, the two agents
+//! talking), `links-crowded` (`links`, and four more slots, more links than
+//! the rail's gutter has lanes for), `empty` (a repo without workflows),
+//! `welcome` (only recent repositories).
 
 use std::path::{Path, PathBuf};
 use std::process::Command as Proc;
@@ -19,8 +22,9 @@ use berth_core::{
 };
 use berth_protocol::{
     BranchStatus, CollectResults, Decision, DiffPreset, DiffSide, Finding, FindingAction,
-    FindingLevel, FollowUp, NodePayload, Origin, OriginKind, Outcome, OutcomeKind, Prompt,
-    Question, Review, ReviewComment, SubagentSpawn, Summary,
+    FindingLevel, FollowUp, MessageDirection, MessageStatus, NodePayload, Origin, OriginKind,
+    Outcome, OutcomeKind, Prompt, Question, Review, ReviewComment, SlotMessage, SubagentSpawn,
+    Summary,
 };
 use chrono::{Local, TimeZone as _};
 
@@ -68,7 +72,8 @@ pub fn seed(scenario: &str) -> Result<Option<PathBuf>> {
     write_greeting(&s.checkout(&a))?;
     // `artifact` is `done` with the workflow ending in a Claude artifact.
     let artifact = scenario == "artifact";
-    let done = scenario == "done" || artifact;
+    let links = scenario.starts_with("links");
+    let done = scenario == "done" || artifact || links;
     let wa = s.workflow(
         &a,
         "Add a greeting function",
@@ -241,7 +246,11 @@ pub fn seed(scenario: &str) -> Result<Option<PathBuf>> {
             at(12, 1, 0),
             OriginKind::FollowUp,
             "fu-test",
-        )?
+        )
+        .and_then(|w| {
+            s.store.set_workflow_from(&w.id, &wa.id)?;
+            Ok(w)
+        })?
     } else {
         s.workflow(&b, "Add a unit test for greet", origin_body, at(12, 1, 0))?
     };
@@ -388,6 +397,10 @@ pub fn seed(scenario: &str) -> Result<Option<PathBuf>> {
     } else {
         s.store.set_workflow_state(&wc.id, WorkflowState::Running)?;
     }
+    if links {
+        let crowded = scenario == "links-crowded";
+        seed_links(&s, &repo.id, &repo_dir, [&wa, &wb, &wc], crowded, &at)?;
+    }
     seed_usage(&store, [&wa.id, &wb.id, &wc.id], scenario)?;
     seed_command_list(&store, &repo.id)?;
     store.set_setting(
@@ -400,6 +413,146 @@ pub fn seed(scenario: &str) -> Result<Option<PathBuf>> {
         })?,
     )?;
     Ok(Some(repo_dir))
+}
+
+/// The `links` scenario: the third slot's agent asked for a fourth slot to
+/// document the new config, and the two agents talked it over.
+fn seed_links(
+    s: &Seeder<'_>,
+    repo_id: &str,
+    repo_dir: &Path,
+    [wa, wb, wc]: [&Workflow; 3],
+    crowded: bool,
+    at: &dyn Fn(u32, u32, u32) -> i64,
+) -> Result<()> {
+    let d = s.slot(
+        repo_id,
+        repo_dir,
+        "document-the-toml-config",
+        "main",
+        at(12, 12, 0),
+    )?;
+    let wd = s.workflow_from(
+        &d,
+        "Document the TOML config",
+        "Write docs/config.md: every key in config.toml, its type and default, and how to move over from config.json.",
+        at(12, 12, 0),
+        OriginKind::FollowUp,
+        "",
+    )?;
+    s.store.set_workflow_from(&wd.id, &wc.id)?;
+    let rc = s.round(&wc.id, 1, at(12, 13, 0))?;
+    let rd = s.round(&wd.id, 1, at(12, 12, 10))?;
+    let says = [
+        (
+            wc,
+            &rc,
+            &wd,
+            &rd,
+            "The keys are snake_case now, and `log_level` defaults to \"info\". Document those two; the rest keep their JSON names.",
+            at(12, 14, 0),
+        ),
+        (
+            &wd,
+            &rd,
+            wc,
+            &rc,
+            "Documented. Is `retries` still capped at 5 in the TOML loader? The JSON one capped it silently.",
+            at(12, 18, 0),
+        ),
+    ];
+    for (from, from_round, to, to_round, text, when) in says {
+        let id = new_id();
+        for (wf, round, peer, direction) in [
+            (from, from_round, to, MessageDirection::Sent),
+            (to, to_round, from, MessageDirection::Received),
+        ] {
+            s.node(
+                &wf.id,
+                Some(round),
+                None,
+                NodePayload::Message(SlotMessage {
+                    message_id: id.clone(),
+                    direction,
+                    peer_slot_id: peer.slot_id.clone(),
+                    peer_workflow_id: peer.id.clone(),
+                    peer_name: peer.origin.title.clone(),
+                    text: text.into(),
+                    hop: 1,
+                    status: MessageStatus::Joined,
+                    held_because: None,
+                    settled_at: None,
+                }),
+                when,
+            )?;
+        }
+    }
+    s.node(
+        &wd.id,
+        Some(&rd),
+        None,
+        NodePayload::Summary(Summary {
+            done: vec!["Wrote docs/config.md: each key with its type and default, and the move from config.json.".into()],
+            remaining: vec![],
+            follow_ups: vec![],
+            notes: None,
+        }),
+        at(12, 20, 0),
+    )?;
+    if !crowded {
+        return Ok(());
+    }
+    // Slots 5–8: 3 made 5 and 6, 1 made 7; and agents talking across them.
+    let mut more = Vec::new();
+    for (i, (name, title, from)) in [
+        ("rename-the-cli-flags", "Rename the CLI flags", Some(wc)),
+        ("add-a-verbose-flag", "Add a --verbose flag", Some(wc)),
+        ("fix-the-flaky-test", "Fix the flaky test", Some(wa)),
+        ("bump-dependencies", "Bump dependencies", None),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let when = at(12, 30 + u32::try_from(i).unwrap_or(0), 0);
+        let slot = s.slot(repo_id, repo_dir, name, "main", when)?;
+        let wf = s.workflow(&slot, title, title, when)?;
+        if let Some(from) = from {
+            s.store.set_workflow_from(&wf.id, &from.id)?;
+        }
+        more.push(wf);
+    }
+    let [we, wf, wg, wh] = <[Workflow; 4]>::try_from(more).map_err(|_| anyhow!("four slots"))?;
+    for (n, (from, to)) in [(wb, &wf), (&wd, &wh), (&we, &wg), (wa, &wh), (wb, &we)]
+        .into_iter()
+        .enumerate()
+    {
+        let id = new_id();
+        let when = at(12, 40 + u32::try_from(n).unwrap_or(0), 0);
+        for (wf, peer, direction) in [
+            (from, to, MessageDirection::Sent),
+            (to, from, MessageDirection::Received),
+        ] {
+            s.node(
+                &wf.id,
+                None,
+                None,
+                NodePayload::Message(SlotMessage {
+                    message_id: id.clone(),
+                    direction,
+                    peer_slot_id: peer.slot_id.clone(),
+                    peer_workflow_id: peer.id.clone(),
+                    peer_name: peer.origin.title.clone(),
+                    text: "Heads up: this touches your part.".into(),
+                    hop: 1,
+                    status: MessageStatus::Joined,
+                    held_because: None,
+                    settled_at: None,
+                }),
+                when,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// The `commands` scenario: in the third slot, the user ran `/context` and

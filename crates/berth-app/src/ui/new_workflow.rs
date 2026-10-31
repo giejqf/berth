@@ -401,6 +401,7 @@ impl NewWorkflowForm {
             // A new slot shows in the window it was made from.
             window_id: Some(s.window_id.clone()),
             origin,
+            from_workflow: None,
         }));
         cx.emit(DismissEvent);
     }

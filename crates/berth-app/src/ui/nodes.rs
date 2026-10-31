@@ -62,6 +62,9 @@ pub struct RowCtx {
     pub slots: Vec<SlotEntry>,
     /// The number of each of the repo's slots, by id (every window's).
     pub numbers: HashMap<String, u32>,
+    /// The slot showing the workflow this one came from (one of its
+    /// follow-ups, or a slot its agent asked for), and its number (ADR 0027).
+    pub from_slot: Option<(String, u32)>,
     pub review_open: bool,
     /// Reviewed section (`Some` while the review pane shows a Section diff).
     pub review_section: Option<u32>,
@@ -284,7 +287,7 @@ pub fn open_origin_label(kind: OriginKind) -> &'static str {
     }
 }
 
-fn origin(t: &Tokens, node: &Node, o: &Origin, _ctx: &RowCtx, line: bool) -> Div {
+fn origin(t: &Tokens, node: &Node, o: &Origin, ctx: &RowCtx, line: bool) -> Div {
     let body = if o.body.trim().is_empty() {
         o.title.clone()
     } else {
@@ -306,13 +309,30 @@ fn origin(t: &Tokens, node: &Node, o: &Origin, _ctx: &RowCtx, line: bool) -> Div
                     .items_baseline()
                     .gap(px(8.))
                     .child(div().semibold().child("Origin"))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .ty(ty::META)
-                            .text_color(t.text3)
-                            .child(format!("{} · {}", origin_label(o), clock(node.created_at))),
-                    )
+                    .child(div().min_w_0().ty(ty::META).text_color(t.text3).child(
+                        match &ctx.from_slot {
+                            Some((_, n)) => format!(
+                                "{} of slot {n} · {}",
+                                origin_label(o),
+                                clock(node.created_at)
+                            ),
+                            None => {
+                                format!("{} · {}", origin_label(o), clock(node.created_at))
+                            }
+                        },
+                    ))
+                    .when_some(ctx.from_slot.clone(), |d, (slot, _)| {
+                        let state = ctx.state.clone();
+                        d.child(div().flex_1()).child(link(
+                            "go-from-slot",
+                            "Go to slot",
+                            t,
+                            move |_, _, cx| {
+                                let repo = state.read(cx).repo_id().to_owned();
+                                super::windows::reveal_slot(&repo, &slot, cx);
+                            },
+                        ))
+                    })
                     .when_some(o.url.clone(), |d, url| {
                         d.child(div().flex_1()).child(link(
                             "open-origin",

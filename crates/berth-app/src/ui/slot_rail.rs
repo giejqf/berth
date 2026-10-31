@@ -1,6 +1,7 @@
 //! Left rail: the repo's slots grouped by what they need (Needs you, Working,
 //! Ready to review, Done), the command palette button, and a 56px collapsed strip
-//! used when the review pane needs the room.
+//! used when the review pane needs the room. Lines in the gutter link slots
+//! made from one another, or whose agents talked (`slot_links`).
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -24,6 +25,7 @@ use super::kit::{
 };
 use super::motion;
 use super::repo_state::{RailGroup, manual_status, rail_group, state_group, status_locked};
+use super::slot_links::{self, Tiles};
 use super::windows::{DragChip, Dragged, SlotDrag, WindowDrag};
 use crate::backend::SlotEntry;
 use crate::keymap::{
@@ -43,6 +45,8 @@ pub struct SlotRail {
     /// a group that wants the user (its row flashes once).
     groups: HashMap<String, RailGroup>,
     moved: HashMap<String, (RailGroup, Instant)>,
+    /// The row under the pointer: its links stand out, as the selected one's.
+    hovered: Option<String>,
 }
 
 impl SlotRail {
@@ -57,6 +61,7 @@ impl SlotRail {
             focus: cx.focus_handle(),
             groups: HashMap::new(),
             moved: HashMap::new(),
+            hovered: None,
         };
         this.track(cx);
         this
@@ -272,6 +277,7 @@ fn status_dot(t: &Tokens, entry: &SlotEntry, size: f32) -> AnyElement {
 /// A slot's mark: its number on a tile ([`slot_number`]), its status mark
 /// ([`status_dot`], `badge` 8 or 10) at the tile's corner in a ring of the
 /// row's ground, `ground` (and `hover`'s while the row `group` is hovered).
+/// Where the tile lies goes in `tiles`, for the links drawn to it.
 fn slot_mark(
     t: &Tokens,
     entry: &SlotEntry,
@@ -279,11 +285,13 @@ fn slot_mark(
     on: bool,
     ground: Hsla,
     hover: Option<(SharedString, Hsla)>,
+    tiles: &Tiles,
 ) -> Div {
     div()
         .relative()
         .flex_none()
         .child(slot_number(t, entry.slot.number, tile, on))
+        .child(slot_links::track(tiles, &entry.slot.id))
         .child(
             div()
                 .absolute()
@@ -321,7 +329,7 @@ fn footer(t: &Tokens, collapsed: bool) -> Div {
                 .on_click(open),
         );
     }
-    base.px(px(8.)).py(px(8.)).child(
+    base.mx(px(8.)).px(px(8.)).py(px(8.)).child(
         Btn::new("rail-palette")
             .ghost()
             .size(Size::S28)
@@ -339,6 +347,10 @@ impl Render for SlotRail {
         let selected = state.selected_slot.clone();
         let focused = self.focus.is_focused(window) && window.last_input_was_keyboard();
         let order = state.rail_order();
+        let tiles = Tiles::default();
+        // The row under the pointer first: lines that don't all fit go to it.
+        let focus: Vec<String> = self.hovered.iter().chain(&selected).cloned().collect();
+        let links = slot_links::links(&order, &focus);
         let window_drag = WindowDrag {
             repo_id: state.repo_id().to_owned(),
             from: state.window_id.clone(),
@@ -351,6 +363,9 @@ impl Render for SlotRail {
             .flex_col()
             .flex_1()
             .min_h_0()
+            // The rail's side padding is the list's, so the links in the
+            // gutter aren't clipped.
+            .px(px(8.))
             .gap(px(2.))
             .overflow_y_scrollbar();
         if order.is_empty() {
@@ -423,10 +438,23 @@ impl Render for SlotRail {
             let arrived = motion::arrival(entry.slot.created_at, motion::BASE, window, cx);
             let drag = slot_drag(entry, &title, state, &t);
             let group = SharedString::from(format!("slot-row-{id}"));
+            let linked = slot_links::describe(entry, &state.repo_slots);
+            let mark_id = SharedString::from(format!("slot-mark-{id}"));
             let row = div()
                 .id(SharedString::from(format!("slot-{id}")))
                 .group(group.clone())
                 .on_drag(drag, |d, _, _, cx| drag_chip(d, cx))
+                .on_hover(cx.listener({
+                    let id = id.clone();
+                    move |this, on: &bool, _, cx| {
+                        if *on {
+                            this.hovered = Some(id.clone());
+                        } else if this.hovered.as_ref() == Some(&id) {
+                            this.hovered = None;
+                        }
+                        cx.notify();
+                    }
+                }))
                 .relative()
                 .flex()
                 .flex_none()
@@ -472,14 +500,25 @@ impl Render for SlotRail {
                 .when_some(flash, |d, color| {
                     d.child(div().absolute().inset_0().rounded(px(6.)).bg(color))
                 })
-                .child(slot_mark(
-                    &t,
-                    entry,
-                    (24., 8.),
-                    is_selected,
-                    if is_selected { t.raised } else { t.rail },
-                    (!is_selected).then_some((group, hover)),
-                ))
+                .child(
+                    div()
+                        .id(mark_id)
+                        .flex_none()
+                        .child(slot_mark(
+                            &t,
+                            entry,
+                            (24., 8.),
+                            is_selected,
+                            if is_selected { t.raised } else { t.rail },
+                            (!is_selected).then_some((group, hover)),
+                            &tiles,
+                        ))
+                        // What the lines from it mean, in words.
+                        .when(!linked.is_empty(), |d| {
+                            let tip: SharedString = linked.join("\n").into();
+                            d.tooltip(move |w, cx| Tooltip::new(tip.clone()).build(w, cx))
+                        }),
+                )
                 .child(
                     div()
                         .flex()
@@ -536,6 +575,10 @@ impl Render for SlotRail {
                 },
             ));
         }
+        if !links.is_empty() {
+            let ids = order.iter().map(|e| e.slot.id.clone()).collect();
+            list = list.child(slot_links::overlay(links, ids, tiles, focus, &t));
+        }
 
         div()
             .id("slot-rail")
@@ -557,13 +600,12 @@ impl Render for SlotRail {
             .border_r_1()
             .border_color(t.border)
             .pt(px(12.))
-            .px(px(8.))
             .child(
                 div()
                     .flex()
                     .items_center()
                     .justify_between()
-                    .px(px(8.))
+                    .px(px(16.))
                     .pb(px(8.))
                     // The header drags the window's slots onto another window
                     // of the repo, to merge them there.
@@ -622,6 +664,7 @@ pub fn collapsed(state: &Entity<RepoState>, t: &Tokens, cx: &App) -> Div {
     let s = state.read(cx);
     let selected = s.selected_slot.clone();
     let mut col = div()
+        .relative()
         .w(px(STRIP_W))
         .h_full()
         .flex_none()
@@ -651,11 +694,18 @@ pub fn collapsed(state: &Entity<RepoState>, t: &Tokens, cx: &App) -> Div {
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(NewWorkflow), cx)),
             ),
         );
-    for entry in s.rail_order() {
+    let order = s.rail_order();
+    let tiles = Tiles::default();
+    for &entry in &order {
         let id = entry.slot.id.clone();
         let is_selected = selected.as_deref() == Some(id.as_str());
         let (title, sub) = rail_lines(entry, s);
-        let tip: SharedString = format!("Slot {} · {title} — {sub}", entry.slot.number).into();
+        let mut tip = format!("Slot {} · {title} — {sub}", entry.slot.number);
+        for line in slot_links::describe(entry, &s.repo_slots) {
+            tip.push('\n');
+            tip.push_str(&line);
+        }
+        let tip = SharedString::from(tip);
         let st = state.clone();
         let hover = t.card;
         let drag = slot_drag(entry, &title, s, t);
@@ -694,8 +744,15 @@ pub fn collapsed(state: &Entity<RepoState>, t: &Tokens, cx: &App) -> Div {
                             hover,
                         )
                     }),
+                    &tiles,
                 )),
         );
+    }
+    let focus: Vec<String> = selected.into_iter().collect();
+    let links = slot_links::links(&order, &focus);
+    if !links.is_empty() {
+        let ids = order.iter().map(|e| e.slot.id.clone()).collect();
+        col = col.child(slot_links::overlay(links, ids, tiles, focus, t));
     }
     col.child(footer(t, true))
 }

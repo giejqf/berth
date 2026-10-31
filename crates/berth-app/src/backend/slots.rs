@@ -310,7 +310,11 @@ impl Shared {
                 None => core.store.repo_windows(&req.repo_id, &new_id())?.remove(0),
             };
             core.store.set_slot_window(&slot.id, &window)?;
-            Engine::create_workflow(&core.store, &slot.id, origin.clone())?
+            let wf = Engine::create_workflow(&core.store, &slot.id, origin.clone())?;
+            if let Some(from) = &req.from_workflow {
+                core.store.set_workflow_from(&wf.id, from)?;
+            }
+            wf
         };
         self.link_origin(&req.repo_id, &wf.id, &origin).await;
         self.emit_slots(&req.repo_id);
@@ -359,6 +363,9 @@ impl Shared {
         let (wf, slot) = {
             let core = self.core();
             let wf = Engine::create_workflow(&core.store, slot_id, origin.clone())?;
+            if let Some(from) = &req.from_workflow {
+                core.store.set_workflow_from(&wf.id, from)?;
+            }
             (wf, core.store.slot(slot_id)?)
         };
         self.link_origin(&req.repo_id, &wf.id, &origin).await;
@@ -613,6 +620,7 @@ impl Shared {
                 slot_id: None,
                 window_id,
                 origin,
+                from_workflow: Some(workflow_id.to_owned()),
             })
             .await
         {

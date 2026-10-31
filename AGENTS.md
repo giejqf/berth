@@ -673,7 +673,8 @@ repos            id, path, default_slot_type, created_at
 slots            id, repo_id, type, name, custom_name, state, state_detail, checkout_path, placement, branch,
                  base_ref, created_at, model, effort, window_id, number
 workflows        id, slot_id, origin_json, state, claude_session_id, section_no, total_cost_usd, last_error,
-                 created_at, closed_at, resume_at, opened_at, context_json, resume_drops, status, status_at
+                 created_at, closed_at, resume_at, opened_at, context_json, resume_drops, status, status_at,
+                 from_workflow_id    # the workflow it came from: a follow-up of it, or a slot its agent asked for
 rounds           id, workflow_id, section_no, started_at, ended_at, terminal_kind, nudges, cost_usd, duration_ms,
                  turn_uuid, hop
 branches         id, workflow_id, spawn_round_id, collect_round_id, parent_branch_id, parent_tool_use_id,
@@ -828,7 +829,17 @@ settles nothing (ADR 0013).
   slot's (its agent working, or the slot being created or destroyed) is the working
   spinner, in the rail and its collapsed strip alike. The same tile leads the flow
   header's title, a message's peer and the Reuse a slot list; ⌘1–9 go to that slot,
-  in whichever window has it. The second line says what is happening
+  in whichever window has it. **Links** (ADR 0027, `ui/slot_links.rs`): lines in the
+  gutter left of the tiles join related slots, in the rail and the strip alike: solid,
+  with an arrow into it, from a slot to one made from it (one of its follow-ups, or a
+  slot its agent asked for; `workflows.from_workflow_id`), dotted between slots whose
+  agents exchanged messages. A slot and all it made share one line, as do a slot in
+  focus and those it talked to; lines that overlap take lanes side by side (three),
+  never one lane together. They show quietly; the selected slot's and the hovered
+  row's stand out and take lanes first, so they are always drawn, and a line no lane
+  is left for isn't. The tile's tooltip says them in words ("Follow-up of
+  slot 3", "2 messages with slot 3"), and a follow-up's Origin node says whose it is,
+  with Go to slot. Only slots shown in the same window are joined. The second line says what is happening
   (the live round's current step from `berth_core::activity`, "Asked a question · 40s
   ago", "Review: 5 findings to decide · 1m ago", "Replied · 1m ago", "Message from
   slot 1 · 1m ago", "Committed · 1 follow-up", "Artifact published"; after a reply the slot needs you, not a review); while
@@ -1099,7 +1110,7 @@ settles nothing (ADR 0013).
   padding). Lists bounded by the app (⌘K, slash commands, the rail) stay plain.
 - Feature `devtools` (dev only): `BERTH_DEV_SCRIPT` drives the live UI and
   `BERTH_DEV_SHOTS` receives window screenshots (see `src/devtools.rs`).
-  `BERTH_DEV_SEED=question|working|review|comments|done|artifact|findings|usage-api|commands|empty|welcome` seeds the
+  `BERTH_DEV_SEED=question|working|review|comments|done|artifact|findings|usage-api|commands|links|links-crowded|empty|welcome` seeds the
   design's scenario into a fresh `BERTH_HOME` (`src/seed.rs`), so screenshots line up
   with the design artboards. Use it to check UI changes without a human.
   `BERTH_DEV_SLOW_MOTION=<factor>` stretches every animation so a shot can catch

@@ -696,6 +696,19 @@ impl Render for FlowView {
                 .iter()
                 .map(|e| (e.slot.id.clone(), e.slot.number))
                 .collect(),
+            from_slot: {
+                let showing = |id: &str| {
+                    state
+                        .repo_slots
+                        .iter()
+                        .find(|e| e.workflow.as_ref().is_some_and(|w| w.id == id))
+                };
+                showing(&view.workflow.id)
+                    .and_then(|e| e.facts.from_workflow.as_deref())
+                    .and_then(showing)
+                    .filter(|e| e.slot.id != view.workflow.slot_id)
+                    .map(|e| (e.slot.id.clone(), e.slot.number))
+            },
             review_open: state.review_open,
             review_section,
             review_stats,

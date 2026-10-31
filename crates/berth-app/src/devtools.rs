@@ -93,6 +93,7 @@ pub fn start(cx: &mut App) {
                                 custom_prompt: None,
                                 url: None,
                             },
+                            from_workflow: None,
                         }));
                     }
                 }),

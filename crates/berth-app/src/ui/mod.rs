@@ -25,6 +25,7 @@ pub mod rich;
 mod select;
 mod settings;
 mod sign_in;
+mod slot_links;
 mod slot_rail;
 mod syntax;
 mod tasks;

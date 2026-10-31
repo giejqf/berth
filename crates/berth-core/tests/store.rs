@@ -400,3 +400,130 @@ fn a_file_is_viewed_by_the_change_read_until_unmarked() {
     assert_eq!(viewed(&store).len(), 1);
     assert_eq!(viewed(&store)[0].change, "1..3");
 }
+
+#[test]
+fn a_workflow_knows_where_it_came_from_and_whom_it_messaged() {
+    use berth_core::{MessagePeer, Workflow, WorkflowState};
+    use berth_protocol::{
+        FollowUp, MessageDirection, MessageStatus, NodePayload, Origin, OriginKind, Outcome,
+        OutcomeKind, SlotMessage,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("berth.db");
+    let workflow = |slot_id: &str, kind, r#ref: &str| Workflow {
+        id: new_id(),
+        slot_id: slot_id.to_owned(),
+        origin: Origin {
+            kind,
+            r#ref: r#ref.to_owned(),
+            title: "x".into(),
+            body: String::new(),
+            custom_prompt: None,
+            url: None,
+        },
+        state: WorkflowState::Idle,
+        claude_session_id: None,
+        section_no: 1,
+        total_cost_usd: 0.0,
+        last_error: None,
+        created_at: now_ms(),
+        closed_at: None,
+    };
+    let message = |direction, peer: &Workflow| {
+        NodePayload::Message(SlotMessage {
+            message_id: new_id(),
+            direction,
+            peer_slot_id: peer.slot_id.clone(),
+            peer_workflow_id: peer.id.clone(),
+            peer_name: "x".into(),
+            text: "hi".into(),
+            hop: 1,
+            status: MessageStatus::Woke,
+            held_because: None,
+            settled_at: None,
+        })
+    };
+    let (a, b, c) = {
+        let store = Store::open(&path).unwrap();
+        let repo = store.upsert_repo(Path::new("/tmp/repo")).unwrap();
+        let mut ws = Vec::new();
+        for (kind, r#ref) in [
+            (OriginKind::Thought, ""),
+            (OriginKind::FollowUp, "fu-1"),
+            (OriginKind::Thought, ""),
+        ] {
+            let mut s = slot(&repo.id);
+            store.insert_slot(&mut s).unwrap();
+            let w = workflow(&s.id, kind, r#ref);
+            store.insert_workflow(&w).unwrap();
+            ws.push(w);
+        }
+        let [a, b, c] = <[Workflow; 3]>::try_from(ws).unwrap();
+        store
+            .insert_node(
+                &a.id,
+                None,
+                None,
+                NodePayload::Outcome(Outcome {
+                    kind: OutcomeKind::Commit,
+                    r#ref: "abc".into(),
+                    summary: String::new(),
+                    title: None,
+                    follow_ups: vec![FollowUp {
+                        id: "fu-1".into(),
+                        title: "x".into(),
+                        description: String::new(),
+                    }],
+                }),
+                None,
+            )
+            .unwrap();
+        for (from, to) in [(&b, &c), (&c, &b), (&b, &c)] {
+            store
+                .insert_node(
+                    &from.id,
+                    None,
+                    None,
+                    message(MessageDirection::Sent, to),
+                    None,
+                )
+                .unwrap();
+            store
+                .insert_node(
+                    &to.id,
+                    None,
+                    None,
+                    message(MessageDirection::Received, from),
+                    None,
+                )
+                .unwrap();
+        }
+        (a, b, c)
+    };
+    // As a database from before 0.3.9 has it: the follow-up was started, but
+    // where from wasn't kept.
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("ALTER TABLE workflows DROP COLUMN from_workflow_id")
+            .unwrap();
+        conn.pragma_update(None, "user_version", 12).unwrap();
+    }
+    let store = Store::open(&path).unwrap();
+    let facts = |w: &Workflow| store.workflow_facts(&w.id).unwrap();
+    assert_eq!(facts(&b).from_workflow.as_deref(), Some(a.id.as_str()));
+    assert_eq!(facts(&a).from_workflow, None);
+    assert_eq!(facts(&c).from_workflow, None);
+
+    store.set_workflow_from(&c.id, &a.id).unwrap();
+    assert_eq!(facts(&c).from_workflow.as_deref(), Some(a.id.as_str()));
+    assert_eq!(
+        facts(&b).peers,
+        [MessagePeer {
+            workflow_id: c.id.clone(),
+            sent: 2,
+            received: 1
+        }]
+    );
+    assert_eq!(facts(&c).peers[0].workflow_id, b.id);
+    assert!(facts(&a).peers.is_empty());
+}

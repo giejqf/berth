@@ -498,6 +498,7 @@ impl Shared {
                     slot_id,
                     window_id,
                     origin: berth_core::prompt::follow_up_origin(&follow_up),
+                    from_workflow: Some(workflow_id.clone()),
                 };
                 let (wf, _) = self.prepare_workflow(&req).await?;
                 self.provision(&wf).await

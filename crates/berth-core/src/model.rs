@@ -428,6 +428,20 @@ pub struct WorkflowFacts {
     /// The status the user set by hand, while it holds: nothing happened in
     /// the workflow since.
     pub status: Option<ManualStatus>,
+    /// The workflow it came from: one of that one's follow-ups, or a slot its
+    /// agent asked for (ADR 0027).
+    pub from_workflow: Option<String>,
+    /// The workflows it exchanged messages with, in the order they first did
+    /// (ADR 0021).
+    pub peers: Vec<MessagePeer>,
+}
+
+/// Another slot's workflow a workflow exchanged messages with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessagePeer {
+    pub workflow_id: String,
+    pub sent: usize,
+    pub received: usize,
 }
 
 /// A status the user gives a conversation by hand, as the rail groups it.

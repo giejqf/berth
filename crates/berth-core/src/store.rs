@@ -10,9 +10,9 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use crate::error::{CoreError, Result};
 use crate::ids::{new_id, now_ms};
 use crate::model::{
-    Branch, BranchState, ConnectorRow, Dropped, GhEntityRow, ManualStatus, Node, RawEventRow, Repo,
-    ReviewCommentRow, Round, Slot, SlotState, Snapshot, SnapshotKind, ViewedFile, Workflow,
-    WorkflowFacts, WorkflowState, WorkflowView,
+    Branch, BranchState, ConnectorRow, Dropped, GhEntityRow, ManualStatus, MessagePeer, Node,
+    RawEventRow, Repo, ReviewCommentRow, Round, Slot, SlotState, Snapshot, SnapshotKind,
+    ViewedFile, Workflow, WorkflowFacts, WorkflowState, WorkflowView,
 };
 
 const MIGRATIONS: &[&str] = &[
@@ -28,6 +28,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0010_slot_numbers.sql"),
     include_str!("../migrations/0011_workflow_status.sql"),
     include_str!("../migrations/0012_viewed_files.sql"),
+    include_str!("../migrations/0013_workflow_from.sql"),
 ];
 
 pub struct Store {
@@ -1369,6 +1370,30 @@ impl Store {
             }
             _ => None,
         };
+        let from_workflow: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT from_workflow_id FROM workflows WHERE id = ?1",
+                [workflow_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        let mut stmt = self.conn.prepare(
+            "SELECT json_extract(payload_json, '$.peer_workflow_id'), \
+             SUM(json_extract(payload_json, '$.direction') = 'sent'), \
+             SUM(json_extract(payload_json, '$.direction') = 'received') FROM nodes \
+             WHERE workflow_id = ?1 AND kind = 'message' GROUP BY 1 ORDER BY MIN(seq)",
+        )?;
+        let peers = stmt
+            .query_map([workflow_id], |r| {
+                Ok(MessagePeer {
+                    workflow_id: r.get(0)?,
+                    sent: usize::try_from(r.get::<_, i64>(1)?).unwrap_or(0),
+                    received: usize::try_from(r.get::<_, i64>(2)?).unwrap_or(0),
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(WorkflowFacts {
             question_at,
             review: review.map(|(at, n)| (at, usize::try_from(n).unwrap_or(0))),
@@ -1379,7 +1404,19 @@ impl Store {
             rounds: usize::try_from(rounds).unwrap_or(0),
             last_round_at,
             status,
+            from_workflow,
+            peers,
         })
+    }
+
+    /// Record the workflow `id` came from: one of `from`'s follow-ups, or a
+    /// slot `from`'s agent asked for (ADR 0027).
+    pub fn set_workflow_from(&self, id: &str, from: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE workflows SET from_workflow_id = ?2 WHERE id = ?1",
+            params![id, from],
+        )?;
+        Ok(())
     }
 
     /// Set the workflow's status by hand, or go back to what its state says
