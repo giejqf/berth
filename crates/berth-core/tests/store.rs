@@ -347,3 +347,56 @@ fn a_busy_or_failed_slot_takes_no_status_by_hand() {
     assert!(!locked(SlotState::Running, WorkflowState::AwaitingAnswer));
     assert!(!locked(SlotState::Ready, WorkflowState::Closed));
 }
+
+#[test]
+fn a_file_is_viewed_by_the_change_read_until_unmarked() {
+    use berth_core::{ViewedFile, Workflow, WorkflowState};
+    let store = Store::open_in_memory().unwrap();
+    let repo = store.upsert_repo(Path::new("/tmp/repo")).unwrap();
+    let mut s = slot(&repo.id);
+    store.insert_slot(&mut s).unwrap();
+    let wf = Workflow {
+        id: new_id(),
+        slot_id: s.id.clone(),
+        origin: berth_protocol::Origin {
+            kind: berth_protocol::OriginKind::Thought,
+            r#ref: String::new(),
+            title: "x".into(),
+            body: String::new(),
+            custom_prompt: None,
+            url: None,
+        },
+        state: WorkflowState::Idle,
+        claude_session_id: None,
+        section_no: 1,
+        total_cost_usd: 0.0,
+        last_error: None,
+        created_at: now_ms(),
+        closed_at: None,
+    };
+    store.insert_workflow(&wf).unwrap();
+    let viewed = |store: &Store| store.viewed_files(&wf.id).unwrap();
+    assert!(viewed(&store).is_empty());
+
+    store.set_viewed(&wf.id, "src/a.rs", "1..2", true).unwrap();
+    // Marking it again keeps one row.
+    store.set_viewed(&wf.id, "src/a.rs", "1..2", true).unwrap();
+    // The agent changed it after: the new change is viewed too, separately.
+    store.set_viewed(&wf.id, "src/a.rs", "1..3", true).unwrap();
+    assert_eq!(
+        viewed(&store),
+        [
+            ViewedFile {
+                path: "src/a.rs".into(),
+                change: "1..2".into()
+            },
+            ViewedFile {
+                path: "src/a.rs".into(),
+                change: "1..3".into()
+            }
+        ]
+    );
+    store.set_viewed(&wf.id, "src/a.rs", "1..2", false).unwrap();
+    assert_eq!(viewed(&store).len(), 1);
+    assert_eq!(viewed(&store)[0].change, "1..3");
+}

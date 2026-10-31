@@ -1,12 +1,14 @@
 //! Per-window model: everything the views of one repo window draw. Fed by
 //! backend events; views only read it and send commands.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use berth_core::activity::RoundActivity;
 use berth_core::transcript::TranscriptEntry;
-use berth_core::{ManualStatus, ReviewCommentRow, SlotState, WorkflowState, WorkflowView};
+use berth_core::{
+    ManualStatus, ReviewCommentRow, SlotState, ViewedFile, WorkflowState, WorkflowView,
+};
 use berth_protocol::{DiffPreset, SlotRequest};
 use gpui::{Context, Entity, EntityId, EventEmitter};
 
@@ -77,6 +79,13 @@ pub struct RepoState {
     diff_wanted: HashMap<String, u64>,
     diff_tickets: u64,
     pub comments: HashMap<String, Vec<ReviewCommentRow>>,
+    /// Per workflow: the file changes its review marked viewed.
+    pub viewed: HashMap<String, HashSet<ViewedFile>>,
+    /// Files' text by blob id, the last few read, for the lines a hunk
+    /// leaves out (`None`: not text, too large, or unreadable).
+    pub blobs: HashMap<String, Option<Arc<str>>>,
+    blob_order: VecDeque<String>,
+    blobs_loading: HashSet<String>,
     /// Each source's last list, shown while a newer one loads.
     pub origins: HashMap<OriginSource, Result<Vec<OriginChoice>, String>>,
     /// Sources being listed now.
@@ -261,6 +270,10 @@ impl RepoState {
             diff_wanted: HashMap::new(),
             diff_tickets: 0,
             comments: HashMap::new(),
+            viewed: HashMap::new(),
+            blobs: HashMap::new(),
+            blob_order: VecDeque::new(),
+            blobs_loading: HashSet::new(),
             origins: HashMap::new(),
             origins_loading: HashSet::new(),
             flow_width: 0.,
@@ -455,6 +468,56 @@ impl RepoState {
     ) {
         self.history = Some(History { entries, unlisted });
         cx.notify();
+    }
+
+    /// Whether `workflow_id`'s review marked this file change viewed.
+    pub fn is_viewed(&self, workflow_id: &str, path: &str, change: &str) -> bool {
+        self.viewed.get(workflow_id).is_some_and(|v| {
+            v.contains(&ViewedFile {
+                path: path.to_owned(),
+                change: change.to_owned(),
+            })
+        })
+    }
+
+    /// Mark a file change viewed, or not: shown at once, kept by the backend.
+    pub fn set_viewed(
+        &mut self,
+        workflow_id: &str,
+        path: &str,
+        change: &str,
+        viewed: bool,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let file = ViewedFile {
+            path: path.to_owned(),
+            change: change.to_owned(),
+        };
+        let set = self.viewed.entry(workflow_id.to_owned()).or_default();
+        if viewed {
+            set.insert(file);
+        } else {
+            set.remove(&file);
+        }
+        self.backend.send(Command::SetViewed {
+            workflow_id: workflow_id.to_owned(),
+            path: path.to_owned(),
+            change: change.to_owned(),
+            viewed,
+        });
+        cx.notify();
+    }
+
+    /// Read a file's text at `oid` (in `workflow_id`'s slot), unless it is
+    /// here or on its way.
+    pub fn load_blob(&mut self, workflow_id: &str, oid: &str) {
+        if self.blobs.contains_key(oid) || !self.blobs_loading.insert(oid.to_owned()) {
+            return;
+        }
+        self.backend.send(Command::LoadBlob {
+            workflow_id: workflow_id.to_owned(),
+            oid: oid.to_owned(),
+        });
     }
 
     pub fn compose(&mut self, text: String, cx: &mut Context<'_, Self>) {
@@ -763,6 +826,22 @@ impl RepoState {
                 comments,
             } if self.knows(&workflow_id) => {
                 self.comments.insert(workflow_id, comments);
+                cx.notify();
+            }
+            UiEvent::Viewed { workflow_id, files } if self.knows(&workflow_id) => {
+                self.viewed.insert(workflow_id, files.into_iter().collect());
+                cx.notify();
+            }
+            UiEvent::Blob { oid, text } if self.blobs_loading.remove(&oid) => {
+                /// Files kept: one diff's worth of expanded files.
+                const KEEP: usize = 32;
+                self.blob_order.push_back(oid.clone());
+                self.blobs.insert(oid, text);
+                while self.blob_order.len() > KEEP {
+                    if let Some(old) = self.blob_order.pop_front() {
+                        self.blobs.remove(&old);
+                    }
+                }
                 cx.notify();
             }
             UiEvent::Details {

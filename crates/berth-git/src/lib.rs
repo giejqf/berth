@@ -12,8 +12,8 @@ mod runner;
 mod snapshot;
 
 pub use diff::{
-    Diff, DiffLine, DiffStats, FileDiff, FileStatus, Hunk, LineKind, diff_patch, diff_trees,
-    parse_diff,
+    Diff, DiffLine, DiffStats, FileDiff, FileStatus, Hunk, LineKind, blob_text, diff_patch,
+    diff_trees, parse_diff,
 };
 pub use refs::{
     Worktree, branch_exists, current_branch, default_base_ref, is_repo, list_branches,

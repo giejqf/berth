@@ -164,7 +164,7 @@ berth/
 | Agent | **Claude Agent SDK (TypeScript)** in the sidecar | Never call `claude` directly from Rust. |
 | Persistence | **SQLite** via `rusqlite` (bundled), embedded migrations | One DB at `~/Library/Application Support/Berth/berth.db`. |
 | Protocol types | `serde` structs in `berth-protocol`, exported with `ts-rs` | `just gen-protocol` regenerates `sidecar/src/protocol.ts`. CI fails if stale. |
-| Diff rendering | Berth's own read-only `ui/diff_view.rs` over `berth-git`'s typed model (a virtualized GPUI `list`; colors from gpui-component's tree-sitter highlighter via the `tree-sitter-languages` feature) | Read-only. No editing widgets. Drawn to the design's 36/36/16 gutter with inline comment cards (ADR 0003). |
+| Diff rendering | Berth's own read-only `ui/diff_view.rs` over `berth-git`'s typed model (a virtualized GPUI `list`; colors from gpui-component's tree-sitter highlighter via the `tree-sitter-languages` feature; the words that changed within a line from `similar`, `ui/word_diff.rs`) | Read-only. No editing widgets. Drawn to the design's 36/36/16 gutter with inline comment cards (ADR 0003, ADR 0026). |
 | Terminal | `alacritty_terminal` (Apache-2.0) for the PTY, the parser and the grid; Berth draws it | One shell per terminal on a PTY thread; the view only paints cells and sends bytes (ADR 0005). |
 | Visual system | Gruvbox tokens in `theme.rs` (dark and light), IBM Plex Sans 13/18 and JetBrains Mono 12, bundled (SIL OFL 1.1: fonts are data, compatible with MIT) | Sizes follow the design *as rendered* (its CSS adds padding/borders to stated widths). Text renders without CoreGraphics stroke dilation: Berth sets `AppleFontSmoothing = 0` in its own defaults domain at launch (ADR 0003). |
 | GitHub | `gh` CLI with `--json`, reusing the user's auth | No GitHub API client crate. |
@@ -557,9 +557,34 @@ this hunk" (which creates a Prompt pre-filled with the hunk context). Comments a
 to the end line of the selected range. "Post to PR" posts one review with inline
 comments (`gh api …/pulls/N/reviews`) and falls back to a single `gh pr comment`.
 Long lines wrap (both modes; the gutters grow with them), so no code is cut off at the
-pane's edge. Above the diff, the file list (path, comments, +/−; a click jumps there)
+pane's edge. Above the diff, the file list (what happened to each file, A/M/D/R; its
+name, then its folder; comments not sent, +/−, a check once viewed; a click jumps there)
 keeps to a third of the pane and scrolls, following the file in view; its header (the
-file count) folds it away and back, as ⌘⇧F does.
+file count, how many viewed) folds it away and back, as ⌘⇧F does.
+
+What makes a diff readable (ADR 0026):
+
+- **Changed words.** A removed line and the added line that took its place (paired
+  as split mode pairs them) are compared word by word (`ui/word_diff.rs`); what
+  changed is marked within the line, unless the two share less than a third.
+- **Hidden lines.** Over each hunk, a band says how many unchanged lines the diff
+  leaves out before it, and what the hunk is in (git's function context); a click
+  shows 20 more at each end (all when few, "Show all"), after the last hunk the rest
+  of the file. They come from the new file's blob (`git cat-file blob`, through the
+  slot's `exec` like every git call; text files up to 2 MB), highlighted whole. The
+  band also has **Ask agent** for its hunk.
+- **The file in view** keeps its header pinned at the top of the diff while its lines
+  scroll.
+- **Viewed.** A file's header has Viewed (V marks the file in view and goes to the
+  next): it folds, and the file list checks it. Kept per workflow by the change read,
+  the blob ids before and after (`viewed_files`): a file the agent changes again, or
+  another preset's change to it, is not viewed.
+- **Room.** The pane expands over the flow (⌘⇧E, the button beside Close): all the
+  window but the rail's strip. Split shows only where it has room (880px); choosing
+  it in a narrower pane expands the pane. Asking the agent about a hunk puts the pane
+  back beside the flow, where the composer is.
+- **Keys** in the diff: J / K the next or previous hunk (as ⌘↓ ⌘↑), N / P the next or
+  previous file, V viewed, C comment, / ask.
 
 ---
 
@@ -659,6 +684,7 @@ raw_events       id, workflow_id, round_id, branch_id, seq, kind, json, created_
 snapshots        id, workflow_id, section_no, kind(start|summary), tree_sha, created_at
 review_comments  id, workflow_id, from_snapshot, to_snapshot, preset, path, side, line, body, sent_in_node,
                  posted_to_pr, created_at
+viewed_files     workflow_id, path, change, viewed_at      # change: "<old blob>..<new blob>" (ADR 0026)
 gh_entities      id, repo_id, kind, number_or_sha, json, synced_at
 workflow_links   workflow_id, entity_id, role(origin|outcome)
 connectors       name, path, enabled
@@ -776,6 +802,8 @@ settles nothing (ADR 0013).
   **event flow** + composer, right **review pane** (521px; its left edge drags it
   wider or narrower, 400px up to leaving the flow 560px, the same in every window and
   kept in `settings.review_width`; a double click on the edge goes back to 521).
+  Expanded (⌘⇧E), the review pane covers the flow and the composer: all the window
+  but the rail's strip, the keys moved into it (ADR 0026).
   The rail collapses to a 57px strip of slot numbers with their state marks: by hand (the button next to + in
   its header, the one at the top of the strip, or ⌘⇧L), and on its own while the
   review pane is open and leaves the flow less room than at 1400px (under 1400px at

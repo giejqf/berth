@@ -32,6 +32,7 @@ mod terminal;
 mod usage;
 mod welcome;
 pub mod windows;
+mod word_diff;
 
 use std::collections::HashMap;
 

@@ -4,7 +4,8 @@
 mod common;
 
 use berth_git::{
-    DiffLine, FileDiff, FileStatus, GitError, LineKind, SnapshotIndex, diff_trees, snapshot,
+    DiffLine, FileDiff, FileStatus, GitError, LineKind, SnapshotIndex, blob_text, diff_trees,
+    snapshot,
 };
 use common::Repo;
 
@@ -190,5 +191,42 @@ async fn diff_trees_accepts_commits_and_rejects_options() {
     assert!(matches!(
         diff_trees(&repo.git, "HEAD", "no-such-rev").await,
         Err(GitError::Failed { .. })
+    ));
+}
+
+#[tokio::test]
+async fn a_blob_reads_as_text_unless_binary_or_too_large() {
+    let repo = Repo::init().await;
+    repo.write("a.txt", seq(1, 30));
+    repo.write("b.bin", b"\x00\x01\x02".as_slice());
+    repo.commit_all("one").await;
+    repo.write("a.txt", seq(1, 30).replace("15\n", "fifteen\n"));
+    repo.commit_all("two").await;
+
+    let diff = diff_trees(&repo.git, "HEAD~1", "HEAD").await.unwrap();
+    let a = find(&diff.files, "a.txt");
+    let new = a.new_oid.as_deref().unwrap();
+    let text = blob_text(&repo.git, new, 1 << 20).await.unwrap().unwrap();
+    assert_eq!(text.lines().nth(14), Some("fifteen"));
+    assert_eq!(text.lines().count(), 30);
+    assert_eq!(blob_text(&repo.git, new, 10).await.unwrap(), None);
+
+    let bin = diff_trees(
+        &repo.git,
+        "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        "HEAD",
+    )
+    .await
+    .unwrap();
+    let b = find(&bin.files, "b.bin");
+    assert_eq!(
+        blob_text(&repo.git, b.new_oid.as_deref().unwrap(), 1 << 20)
+            .await
+            .unwrap(),
+        None
+    );
+    assert!(matches!(
+        blob_text(&repo.git, "--all", 10).await,
+        Err(GitError::InvalidRev(_))
     ));
 }

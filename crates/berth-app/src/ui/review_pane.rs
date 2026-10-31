@@ -8,24 +8,27 @@ pub mod findings;
 
 use std::sync::Arc;
 
+use berth_git::FileStatus;
 use berth_protocol::DiffPreset;
 use gpui::{
-    AnyElement, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement as _,
-    IntoElement, KeyContext, ListSizingBehavior, ParentElement as _, Render, ScrollHandle,
-    ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _,
-    UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px, relative, uniform_list,
+    AnyElement, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, KeyContext, ListSizingBehavior, ParentElement as _,
+    Render, ScrollHandle, ScrollStrategy, SharedString, StatefulInteractiveElement as _,
+    Styled as _, UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px, relative,
+    uniform_list,
 };
 use gpui_component::input::{InputEvent, InputState};
 
 use self::findings::FindingsView;
 use super::RepoState;
-use super::diff_view::DiffView;
+use super::diff_view::{CurrentFile, DiffView};
 use super::kit::{Btn, Size, TypeExt as _, caption, dot, icon, input_frame, spinner};
 use super::nodes::diff_stats;
 use crate::backend::{Command, DiffResult};
 use crate::keymap::{
     AskAboutHunk, CopyShownFile, FilterFiles, NextChange, NextFile, NextSection, PostToPr,
-    PrevChange, PrevFile, PrevSection, QuickLookFile, ToggleFileList, ToggleReview, ToggleZoom,
+    PrevChange, PrevFile, PrevSection, QuickLookFile, ToggleFileList, ToggleReview,
+    ToggleReviewSize, ToggleZoom,
 };
 use crate::theme::{MONO, Tokens, ty};
 
@@ -52,7 +55,16 @@ pub struct ReviewPane {
     file_rows: UniformListScrollHandle,
     file_row_shown: Option<usize>,
     findings: Entity<FindingsView>,
+    /// The pane's width as the window lays it out, and whether it is
+    /// expanded over the flow.
+    width: f32,
+    max: bool,
 }
+
+/// Split was asked for in a pane too narrow for it: the window widens it.
+pub struct Widen;
+
+impl EventEmitter<Widen> for ReviewPane {}
 
 /// What the pane shows: the diff, the workflow's files, or a code review.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -85,6 +97,9 @@ impl ReviewPane {
             cx.new(|cx| InputState::new(window, cx).placeholder("from: tree SHA or ref"));
         let custom_to = cx.new(|cx| InputState::new(window, cx).placeholder("to: tree SHA or ref"));
         cx.observe(&state, |this, _, cx| this.sync(cx)).detach();
+        // The file list follows the file at the top of the diff.
+        cx.subscribe(&diff, |_, _, _: &CurrentFile, cx| cx.notify())
+            .detach();
         let findings = cx.new(|cx| FindingsView::new(state.clone(), cx));
         let mut this = Self {
             state,
@@ -105,6 +120,8 @@ impl ReviewPane {
             file_rows: UniformListScrollHandle::new(),
             file_row_shown: None,
             findings,
+            width: 0.,
+            max: false,
         };
         this.sync(cx);
         this
@@ -161,6 +178,20 @@ impl ReviewPane {
         self.findings.update(cx, |f, cx| f.unsend(review_id, cx));
     }
 
+    /// Take the keys, unless something in the pane has them: the diff on
+    /// Changes, the pane itself on Files, the findings on Findings.
+    pub fn take_focus(&self, window: &mut Window, cx: &mut gpui::App) {
+        if self.focus.contains_focused(window, cx) {
+            return;
+        }
+        let f = match self.tab {
+            Tab::Changes => self.diff.read(cx).focus_handle(cx),
+            Tab::Files => self.focus.clone(),
+            Tab::Findings => self.findings_focus(cx),
+        };
+        window.focus(&f, cx);
+    }
+
     /// What takes the keys on the Findings tab.
     pub fn findings_focus(&self, cx: &gpui::App) -> FocusHandle {
         self.findings.read(cx).focus_handle(cx)
@@ -189,8 +220,29 @@ impl ReviewPane {
         self.load(preset, section, cx);
     }
 
+    /// The window's layout: the pane's width, and whether it is expanded.
+    pub fn set_layout(&mut self, width: f32, max: bool, cx: &mut Context<'_, Self>) {
+        if (width - self.width).abs() < 0.5 && max == self.max {
+            return;
+        }
+        self.width = width;
+        self.max = max;
+        self.diff.update(cx, |d, cx| d.set_width(width, cx));
+        cx.notify();
+    }
+
+    /// ⌘⇧U: unified or split, as shown.
     pub fn toggle_mode(&mut self, cx: &mut Context<'_, Self>) {
-        self.diff.update(cx, DiffView::toggle_split);
+        let split = !self.diff.read(cx).splits();
+        self.set_mode(split, cx);
+    }
+
+    /// Split widens a pane too narrow for it.
+    fn set_mode(&mut self, split: bool, cx: &mut Context<'_, Self>) {
+        self.diff.update(cx, |d, cx| d.set_split(split, cx));
+        if split && !self.diff.read(cx).has_room() {
+            cx.emit(Widen);
+        }
         cx.notify();
     }
 
@@ -233,13 +285,14 @@ impl ReviewPane {
             self.shown = current.clone();
             self.diff.update(cx, |d, cx| d.show(current, cx));
         } else {
-            // Comments may have changed.
-            self.diff.update(cx, DiffView::refresh_comments);
+            // Comments, viewed files or files' text may have changed.
+            self.diff.update(cx, DiffView::refresh);
         }
         cx.notify();
     }
 
-    /// The file list's rows in `range`: path, the comments not sent yet, +/−.
+    /// The file list's rows in `range`: what happened to the file, its name
+    /// and folder, the comments not sent yet, +/−, and whether it was viewed.
     fn file_rows(
         &self,
         range: std::ops::Range<usize>,
@@ -248,12 +301,14 @@ impl ReviewPane {
         let t = Tokens::get(cx);
         let diff = self.diff.read(cx);
         let (files, current_file) = (diff.shared_diff(), diff.current_file());
+        let viewed: Vec<bool> = range.clone().map(|i| diff.file_viewed(i, cx)).collect();
         let state = self.state.read(cx);
         let comments = state
             .selected_workflow_id()
             .and_then(|w| state.comments.get(&w).cloned())
             .unwrap_or_default();
         let last = files.files.len().saturating_sub(1);
+        let first = range.start;
         range
             .filter_map(|i| files.files.get(i).map(|f| (i, f)))
             .map(|(i, f)| {
@@ -263,6 +318,18 @@ impl ReviewPane {
                     .filter(|c| c.path == path && c.sent_in_node.is_none())
                     .count();
                 let active = current_file == Some(i);
+                let seen = viewed.get(i - first).copied().unwrap_or(false);
+                let (dir, name) = match path.rsplit_once('/') {
+                    Some((d, n)) => (Some(d.to_owned()), n.to_owned()),
+                    None => (None, path.clone()),
+                };
+                let (letter, color, what) = match f.status {
+                    FileStatus::Added => ("A", t.done, "Added"),
+                    FileStatus::Deleted => ("D", t.danger, "Deleted"),
+                    FileStatus::Renamed { .. } => ("R", t.accent, "Renamed"),
+                    FileStatus::Copied { .. } => ("C", t.accent, "Copied"),
+                    FileStatus::Modified | FileStatus::ModeChanged => ("M", t.attention, "Changed"),
+                };
                 let hover = t.raised;
                 let row = div()
                     .id(SharedString::from(format!("file-row-{i}")))
@@ -275,25 +342,60 @@ impl ReviewPane {
                     .cursor_pointer()
                     .font_family(MONO)
                     .text_size(px(12.))
-                    .when(active, |d| d.bg(t.raised).text_color(t.text))
-                    .when(!active, |d| {
-                        d.text_color(t.text2).hover(move |s| s.bg(hover))
-                    })
+                    .when(active, |d| d.bg(t.raised))
+                    .when(!active, |d| d.hover(move |s| s.bg(hover)))
+                    .tooltip(move |w, cx| gpui_component::tooltip::Tooltip::new(what).build(w, cx))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.diff.update(cx, |d, cx| d.reveal_file(i, cx));
                     }))
                     .child(
                         div()
+                            .w(px(10.))
+                            .flex_none()
+                            .text_size(px(11.))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(color)
+                            .child(letter),
+                    )
+                    // The name first; its folder after it, losing its start.
+                    .child(
+                        div()
+                            .flex()
+                            .items_baseline()
+                            .gap(px(8.))
+                            .flex_1()
                             .min_w_0()
                             .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .child(path),
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .whitespace_nowrap()
+                                    .text_color(if seen {
+                                        t.text3
+                                    } else if active {
+                                        t.text
+                                    } else {
+                                        t.text2
+                                    })
+                                    .child(name),
+                            )
+                            .children(dir.map(|d| {
+                                div()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .text_ellipsis_start()
+                                    .whitespace_nowrap()
+                                    .font_family(crate::theme::SANS)
+                                    .text_size(px(11.))
+                                    .text_color(t.text3)
+                                    .child(d)
+                            })),
                     )
                     .when(unsent > 0, |d| {
                         d.child(
                             div()
                                 .flex()
+                                .flex_none()
                                 .items_center()
                                 .gap(px(4.))
                                 .font_family(crate::theme::SANS)
@@ -304,18 +406,27 @@ impl ReviewPane {
                     })
                     .child(
                         div()
-                            .ml_auto()
-                            .text_color(t.done)
+                            .flex_none()
+                            .text_color(if seen { t.text3 } else { t.done })
                             .child(format!("+{}", f.additions())),
                     )
                     .child(
                         div()
-                            .text_color(if f.deletions() == 0 {
+                            .flex_none()
+                            .text_color(if f.deletions() == 0 || seen {
                                 t.text3
                             } else {
                                 t.danger
                             })
                             .child(format!("−{}", f.deletions())),
+                    )
+                    .child(
+                        div()
+                            .w(px(12.))
+                            .flex_none()
+                            .flex()
+                            .justify_center()
+                            .when(seen, |d| d.child(icon("check-bold", 12., t.done))),
                     );
                 // Rows 1px apart (a uniform list has no gap of its own).
                 div()
@@ -385,8 +496,9 @@ impl Render for ReviewPane {
         // "Post N to PR" posts every comment not on the PR yet (sent ones too).
         let unposted = all_comments.iter().filter(|c| !c.posted_to_pr).count();
         let shown = self.shown.clone();
-        let split = self.diff.read(cx).split;
+        let (split, room) = (self.diff.read(cx).splits(), self.diff.read(cx).has_room());
         let current_file = self.diff.read(cx).current_file();
+        let (viewed, _) = self.diff.read(cx).viewed_count(cx);
         let diff = self.diff.read(cx).shared_diff();
         let files = &diff.files;
 
@@ -494,22 +606,46 @@ impl Render for ReviewPane {
                             seg("mode-unified", "unified", !split, "Unified  ⌘⇧U", false).on_click(
                                 cx.listener(move |this, _, _, cx| {
                                     if split {
-                                        this.toggle_mode(cx);
+                                        this.set_mode(false, cx);
                                     }
                                 }),
                             ),
                         )
                         .child(
-                            seg("mode-split", "split", split, "Split  ⌘⇧U", true).on_click(
-                                cx.listener(move |this, _, _, cx| {
+                            seg(
+                                "mode-split",
+                                "split",
+                                split,
+                                if room {
+                                    "Split  ⌘⇧U"
+                                } else {
+                                    "Split: widens the pane  ⌘⇧U"
+                                },
+                                true,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
                                     if !split {
-                                        this.toggle_mode(cx);
+                                        this.set_mode(true, cx);
                                     }
-                                }),
-                            ),
+                                },
+                            )),
                         ),
                 )
             })
+            .child(
+                Btn::new("expand-review")
+                    .ghost()
+                    .icon(if self.max { "minimize" } else { "maximize" }, 15.)
+                    .tooltip(if self.max {
+                        "Back beside the flow  ⌘⇧E"
+                    } else {
+                        "Expand over the flow  ⌘⇧E"
+                    })
+                    .on_click(|_, window, cx| {
+                        window.dispatch_action(Box::new(ToggleReviewSize), cx);
+                    }),
+            )
             .child(
                 Btn::new("close-review")
                     .ghost()
@@ -718,7 +854,12 @@ impl Render for ReviewPane {
                                 div()
                                     .ty(ty::META)
                                     .text_color(t.text3)
-                                    .child(files.len().to_string()),
+                                    .whitespace_nowrap()
+                                    .child(if viewed > 0 {
+                                        format!("{} · {viewed} viewed", files.len())
+                                    } else {
+                                        files.len().to_string()
+                                    }),
                             ),
                     )
                     .when(open, |d| {
@@ -797,11 +938,15 @@ impl Render for ReviewPane {
         } else if all_comments.is_empty() {
             div().child(super::kit::keyed(
                 &[
-                    "Hover a line and press ",
+                    "",
                     "C",
-                    " to comment · ",
-                    "⌘↓",
-                    " next change",
+                    " comments on a line · ",
+                    "J K",
+                    " changes · ",
+                    "N P",
+                    " files · ",
+                    "V",
+                    " viewed",
                 ],
                 t.text3,
             ))
@@ -830,37 +975,22 @@ impl Render for ReviewPane {
             .text_color(t.text3)
             .child(left.flex_1().min_w(px(160.)))
             .when(!on_files, |d| {
-                d.child(
-                    div()
-                        .flex()
-                        .gap(px(10.))
-                        .ml_auto()
-                        .child(
-                            Btn::new("ask-hunk")
-                                .size(Size::S26)
-                                .label("Ask agent about hunk")
-                                .disabled(files.is_empty())
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.diff.update(cx, DiffView::ask_about_hunk);
-                                })),
-                        )
-                        .child({
-                            let b = Btn::new("post-pr")
-                                .size(Size::S26)
-                                .label(if unposted > 0 {
-                                    format!("Post {unposted} to PR")
-                                } else {
-                                    "Post to PR".to_owned()
-                                })
-                                .disabled(unposted == 0)
-                                .on_click(cx.listener(|this, _, _, cx| this.post(cx)));
-                            if unposted > 0 {
-                                b.icon("pr-medium", 12.)
-                            } else {
-                                b
-                            }
-                        }),
-                )
+                d.child(div().flex().gap(px(10.)).ml_auto().child({
+                    let b = Btn::new("post-pr")
+                        .size(Size::S26)
+                        .label(if unposted > 0 {
+                            format!("Post {unposted} to PR")
+                        } else {
+                            "Post to PR".to_owned()
+                        })
+                        .disabled(unposted == 0)
+                        .on_click(cx.listener(|this, _, _, cx| this.post(cx)));
+                    if unposted > 0 {
+                        b.icon("pr-medium", 12.)
+                    } else {
+                        b
+                    }
+                }))
             });
 
         let mut context = KeyContext::new_with_defaults();
@@ -895,17 +1025,7 @@ impl Render for ReviewPane {
                 this.diff.update(cx, DiffView::ask_about_hunk);
             }))
             .on_action(cx.listener(|this, _: &PostToPr, _, cx| this.post(cx)))
-            .on_click(cx.listener(|this, _, window, cx| {
-                if !this.focus.contains_focused(window, cx) {
-                    // The diff takes the keys on Changes; the pane itself on Files.
-                    let f = match this.tab {
-                        Tab::Changes => this.diff.read(cx).focus_handle(cx),
-                        Tab::Files => this.focus.clone(),
-                        Tab::Findings => this.findings_focus(cx),
-                    };
-                    window.focus(&f, cx);
-                }
-            }))
+            .on_click(cx.listener(|this, _, window, cx| this.take_focus(window, cx)))
             .size_full()
             .flex()
             .flex_col()

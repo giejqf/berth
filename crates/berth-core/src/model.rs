@@ -341,6 +341,14 @@ pub struct Snapshot {
     pub created_at: i64,
 }
 
+/// A file the user marked as viewed in the review pane: the change they read,
+/// as its blob ids before and after ("<old>..<new>").
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ViewedFile {
+    pub path: String,
+    pub change: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewCommentRow {
     pub id: String,

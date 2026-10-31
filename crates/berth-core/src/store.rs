@@ -11,8 +11,8 @@ use crate::error::{CoreError, Result};
 use crate::ids::{new_id, now_ms};
 use crate::model::{
     Branch, BranchState, ConnectorRow, Dropped, GhEntityRow, ManualStatus, Node, RawEventRow, Repo,
-    ReviewCommentRow, Round, Slot, SlotState, Snapshot, SnapshotKind, Workflow, WorkflowFacts,
-    WorkflowState, WorkflowView,
+    ReviewCommentRow, Round, Slot, SlotState, Snapshot, SnapshotKind, ViewedFile, Workflow,
+    WorkflowFacts, WorkflowState, WorkflowView,
 };
 
 const MIGRATIONS: &[&str] = &[
@@ -27,6 +27,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0009_message_hops.sql"),
     include_str!("../migrations/0010_slot_numbers.sql"),
     include_str!("../migrations/0011_workflow_status.sql"),
+    include_str!("../migrations/0012_viewed_files.sql"),
 ];
 
 pub struct Store {
@@ -1605,6 +1606,39 @@ impl Store {
             [id],
         )?;
         Ok(())
+    }
+
+    // ---- viewed files ----
+
+    /// Mark `path`'s `change` (its blob ids, "<old>..<new>") viewed in a
+    /// workflow's review, or not.
+    pub fn set_viewed(&self, workflow_id: &str, path: &str, change: &str, on: bool) -> Result<()> {
+        if on {
+            self.conn.execute(
+                "INSERT OR REPLACE INTO viewed_files (workflow_id, path, change, viewed_at) VALUES (?1, ?2, ?3, ?4)",
+                params![workflow_id, path, change, now_ms()],
+            )?;
+        } else {
+            self.conn.execute(
+                "DELETE FROM viewed_files WHERE workflow_id = ?1 AND path = ?2 AND change = ?3",
+                params![workflow_id, path, change],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// The changes a workflow's review marked viewed.
+    pub fn viewed_files(&self, workflow_id: &str) -> Result<Vec<ViewedFile>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT path, change FROM viewed_files WHERE workflow_id = ?1 ORDER BY viewed_at, rowid",
+        )?;
+        let rows = stmt.query_map([workflow_id], |r| {
+            Ok(ViewedFile {
+                path: r.get(0)?,
+                change: r.get(1)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn mark_comments_sent(&self, ids: &[String], node_id: &str) -> Result<()> {

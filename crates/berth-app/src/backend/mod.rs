@@ -187,6 +187,8 @@ impl Shared {
             | Command::DismissMessage { workflow_id, .. }
             | Command::LoadWorkflow { workflow_id }
             | Command::DeleteReviewComment { workflow_id, .. }
+            | Command::SetViewed { workflow_id, .. }
+            | Command::LoadBlob { workflow_id, .. }
             | Command::PostCommentsToPr { workflow_id }
             | Command::LoadDetails { workflow_id, .. }
             | Command::LoadRoundDetails { workflow_id }
@@ -394,6 +396,7 @@ impl Shared {
             Command::LoadWorkflow { workflow_id } => {
                 self.emit_workflow(&workflow_id);
                 self.emit_comments(&workflow_id);
+                self.emit_viewed(&workflow_id);
                 Ok(())
             }
             Command::LoadDiff(req) => {
@@ -430,6 +433,29 @@ impl Shared {
             } => {
                 self.core().store.delete_review_comment(&comment_id)?;
                 self.emit_comments(&workflow_id);
+                Ok(())
+            }
+            Command::SetViewed {
+                workflow_id,
+                path,
+                change,
+                viewed,
+            } => {
+                self.core()
+                    .store
+                    .set_viewed(&workflow_id, &path, &change, viewed)?;
+                self.emit_viewed(&workflow_id);
+                Ok(())
+            }
+            Command::LoadBlob { workflow_id, oid } => {
+                let text = self.load_blob(&workflow_id, &oid).await;
+                if let Err(e) = &text {
+                    tracing::warn!("reading blob {oid}: {e:#}");
+                }
+                self.emit(UiEvent::Blob {
+                    oid,
+                    text: text.ok().flatten().map(Arc::from),
+                });
                 Ok(())
             }
             Command::PostCommentsToPr { workflow_id } => self.post_comments(&workflow_id).await,
@@ -606,6 +632,15 @@ impl Shared {
             self.emit(UiEvent::ReviewComments {
                 workflow_id: workflow_id.to_owned(),
                 comments,
+            });
+        }
+    }
+
+    fn emit_viewed(&self, workflow_id: &str) {
+        if let Ok(files) = self.core().store.viewed_files(workflow_id) {
+            self.emit(UiEvent::Viewed {
+                workflow_id: workflow_id.to_owned(),
+                files,
             });
         }
     }

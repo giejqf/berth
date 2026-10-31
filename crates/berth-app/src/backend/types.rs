@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use berth_core::activity::RoundActivity;
 use berth_core::transcript::TranscriptEntry;
-use berth_core::{Repo, ReviewCommentRow, Slot, Workflow, WorkflowFacts, WorkflowView};
+use berth_core::{Repo, ReviewCommentRow, Slot, ViewedFile, Workflow, WorkflowFacts, WorkflowView};
 use berth_git::DiffStats;
 use berth_protocol::{
     DiffPreset, DiffSide, Effort, FindingAction, FollowUp, ModelChoice, Origin, OriginKind,
@@ -136,6 +136,19 @@ pub enum Command {
     DeleteReviewComment {
         workflow_id: String,
         comment_id: String,
+    },
+    /// Mark a file's change (its blob ids, "<old>..<new>") viewed in the
+    /// review pane, or not.
+    SetViewed {
+        workflow_id: String,
+        path: String,
+        change: String,
+        viewed: bool,
+    },
+    /// A file's text at a blob id, for the lines a hunk leaves out.
+    LoadBlob {
+        workflow_id: String,
+        oid: String,
     },
     PostCommentsToPr {
         workflow_id: String,
@@ -637,6 +650,17 @@ pub enum UiEvent {
     ReviewComments {
         workflow_id: String,
         comments: Vec<ReviewCommentRow>,
+    },
+    /// The file changes a workflow's review marked viewed.
+    Viewed {
+        workflow_id: String,
+        files: Vec<ViewedFile>,
+    },
+    /// A file's text at `oid`; `None` when it isn't text, is too large, or
+    /// couldn't be read.
+    Blob {
+        oid: String,
+        text: Option<Arc<str>>,
     },
     Origins {
         repo_id: String,

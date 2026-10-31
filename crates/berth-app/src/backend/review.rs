@@ -46,7 +46,22 @@ fn is_object_id(s: &str) -> bool {
     matches!(s.len(), 40 | 64) && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// The largest file whose hidden lines a diff shows.
+const BLOB_MAX: usize = 2 << 20;
+
 impl Shared {
+    /// A file's text at a blob id, read in the workflow's slot (where its
+    /// snapshots are); `None` when it isn't text or is too large.
+    pub(super) async fn load_blob(&self, workflow_id: &str, oid: &str) -> Result<Option<String>> {
+        let slot = {
+            let core = self.core();
+            let wf = core.store.workflow(workflow_id)?;
+            core.store.slot(&wf.slot_id)?
+        };
+        let script = self.slot_script(&slot)?;
+        Ok(berth_git::blob_text(&script, oid, BLOB_MAX).await?)
+    }
+
     pub(super) async fn load_diff(&self, req: DiffRequest) -> Result<DiffResult> {
         let (view, slot) = {
             let core = self.core();

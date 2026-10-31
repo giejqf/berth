@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::runner::{check_rev, git_ok};
+use crate::runner::{check_rev, failed, git_ok, run};
 use crate::{GitError, GitRunner};
 
 /// A parsed patch: one entry per changed file, in git's output order.
@@ -148,6 +148,25 @@ impl FileDiff {
 /// Diffs two tree-ish revisions (tree or commit ids/refs) with rename detection.
 pub async fn diff_trees<R: GitRunner>(r: &R, from: &str, to: &str) -> Result<Diff, GitError> {
     parse_diff(&diff_patch(r, from, to).await?)
+}
+
+/// A file's text at a blob id (a [`FileDiff`]'s `old_oid`/`new_oid`), for the
+/// lines a hunk leaves out; `None` when it isn't text or is over `max` bytes.
+pub async fn blob_text<R: GitRunner>(
+    r: &R,
+    oid: &str,
+    max: usize,
+) -> Result<Option<String>, GitError> {
+    check_rev(oid)?;
+    let args = ["cat-file", "blob", oid];
+    let out = run(r, &args, &[]).await?;
+    if !out.success() {
+        return Err(failed(&args, &out));
+    }
+    if out.stdout.len() > max || out.stdout.contains(&0) {
+        return Ok(None);
+    }
+    Ok(String::from_utf8(out.stdout).ok())
 }
 
 /// The raw patch text behind [`diff_trees`], for renderers that parse it themselves.

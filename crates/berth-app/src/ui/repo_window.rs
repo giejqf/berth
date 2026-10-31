@@ -45,7 +45,7 @@ use crate::keymap::{
     OpenHistory, OpenSettings, PrevChange, PrevSlot, RefreshReview, RenameSlot, ReviewBranch,
     ReviewSection, ReviewWorkflow, RewindConversation, RewindTo, RunInBackground, SelectSlot,
     ShowFile, ShowFiles, ShowFindings, ShowReview, ShowTasks, ToggleDiffMode, ToggleRail,
-    ToggleReview,
+    ToggleReview, ToggleReviewSize,
 };
 use crate::keymap::{ClearStatus, MarkDone, MarkNeedsYou, MarkReview, MarkTodo};
 use crate::keymap::{
@@ -79,6 +79,8 @@ pub struct RepoWindow {
     composer: Entity<Composer>,
     review: Entity<ReviewPane>,
     review_open: bool,
+    /// The review pane over the flow, all the window but the rail's strip.
+    review_max: bool,
     /// `Some` when the user collapsed/expanded the rail by hand (⌘⇧R).
     rail_override: Option<bool>,
     modal: Option<(AnyView, FocusHandle, Subscription)>,
@@ -133,6 +135,15 @@ impl RepoWindow {
         let review = cx.new(|cx| ReviewPane::new(state.clone(), window, cx));
         cx.subscribe_in(&state, window, Self::on_repo_event)
             .detach();
+        // Split asked for in a pane too narrow for it: the pane widens.
+        cx.subscribe_in(
+            &review,
+            window,
+            |this, _, _: &super::review_pane::Widen, window, cx| {
+                this.expand_review(true, window, cx);
+            },
+        )
+        .detach();
         cx.observe_in(&state, window, |this, _, window, cx| {
             let shown = this.terminal_slot.clone();
             this.sync_terminal(cx);
@@ -176,6 +187,7 @@ impl RepoWindow {
             composer,
             review,
             review_open: false,
+            review_max: false,
             rail_override: None,
             modal: None,
             closing: None,
@@ -484,6 +496,8 @@ impl RepoWindow {
                 window.push_notification(note, cx);
             }
             RepoEvent::Compose(text) => {
+                // The composer is under an expanded review pane.
+                self.review_max = false;
                 let text = text.clone();
                 self.composer
                     .update(cx, |c, cx| c.set_text(&text, window, cx));
@@ -640,8 +654,25 @@ impl RepoWindow {
         cx.notify();
     }
 
+    /// The review pane over the flow (opening it if closed), or back beside
+    /// it. Expanded, it takes the keys: the flow, the composer and the
+    /// terminal under it are not drawn, and keys sent to them would be lost.
+    fn expand_review(&mut self, max: bool, window: &mut Window, cx: &mut Context<'_, Self>) {
+        if max && !self.review_open {
+            self.set_review(true, cx);
+        }
+        self.review_max = max;
+        if max {
+            self.review.update(cx, |r, cx| r.take_focus(window, cx));
+        }
+        cx.notify();
+    }
+
     fn set_review(&mut self, open: bool, cx: &mut Context<'_, Self>) {
         self.review_open = open;
+        if !open {
+            self.review_max = false;
+        }
         self.state.update(cx, |s, _| s.review_open = open);
         self.review.update(cx, |r, cx| r.set_visible(open, cx));
         cx.notify();
@@ -865,6 +896,9 @@ impl RepoWindow {
             .and_then(|b| b.review_width)
             .unwrap_or(REVIEW_W);
         let beside_strip = clamp_review(want, w - slot_rail::STRIP_W);
+        if self.review_open && self.review_max {
+            return (true, w - slot_rail::STRIP_W);
+        }
         if !self.review_open {
             let collapsed = self.rail_override.unwrap_or(false) || w - RAIL_W < FLOW_MIN_W;
             return (collapsed, beside_strip);
@@ -979,7 +1013,10 @@ impl Render for RepoWindow {
                 .and_then(|t| t.active())
                 .is_some_and(|v| v.focus_handle(cx).contains_focused(window, cx));
         let review_open = self.review_open && has_workflow;
+        let review_max = review_open && self.review_max;
         let (collapsed, review_w) = self.panes(window, cx);
+        self.review
+            .update(cx, |r, cx| r.set_layout(review_w, review_max, cx));
         // The flow's settled width, for what its rows lay out by hand.
         let flow_w = window.viewport_size().width.as_f32()
             - if collapsed {
@@ -1119,6 +1156,10 @@ impl Render for RepoWindow {
             .on_action(
                 cx.listener(|this, _: &ToggleReview, _, cx| this.set_review(!this.review_open, cx)),
             )
+            .on_action(cx.listener(|this, _: &ToggleReviewSize, window, cx| {
+                let max = !(this.review_open && this.review_max);
+                this.expand_review(max, window, cx);
+            }))
             .on_action(cx.listener(|this, _: &ToggleRail, window, cx| {
                 let now = this.rail_collapsed(window, cx);
                 this.rail_override = Some(!now);
@@ -1329,97 +1370,107 @@ impl Render for RepoWindow {
                             .child(self.rail.clone())
                             .into_any_element()
                     })
-                    .child(if has_slots {
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .when(!max, |d| {
-                                d.child(div().flex_1().min_h_0().child(self.flow.clone()))
-                                    .when(has_workflow, |d| d.child(self.composer.clone()))
-                            })
-                            .when(show_panel, |d| {
-                                let panel_el = terminal::panel(
-                                    &t,
-                                    &self.state,
-                                    self.terminal_max,
-                                    !open_layout,
-                                    cx,
-                                );
-                                d.child(
-                                    div()
-                                        .relative()
-                                        .flex_none()
-                                        .border_t_1()
-                                        .border_color(t.border)
-                                        .when(max, |d| d.flex_1().min_h_0())
-                                        .when(!max && !sliding, |d| d.h(px(target)))
-                                        .when(sliding, |d| d.h(px(panel.value)).overflow_hidden())
-                                        .child(if sliding {
-                                            // Its settled height, less the top border.
-                                            let h = if open_layout {
-                                                open_h
-                                            } else {
-                                                px(terminal::HEADER_H)
-                                            };
-                                            div()
-                                                .flex_none()
-                                                .h(h - px(1.))
-                                                .child(panel_el)
-                                                .into_any_element()
-                                        } else {
-                                            panel_el.into_any_element()
-                                        })
-                                        // The panel's top edge resizes it.
-                                        .when(mode == PanelMode::Open && !sliding, |d| {
-                                            d.child(
+                    .when(!review_max, |d| {
+                        d.child(if has_slots {
+                            div()
+                                .flex()
+                                .flex_col()
+                                .flex_1()
+                                .min_w_0()
+                                .h_full()
+                                .when(!max, |d| {
+                                    d.child(div().flex_1().min_h_0().child(self.flow.clone()))
+                                        .when(has_workflow, |d| d.child(self.composer.clone()))
+                                })
+                                .when(show_panel, |d| {
+                                    let panel_el = terminal::panel(
+                                        &t,
+                                        &self.state,
+                                        self.terminal_max,
+                                        !open_layout,
+                                        cx,
+                                    );
+                                    d.child(
+                                        div()
+                                            .relative()
+                                            .flex_none()
+                                            .border_t_1()
+                                            .border_color(t.border)
+                                            .when(max, |d| d.flex_1().min_h_0())
+                                            .when(!max && !sliding, |d| d.h(px(target)))
+                                            .when(sliding, |d| {
+                                                d.h(px(panel.value)).overflow_hidden()
+                                            })
+                                            .child(if sliding {
+                                                // Its settled height, less the top border.
+                                                let h = if open_layout {
+                                                    open_h
+                                                } else {
+                                                    px(terminal::HEADER_H)
+                                                };
                                                 div()
-                                                    .id("terminal-resize")
-                                                    .absolute()
-                                                    .top(px(-3.))
-                                                    .left_0()
-                                                    .right_0()
-                                                    .h(px(6.))
-                                                    .cursor_row_resize()
-                                                    .on_mouse_down(
-                                                        MouseButton::Left,
-                                                        cx.listener(Self::start_terminal_drag),
-                                                    ),
-                                            )
-                                        }),
-                                )
-                            })
-                            .into_any_element()
-                    } else {
-                        empty_repo(&t, cx).into_any_element()
+                                                    .flex_none()
+                                                    .h(h - px(1.))
+                                                    .child(panel_el)
+                                                    .into_any_element()
+                                            } else {
+                                                panel_el.into_any_element()
+                                            })
+                                            // The panel's top edge resizes it.
+                                            .when(mode == PanelMode::Open && !sliding, |d| {
+                                                d.child(
+                                                    div()
+                                                        .id("terminal-resize")
+                                                        .absolute()
+                                                        .top(px(-3.))
+                                                        .left_0()
+                                                        .right_0()
+                                                        .h(px(6.))
+                                                        .cursor_row_resize()
+                                                        .on_mouse_down(
+                                                            MouseButton::Left,
+                                                            cx.listener(Self::start_terminal_drag),
+                                                        ),
+                                                )
+                                            }),
+                                    )
+                                })
+                                .into_any_element()
+                        } else {
+                            empty_repo(&t, cx).into_any_element()
+                        })
                     })
                     .when(review_open || motion::moving(&review), |d| {
-                        // Slides in from the window's right edge.
+                        // Slides in from the window's right edge. Expanded, it
+                        // takes what the rail leaves, as the rail slides shut.
                         let sliding = motion::moving(&review);
+                        let fill = review_max && !sliding;
                         d.child(
                             div()
                                 .relative()
-                                .w(px(if sliding {
-                                    review.value * review_w
-                                } else {
-                                    review_w
-                                }))
-                                .flex_none()
+                                .when(fill, |d| d.flex_1().min_w_0())
+                                .when(!fill, |d| {
+                                    d.flex_none().w(px(if sliding {
+                                        review.value * review_w
+                                    } else {
+                                        review_w
+                                    }))
+                                })
                                 .h_full()
                                 .overflow_hidden()
-                                .child(
+                                .child(if fill {
+                                    div().size_full().child(self.review.clone())
+                                } else {
                                     div()
                                         .absolute()
                                         .top_0()
                                         .right_0()
                                         .bottom_0()
                                         .w(px(review_w))
-                                        .child(self.review.clone()),
-                                )
+                                        .child(self.review.clone())
+                                })
                                 // Its left edge resizes it.
-                                .when(!sliding, |d| {
+                                .when(!sliding && !review_max, |d| {
                                     d.child(
                                         div()
                                             .id("review-resize")

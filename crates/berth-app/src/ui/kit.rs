@@ -678,6 +678,26 @@ pub fn radio(t: &Tokens, checked: bool, size: f32) -> Div {
     }
 }
 
+/// A checkbox drawn to match `radio`: a rounded square, filled with a check
+/// when checked.
+pub fn checkbox(t: &Tokens, checked: bool, size: f32) -> Div {
+    let base = div()
+        .size(px(size))
+        .flex_none()
+        .rounded(px(3.))
+        .flex()
+        .items_center()
+        .justify_center();
+    if checked {
+        base.bg(t.accent)
+            .child(icon("check-bold", size - 4., t.on_accent))
+    } else {
+        base.border_1()
+            .border_color(t.text3)
+            .bg(if t.dark { t.raised } else { gpui::white() })
+    }
+}
+
 // ---- time ----
 
 /// "12:02" in local time.
