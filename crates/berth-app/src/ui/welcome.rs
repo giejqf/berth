@@ -120,6 +120,7 @@ fn check_row(
                 .flex_col()
                 .gap(px(1.))
                 .flex_1()
+                .min_w_0()
                 .child(div().medium().child(name.to_owned()))
                 .child(div().ty(ty::META).text_color(t.text2).child(detail)),
         )
