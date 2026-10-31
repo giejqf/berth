@@ -829,7 +829,13 @@ settles nothing (ADR 0013).
   slot's (its agent working, or the slot being created or destroyed) is the working
   spinner, in the rail and its collapsed strip alike. The same tile leads the flow
   header's title, a message's peer and the Reuse a slot list; ⌘1–9 go to that slot,
-  in whichever window has it. **Links** (ADR 0027, `ui/slot_links.rs`): lines in the
+  in whichever window has it. **Swiping** (`ui/slot_swipe.rs`): two fingers sideways
+  over the flow and the composer go to the rail's next slot (the content pushed left,
+  as pages go forward) or its previous one, wrapping as ⌘⇧] ⌘⇧[ do. A card at that
+  edge names the slot and comes in with the fingers; letting go past 110pt goes
+  there, before it nothing happens. One slot per swipe; a swipe read as sideways
+  doesn't scroll the flow, and its momentum, a mouse's wheel and vertical scrolls
+  stay the flow's. **Links** (ADR 0027, `ui/slot_links.rs`): lines in the
   gutter left of the tiles join related slots, in the rail and the strip alike: solid,
   with an arrow into it, from a slot to one made from it (one of its follow-ups, or a
   slot its agent asked for; `workflows.from_workflow_id`), dotted between slots whose
@@ -1116,7 +1122,8 @@ settles nothing (ADR 0013).
   `BERTH_DEV_SLOW_MOTION=<factor>` stretches every animation so a shot can catch
   one midway; `draw <label>` forces a frame and logs how long it took (profile a
   release build: `cargo build --release -p berth-app --features devtools`); `fake_node <title>` appends a just-recorded decision (view only); `scroll <dy> [x y]`
-  scrolls the flow, or whatever is at `x y`.
+  scrolls the flow, or whatever is at `x y`; `swipe <dx> [x y]` swipes sideways
+  (`swipe_hold` keeps the fingers down for a shot, `swipe_end` lifts them).
   Without a display link (display asleep) the window draws only when `shot` or
   `keys` forces it. Screenshots can then trail an `action` by a step, and an action
   sent right after its target appeared is routed against a frame without it and

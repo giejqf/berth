@@ -353,24 +353,26 @@ impl RepoState {
         v
     }
 
-    /// Move the selection `delta` rows down the rail (wrapping).
-    pub fn select_relative(&mut self, delta: isize, cx: &mut Context<'_, Self>) {
-        let order: Vec<String> = self
-            .rail_order()
-            .iter()
-            .map(|e| e.slot.id.clone())
-            .collect();
+    /// The slot `delta` rows down the rail from the selected one (wrapping).
+    pub fn relative(&self, delta: isize) -> Option<&SlotEntry> {
+        let order = self.rail_order();
         if order.is_empty() {
-            return;
+            return None;
         }
         let len = order.len() as isize;
         let current = self
             .selected_slot
             .as_ref()
-            .and_then(|id| order.iter().position(|s| s == id))
+            .and_then(|id| order.iter().position(|e| &e.slot.id == id))
             .map_or(0, |i| i as isize);
-        let next = (current + delta).rem_euclid(len) as usize;
-        self.select_slot(order[next].clone(), cx);
+        Some(order[(current + delta).rem_euclid(len) as usize])
+    }
+
+    /// Move the selection `delta` rows down the rail (wrapping).
+    pub fn select_relative(&mut self, delta: isize, cx: &mut Context<'_, Self>) {
+        if let Some(id) = self.relative(delta).map(|e| e.slot.id.clone()) {
+            self.select_slot(id, cx);
+        }
     }
 
     /// ⌘1–9: the repo's slot numbered `n`, whichever window shows it.

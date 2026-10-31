@@ -14,7 +14,7 @@ use gpui::{
     AnyView, App, AppContext as _, Context, CursorStyle, DismissEvent, DragMoveEvent, Entity,
     EntityId, EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render,
-    SharedString, Styled as _, Subscription, Window, canvas, div, point,
+    ScrollWheelEvent, SharedString, Styled as _, Subscription, Window, canvas, div, point,
     prelude::FluentBuilder as _, px,
 };
 use gpui_component::notification::Notification;
@@ -34,6 +34,7 @@ use super::repo_state::RepoEvent;
 use super::review_pane::ReviewPane;
 use super::settings::SettingsForm;
 use super::slot_rail::{self, SlotRail};
+use super::slot_swipe;
 use super::terminal::{self, TerminalEvent, TerminalView};
 use super::windows::{Dragged, SlotDrag, WindowDrag};
 use super::{RepoState, details};
@@ -110,6 +111,8 @@ pub struct RepoWindow {
     terminal_shown: PanelMode,
     terminal_was: PanelMode,
     terminal_moved: Option<Instant>,
+    /// A trackpad swipe over the flow, going to another slot.
+    swipe: slot_swipe::Swipe,
 }
 
 /// What the terminal panel shows.
@@ -205,6 +208,7 @@ impl RepoWindow {
             terminal_shown: PanelMode::Hidden,
             terminal_was: PanelMode::Hidden,
             terminal_moved: None,
+            swipe: slot_swipe::Swipe::default(),
         }
     }
 
@@ -384,6 +388,24 @@ impl RepoWindow {
             }
         }
         cx.notify();
+    }
+
+    /// A scroll over the flow and the composer: a sideways swipe let go far
+    /// enough goes to the next or previous slot. Whether to keep it from the
+    /// flow (`slot_swipe`).
+    fn swipe(&mut self, e: &ScrollWheelEvent, cx: &mut Context<'_, Self>) -> bool {
+        if self.state.read(cx).slots.len() < 2 {
+            self.swipe = slot_swipe::Swipe::default();
+            return false;
+        }
+        let was = self.swipe.progress();
+        if let Some(step) = self.swipe.scroll(e) {
+            self.state.update(cx, |s, cx| s.select_relative(step, cx));
+        }
+        if self.swipe.progress() != was {
+            cx.notify();
+        }
+        self.swipe.sideways()
     }
 
     fn cycle_terminal(&mut self, step: isize, window: &mut Window, cx: &mut Context<'_, Self>) {
@@ -1000,6 +1022,10 @@ impl Render for RepoWindow {
         let state = self.state.read(cx);
         let has_slots = !state.slots.is_empty();
         let has_workflow = state.selected_view().is_some();
+        let swipe_hint = self.swipe.progress().and_then(|p| {
+            let to = state.relative(if p > 0. { 1 } else { -1 })?;
+            (state.selected_slot.as_ref() != Some(&to.slot.id)).then(|| slot_swipe::hint(&t, to, p))
+        });
         let show_terminal = self.terminal_open && state.selected().is_some();
         let mode = match (show_terminal, self.terminal_collapsed, self.terminal_max) {
             (false, ..) => PanelMode::Hidden,
@@ -1379,8 +1405,27 @@ impl Render for RepoWindow {
                                 .min_w_0()
                                 .h_full()
                                 .when(!max, |d| {
-                                    d.child(div().flex_1().min_h_0().child(self.flow.clone()))
-                                        .when(has_workflow, |d| d.child(self.composer.clone()))
+                                    // Two fingers sideways here go to another slot.
+                                    d.child(
+                                        div()
+                                            .relative()
+                                            .flex()
+                                            .flex_col()
+                                            .flex_1()
+                                            .min_h_0()
+                                            .child(slot_swipe::listen({
+                                                let this = cx.entity().downgrade();
+                                                move |e, _, cx| {
+                                                    this.update(cx, |this, cx| this.swipe(e, cx))
+                                                        .unwrap_or(false)
+                                                }
+                                            }))
+                                            .child(
+                                                div().flex_1().min_h_0().child(self.flow.clone()),
+                                            )
+                                            .when(has_workflow, |d| d.child(self.composer.clone()))
+                                            .children(swipe_hint),
+                                    )
                                 })
                                 .when(show_panel, |d| {
                                     let panel_el = terminal::panel(

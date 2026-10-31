@@ -28,6 +28,9 @@
 //! mouse_up -200 300
 //! hover 400 700 cmd          # move with no button down; a trailing `cmd` (any mouse
 //!                             #   command) holds ⌘
+//! swipe -160 [x y]            # two fingers sideways on the trackpad (negative: content
+//! swipe_hold -160             #   pushed left), let go; _hold keeps them down for a shot
+//! swipe_end                   #   and _end lifts them
 //! quit
 //! ```
 
@@ -222,6 +225,43 @@ pub fn start(cx: &mut App) {
                             }),
                             cx,
                         );
+                        window.draw(cx).clear(cx);
+                    });
+                }),
+                // A trackpad swipe sideways: touch, eight moves, and (but
+                // for `swipe_hold`) the fingers lift; `swipe_end` lifts them.
+                "swipe" | "swipe_hold" | "swipe_end" => cx.update(|cx| {
+                    let v: Vec<f32> = arg
+                        .split_whitespace()
+                        .filter_map(|s| s.parse().ok())
+                        .collect();
+                    let dx = v.first().copied().unwrap_or(-160.0);
+                    with_window(cx, |window, cx| {
+                        let size = window.viewport_size();
+                        let position = match (v.get(1), v.get(2)) {
+                            (Some(&x), Some(&y)) => gpui::point(gpui::px(x), gpui::px(y)),
+                            _ => gpui::point(size.width * 0.5, size.height * 0.4),
+                        };
+                        let event = |phase, dx: f32| {
+                            gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                                position,
+                                delta: gpui::ScrollDelta::Pixels(gpui::point(
+                                    gpui::px(dx),
+                                    gpui::px(0.),
+                                )),
+                                modifiers: gpui::Modifiers::default(),
+                                touch_phase: phase,
+                            })
+                        };
+                        if cmd != "swipe_end" {
+                            window.dispatch_event(event(gpui::TouchPhase::Started, 0.), cx);
+                            for _ in 0..8 {
+                                window.dispatch_event(event(gpui::TouchPhase::Moved, dx / 8.), cx);
+                            }
+                        }
+                        if cmd != "swipe_hold" {
+                            window.dispatch_event(event(gpui::TouchPhase::Ended, 0.), cx);
+                        }
                         window.draw(cx).clear(cx);
                     });
                 }),

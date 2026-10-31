@@ -27,6 +27,7 @@ mod settings;
 mod sign_in;
 mod slot_links;
 mod slot_rail;
+mod slot_swipe;
 mod syntax;
 mod tasks;
 mod terminal;
