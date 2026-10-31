@@ -1,106 +1,46 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="50 30 440 560" width="440" height="560">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 199 233" width="199" height="233">
   <title>Berth</title>
-  <!-- The Berth mark: five strands braid together over an open ring with
-       three marks inside it. Strands are 28 wide, 50.5 apart; a strand
-       that passes under another stops 5 short of it. The ring is an outer
-       and a deeper inner band, 40 each, round (270, 375). Coordinates follow
-       the 538×602 artwork it was drawn from. -->
+  <!-- The Berth mark: a B drawn as circuit traces. Coordinates follow the
+       original 199×233 logo.png; strokes are 7.4 wide, 23.5 apart. -->
   <defs>
-    <linearGradient id="a" gradientUnits="userSpaceOnUse" x1="0" y1="225" x2="0" y2="275">
-      <stop offset="0" stop-color="#1496f2"/>
-      <stop offset="1" stop-color="#1677c2"/>
+    <linearGradient id="trace" gradientUnits="userSpaceOnUse" x1="10" y1="8.4" x2="223.2" y2="187.3">
+      <stop offset="0" stop-color="#3cf4f4"/>
+      <stop offset="0.15" stop-color="#3ff1f1"/>
+      <stop offset="0.25" stop-color="#4aebf0"/>
+      <stop offset="0.35" stop-color="#5edbee"/>
+      <stop offset="0.45" stop-color="#71cbf0"/>
+      <stop offset="0.55" stop-color="#88b9ef"/>
+      <stop offset="0.65" stop-color="#9aaeef"/>
+      <stop offset="0.75" stop-color="#aaa5ef"/>
+      <stop offset="0.85" stop-color="#b19eef"/>
+      <stop offset="1" stop-color="#b99aef"/>
     </linearGradient>
-    <linearGradient id="mid" gradientUnits="userSpaceOnUse" x1="0" y1="49" x2="0" y2="380">
-      <stop offset="0" stop-color="#28c4da"/>
-      <stop offset="0.65" stop-color="#22b8d8"/>
-      <stop offset="1" stop-color="#2780cb"/>
-    </linearGradient>
-    <linearGradient id="e" gradientUnits="userSpaceOnUse" x1="0" y1="225" x2="0" y2="275">
-      <stop offset="0" stop-color="#2aedd5"/>
-      <stop offset="1" stop-color="#1aa9b0"/>
-    </linearGradient>
-    <linearGradient id="leg" gradientUnits="userSpaceOnUse" x1="0" y1="250" x2="0" y2="380">
-      <stop offset="0" stop-color="#1a6fae"/>
-      <stop offset="0.3" stop-color="#2a8de8"/>
-      <stop offset="1" stop-color="#6c6bd2"/>
-    </linearGradient>
-    <linearGradient id="stem" gradientUnits="userSpaceOnUse" x1="0" y1="292" x2="0" y2="393">
-      <stop offset="0" stop-color="#1982a2"/>
-      <stop offset="0.35" stop-color="#1da6c2"/>
-      <stop offset="1" stop-color="#2091b8"/>
-    </linearGradient>
-    <linearGradient id="arm" gradientUnits="userSpaceOnUse" x1="0" y1="295" x2="0" y2="335">
-      <stop offset="0" stop-color="#0f62ab"/>
-      <stop offset="1" stop-color="#1673bf"/>
-    </linearGradient>
-    <linearGradient id="bar-b" gradientUnits="userSpaceOnUse" x1="0" y1="45" x2="0" y2="182">
-      <stop offset="0" stop-color="#26d0ee"/>
-      <stop offset="1" stop-color="#1ea8f2"/>
-    </linearGradient>
-    <linearGradient id="ring" gradientUnits="userSpaceOnUse" x1="0" y1="255" x2="0" y2="585">
-      <stop offset="0" stop-color="#5c41bc"/>
-      <stop offset="0.136" stop-color="#7444b8"/>
-      <stop offset="0.409" stop-color="#ad4fa2"/>
-      <stop offset="0.561" stop-color="#c55e8c"/>
-      <stop offset="0.712" stop-color="#de7277"/>
-      <stop offset="0.833" stop-color="#e98961"/>
-      <stop offset="0.939" stop-color="#f49749"/>
-      <stop offset="1" stop-color="#fba14b"/>
-    </linearGradient>
-    <linearGradient id="ring-in" gradientUnits="userSpaceOnUse" x1="0" y1="280" x2="0" y2="525">
-      <stop offset="0" stop-color="#432a87"/>
-      <stop offset="0.441" stop-color="#733991"/>
-      <stop offset="0.596" stop-color="#994c92"/>
-      <stop offset="0.739" stop-color="#bb587e"/>
-      <stop offset="0.890" stop-color="#c6666f"/>
-      <stop offset="1" stop-color="#d1735f"/>
-    </linearGradient>
-    <linearGradient id="warm" x1="1" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#8c49b0"/>
-      <stop offset="1" stop-color="#ee8253"/>
-    </linearGradient>
-    <linearGradient id="cool" x1="1" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#25c6d4"/>
-      <stop offset="1" stop-color="#3a72db"/>
-    </linearGradient>
-    <linearGradient id="drop" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#7a45c1"/>
-      <stop offset="0.5" stop-color="#c05991"/>
-      <stop offset="1" stop-color="#f09656"/>
+    <linearGradient id="core" x1="0.2" y1="0.15" x2="0.85" y2="0.9">
+      <stop offset="0" stop-color="#36eef8"/>
+      <stop offset="0.5" stop-color="#5fbff9"/>
+      <stop offset="1" stop-color="#a38af8"/>
     </linearGradient>
   </defs>
-  <g fill="none" stroke-linecap="round">
-    <!-- The open ring: an outer band and a deeper inner one. -->
-    <path d="M117.7 261.5A190 190 0 1 0 422.3 261.5" stroke="url(#ring)" stroke-width="40"/>
-    <path d="M149.7 285.4A150 150 0 1 0 390.3 285.4" stroke="url(#ring-in)" stroke-width="40"/>
-    <!-- The two hollow strands, each with its level. -->
-    <rect x="208.5" y="38" width="22" height="176" rx="11" fill="#2a86d6" fill-opacity="0.22" stroke="#2a86d6" stroke-opacity="0.5" stroke-width="6"/>
-    <rect x="309.5" y="38" width="22" height="176" rx="11" fill="#2fd6c6" fill-opacity="0.16" stroke="#2fd6c6" stroke-opacity="0.42" stroke-width="6"/>
-    <path d="M219.5 51V176" stroke="url(#bar-b)" stroke-width="12"/>
-    <path d="M320.5 51V127" stroke="#31e4d2" stroke-width="12"/>
+  <g fill="none" stroke="url(#trace)" stroke-width="7.4" stroke-linejoin="miter" stroke-miterlimit="4">
+    <!-- Left bar, the J at the bottom, the inner B. -->
+    <path d="M12.5 9.8V222.5A65 65 0 0 0 59.5 160V60.5H123A15.5 15.5 0 0 1 123 91.5H102.3A26 26 0 0 0 102.3 143.5H123A15.55 15.55 0 0 1 123 174.6H68.8"/>
+    <!-- Outer B: second bar, top, both bowls, bottom. -->
+    <path d="M36.1 76.5V13.5H126A61.5 61.5 0 0 1 171 117A62 62 0 0 1 125.5 221H51.6"/>
+    <!-- Traces: from the top node around to the core, and from the core
+         down through a node to the bottom one. -->
+    <path d="M85 37H122.25A40.25 40.25 0 0 1 122.25 117.5H108"/>
+    <path d="M108 117.5H122.4A41 41 0 0 1 162.85 151.8"/>
+    <path d="M162.8 165.2A39 39 0 0 1 124.4 197.5H86.7"/>
+    <!-- Nodes. -->
+    <circle cx="36" cy="83" r="6.5"/>
+    <circle cx="78.5" cy="37" r="6.5"/>
+    <circle cx="163.4" cy="158.5" r="6.7"/>
+    <circle cx="80" cy="197.5" r="6.7"/>
   </g>
-  <g fill="none" stroke-width="28">
-    <!-- The outer strands bend in and pass under the legs. -->
-    <path d="M169 49V215C169 234.7 178.1 248.6 200.8 267.8" stroke="url(#a)"/>
-    <path d="M371 49V215C371 234.7 361.9 248.6 339.2 267.8" stroke="url(#e)"/>
-    <!-- The left leg comes out from under the middle strand. -->
-    <path d="M257 251.5C237.6 267.9 203.5 278.5 203.5 305V366" stroke="url(#leg)"/>
-    <!-- The middle strand becomes the right leg. -->
-    <path d="M270 49V228C270 262 336.5 268 336.5 305V366" stroke="url(#mid)" stroke-linecap="round"/>
-    <!-- The Y: its left arm and its stem, from under the legs. -->
-    <path d="M232 298.1C242 307.4 252 317.5 262 330" stroke="url(#arm)" stroke-width="24"/>
-    <path d="M300.2 292.2C281.3 305.7 270 320.2 270 346V379" stroke="url(#stem)"/>
+  <g fill="url(#trace)">
+    <!-- Second bar below its node, and the bottom's end, both cut along the J. -->
+    <path d="M32.4 89.5H39.8V185.6L32.4 191Z"/>
+    <path d="M51.6 217.3H53V224.7H44.2Z"/>
   </g>
-  <!-- Round ends where a strand doesn't pass under another. -->
-  <circle cx="169" cy="49" r="14" fill="#1496f2"/>
-  <circle cx="371" cy="49" r="14" fill="#2aedd5"/>
-  <circle cx="203.5" cy="366" r="14" fill="#6c6bd2"/>
-  <circle cx="270" cy="379" r="14" fill="#2091b8"/>
-  <!-- Dots and the three marks in the ring. -->
-  <circle cx="221.5" cy="240" r="6.5" fill="#2ad3e7"/>
-  <circle cx="161" cy="379" r="8" fill="#8878eb"/>
-  <circle cx="379" cy="379" r="8" fill="#26d9da"/>
-  <circle cx="203.5" cy="415" r="21.5" fill="url(#warm)"/>
-  <circle cx="336.5" cy="415" r="21.5" fill="url(#cool)"/>
-  <rect x="252" y="407" width="36" height="71" rx="18" fill="url(#drop)"/>
+  <circle cx="102.3" cy="117.4" r="13.9" fill="url(#core)"/>
 </svg>
