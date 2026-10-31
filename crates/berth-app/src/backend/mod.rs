@@ -2,6 +2,7 @@
 //! slot scripts, git, `gh`, and sidecars, and executes the engine's effects.
 //! Views talk to it only through [`Command`]s and [`UiEvent`]s.
 
+mod agent_sdk;
 mod awake;
 mod env;
 mod files;
@@ -69,6 +70,10 @@ pub(crate) struct Shared {
     env_checked: Mutex<Option<std::time::Instant>>,
     /// Why agents on this Mac can't run, as the last check found.
     agents_blocked: Mutex<Option<(&'static str, AgentFix)>>,
+    /// What the last check found, for the download's progress to update.
+    env_last: Mutex<Option<EnvStatus>>,
+    /// Installs the Claude Agent SDK and Claude Code (ADR 0029).
+    installer: agent_sdk::Installer,
     /// The diffs computed last, by the objects they compare.
     diff_cache: Mutex<review::DiffCache>,
     /// Sessions to restart once their round ends: Claude Code signed in as
@@ -118,6 +123,8 @@ pub fn start(rt: &tokio::runtime::Handle, ui: UnboundedSender<UiEvent>) -> Resul
         ui,
         env_checked: Mutex::default(),
         agents_blocked: Mutex::default(),
+        env_last: Mutex::default(),
+        installer: agent_sdk::Installer::default(),
         diff_cache: Mutex::default(),
         restart_after_round: Mutex::default(),
         tasks: Mutex::default(),
@@ -128,6 +135,10 @@ pub fn start(rt: &tokio::runtime::Handle, ui: UnboundedSender<UiEvent>) -> Resul
         via_proxy: Mutex::default(),
     });
     shared.reload_connectors();
+    {
+        let _rt = rt.enter();
+        shared.install_agent();
+    }
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Command>();
     rt.spawn(async move {
@@ -547,6 +558,7 @@ impl Shared {
                 Ok(())
             }
             Command::CheckEnvironment => {
+                self.install_agent();
                 self.check_environment().await;
                 Ok(())
             }

@@ -77,6 +77,8 @@ impl Shared {
                 ),
             });
         }
+        // Berth.app's first agent waits for the SDK and Claude Code to download.
+        self.agent_installed(host).await?;
         let checkout = slot
             .checkout_path
             .clone()

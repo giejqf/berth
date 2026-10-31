@@ -61,7 +61,7 @@ agent_placement = "host"          # "host" | "inside"
 | `BERTH_SLOT_STATE` | private writable directory for this slot |
 | `BERTH_BASE_REF` | ref to branch from |
 | `BERTH_BRANCH` | branch to create or check out |
-| `BERTH_SIDECAR_BUNDLE` | path of the sidecar bundle on the host |
+| `BERTH_SIDECAR_BUNDLE` | path of the sidecar bundle on the host (`sidecar.mjs` and the Claude Agent SDK beside it) |
 | `BERTH_FORWARD_ENV` | space-separated names of the extra variables below |
 | *(connector secrets)* | e.g. `LINEAR_API_KEY`; forward them, never log them |
 

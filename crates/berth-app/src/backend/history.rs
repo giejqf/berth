@@ -23,7 +23,10 @@ const LIST_TIMEOUT: Duration = Duration::from_secs(20);
 impl Shared {
     pub(super) async fn load_history(self: &Arc<Self>, repo_id: &str) -> Result<()> {
         let repo_path = self.repo_path(repo_id)?;
-        let listed = self.list_sessions(&repo_path).await;
+        let listed = match self.agent_installed(false).await {
+            Ok(()) => self.list_sessions(&repo_path).await,
+            Err(e) => Err(e),
+        };
         let (sessions, unlisted) = match listed {
             Ok(s) => (s, None),
             Err(e) => {
@@ -72,7 +75,7 @@ impl Shared {
     /// (`renameSession`, ADR 0016), or its workflow's title when the name was
     /// cleared. Best effort: only where the transcript is on this Mac (a host
     /// slot), and a failure is only logged.
-    pub(super) async fn retitle_session(&self, slot: &Slot) {
+    pub(super) async fn retitle_session(self: &Arc<Self>, slot: &Slot) {
         if slot.placement == Placement::Inside.as_str() {
             return;
         }
@@ -93,6 +96,7 @@ impl Shared {
             .clone()
             .unwrap_or_else(|| wf.origin.title.clone());
         let renamed = async {
+            self.agent_installed(false).await?;
             let mut cmd = self.launch.command()?;
             cmd.current_dir(&dir);
             let (sidecar, mut events) = Sidecar::spawn(cmd)?;

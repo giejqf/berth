@@ -390,12 +390,21 @@ impl Shared {
         }
         let script = self.slot_script(&slot)?;
         std::fs::create_dir_all(paths::slot_state_dir(&slot.id))?;
-        let created = match script.create().await {
-            Ok(out) => {
-                self.core().store.set_slot_checkout(&slot.id, &out.path)?;
-                self.wait_until_ready(&slot.id, &script).await
-            }
-            Err(e) => Err(anyhow!("slot creation failed: {e}")),
+        // An `inside` slot's script may copy the sidecar bundle in (§6.1).
+        let bundle = if slot.placement == Placement::Inside.as_str() {
+            self.agent_installed(false).await
+        } else {
+            Ok(())
+        };
+        let created = match bundle {
+            Err(e) => Err(e),
+            Ok(()) => match script.create().await {
+                Ok(out) => {
+                    self.core().store.set_slot_checkout(&slot.id, &out.path)?;
+                    self.wait_until_ready(&slot.id, &script).await
+                }
+                Err(e) => Err(anyhow!("slot creation failed: {e}")),
+            },
         };
         match created {
             Ok(()) => {

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
-use super::launch::{NODE_MIN_MAJOR, NODE_MISSING, find_node, version, which};
+use super::launch::{NODE_MIN_MAJOR, NODE_MISSING, SidecarLaunch, find_node, version, which};
 use super::types::{AgentFix, EnvStatus, LoginMethod, ToolState, ToolStatus, UiEvent};
 use super::{Shared, lock};
 
@@ -19,9 +19,16 @@ impl Shared {
     /// restarts the agent sessions on this Mac (ADR 0017).
     pub(super) async fn check_environment(self: &Arc<Self>) {
         *lock(&self.env_checked) = Some(Instant::now());
-        let claude = claude_binary(&self.launch.bundle_dir);
+        // Still downloading (ADR 0029): how far it got, not a `claude` on PATH.
+        let installing = self.install_status();
+        let claude = claude_binary(&self.launch);
         let ((claude, auth), node, gh, docker) = tokio::join!(
-            check_claude(claude),
+            async {
+                match installing {
+                    Some(s) => (s, None),
+                    None => check_claude(claude).await,
+                }
+            },
             check_node(),
             check_gh(),
             check_docker()
@@ -45,6 +52,7 @@ impl Shared {
             via_provider: provider.is_openai(),
         };
         *lock(&self.agents_blocked) = env.agents_blocked();
+        *lock(&self.env_last) = Some(env.clone());
         self.emit(UiEvent::Environment(Box::new(env)));
     }
 
@@ -80,7 +88,7 @@ impl Shared {
                 .await;
             }
             ("claude", false) => {
-                if let Some(bin) = claude_binary(&self.launch.bundle_dir) {
+                if let Some(bin) = claude_binary(&self.launch) {
                     run(&bin, &["auth", "logout"]).await;
                 }
             }
@@ -95,8 +103,9 @@ impl Shared {
     /// the old one). Berth sees the result when one of its windows comes back
     /// to the front.
     pub(super) async fn claude_sign_in(self: &Arc<Self>, method: LoginMethod) -> Result<()> {
-        let bin = claude_binary(&self.launch.bundle_dir)
-            .map_or_else(|| "claude".to_owned(), |p| shell_quote(&p));
+        self.agent_installed(true).await?;
+        let bin =
+            claude_binary(&self.launch).map_or_else(|| "claude".to_owned(), |p| shell_quote(&p));
         open_in_terminal(&format!("{bin} auth login {}", method.flag()))?;
         self.check_environment().await;
         Ok(())
@@ -142,15 +151,16 @@ struct AuthSeen {
     identity: String,
 }
 
-/// The `claude` the sidecar would use: `$BERTH_CLAUDE_PATH`, the one next to
-/// the sidecar bundle, the SDK's own (dev), then `$PATH`.
-pub(super) fn claude_binary(bundle_dir: &Path) -> Option<PathBuf> {
+/// The `claude` the sidecar would use: `$BERTH_CLAUDE_PATH`, the one
+/// Berth.app installed (ADR 0029), the SDK's own (dev), then `$PATH`.
+pub(super) fn claude_binary(launch: &SidecarLaunch) -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("BERTH_CLAUDE_PATH") {
         return Some(PathBuf::from(p));
     }
-    let beside = bundle_dir.join("claude");
-    if beside.is_file() {
-        return Some(beside);
+    if let Some(install) = &launch.install
+        && install.claude_ready()
+    {
+        return Some(install.claude());
     }
     let pnpm = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../sidecar/node_modules/.pnpm");
     if let Ok(entries) = std::fs::read_dir(&pnpm) {

@@ -5,9 +5,8 @@
 // tool calls, branch attribution from the stream, and the nudge loop.
 
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readFileSync, statSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 
 import {
   query as sdkQuery,
@@ -131,11 +130,9 @@ export type QueryFn = (params: { prompt: AsyncIterable<SDKUserMessage>; options:
 
 export const defaultQuery: QueryFn = (params) => sdkQuery(params);
 
-/** `BERTH_CLAUDE_PATH`, else a `claude` shipped next to the bundle, else the SDK's own binary. */
+/** `BERTH_CLAUDE_PATH` (the app sets it to the Claude Code it installed), else the SDK's own binary. */
 export function claudePath(): string | undefined {
-  if (process.env.BERTH_CLAUDE_PATH) return process.env.BERTH_CLAUDE_PATH;
-  const bundled = join(dirname(fileURLToPath(import.meta.url)), "claude");
-  return existsSync(bundled) ? bundled : undefined;
+  return process.env.BERTH_CLAUDE_PATH || undefined;
 }
 
 type TerminalTool = "ask_user" | "present_review" | "write_summary" | "record_outcome" | "reply";

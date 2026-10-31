@@ -20,7 +20,8 @@ Download the disk image for your Mac from
 [Releases](https://github.com/giejqf/berth/releases) (`arm64` for Apple silicon,
 `x86_64` for Intel), open it, and drag Berth into Applications. Berth isn't
 notarized yet, so the first launch needs System Settings › Privacy & Security ›
-**Open Anyway**.
+**Open Anyway**. On first launch Berth downloads the Claude Agent SDK and Claude
+Code (about 120 MB) from npm: they are Anthropic's, and not part of Berth.
 
 ## Quick start
 
@@ -59,5 +60,6 @@ keep experiments out of your real data.
 ## License
 
 MIT. The app also ships third-party software under its own licenses, listed in
-[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md); the Claude Agent SDK and Claude Code
-are distributed under Anthropic's terms.
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). The Claude Agent SDK and Claude
+Code are not part of it: Berth downloads them from npm, under Anthropic's terms
+([ADR 0029](docs/adr/0029-downloading-the-claude-agent-sdk.md)).

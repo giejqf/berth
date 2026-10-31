@@ -50,6 +50,13 @@ jobs:
           test -L "$mnt/Applications"
           codesign --verify --strict "$mnt/Berth.app"
           test -f "$mnt/Berth.app/Contents/Resources/Berth.icns"
+          # Nothing of Anthropic's in the image: the app downloads it (ADR 0029).
+          sidecar="$mnt/Berth.app/Contents/Resources/sidecar"
+          test -f "$sidecar/claude-agent-sdk.json"
+          test ! -e "$sidecar/claude"
+          if grep -q CLAUDE_AGENT_SDK_VERSION "$sidecar/sidecar.mjs"; then
+            echo "the Claude Agent SDK is bundled into sidecar.mjs"; exit 1
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: dmg-${{ matrix.runner }}

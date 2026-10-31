@@ -102,7 +102,7 @@ make_checkout() {
 }
 
 # Docker Desktop shares only some host paths by default; copy the bundle when its
-# path is outside them (e.g. /Applications/Berth.app/...).
+# path is outside them (a BERTH_HOME elsewhere).
 bundle_is_shareable() {
     case $BERTH_SIDECAR_BUNDLE in
     /Users/* | /Volumes/* | /private/* | /tmp/* | /var/folders/*) return 0 ;;

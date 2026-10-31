@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 
+use super::agent_sdk::Install;
+
 /// The oldest Node.js the sidecar runs on (AGENTS.md §4).
 pub const NODE_MIN_MAJOR: u32 = 22;
 
@@ -19,20 +21,26 @@ pub struct SidecarLaunch {
     pub bundle_dir: PathBuf,
     /// `program` is `node`, found again for each sidecar ([`find_node`]).
     pub node: bool,
+    /// Berth.app's sidecar runs from Application Support, beside the Claude
+    /// Agent SDK the app installs there (ADR 0029).
+    pub install: Option<Install>,
 }
 
 impl SidecarLaunch {
     /// Resolution order: `$BERTH_SIDECAR` (a command line), the app bundle's
-    /// `Contents/Resources/sidecar`, the workspace's built `sidecar/dist`, and
-    /// finally the workspace sources via `tsx` (dev).
+    /// `Contents/Resources/sidecar` (run from its copy in Application
+    /// Support), the workspace's built `sidecar/dist`, and finally the
+    /// workspace sources via `tsx` (dev).
     #[must_use]
     pub fn resolve() -> Self {
         let node = PathBuf::from("node");
         let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../sidecar");
-        let bundled = std::env::current_exe()
+        let install = std::env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().map(|d| d.join("../Resources/sidecar")))
-            .filter(|d| d.join("sidecar.mjs").exists());
+            .filter(|d| d.join("sidecar.mjs").exists())
+            .and_then(|d| Install::read(&d, &berth_core::paths::app_support_dir().join("sidecar")));
+        let bundled = install.as_ref().map(|i| i.bundle_dir.clone());
         let dist = workspace.join("dist");
         let bundle_dir = bundled.clone().unwrap_or_else(|| dist.clone());
 
@@ -44,6 +52,7 @@ impl SidecarLaunch {
                     args: parts.collect(),
                     bundle_dir,
                     node: false,
+                    install,
                 };
             }
         }
@@ -53,6 +62,7 @@ impl SidecarLaunch {
                 args: vec![path_str(&dir.join("sidecar.mjs"))],
                 bundle_dir: dir,
                 node: true,
+                install,
             };
         }
         let tsx = workspace.join("node_modules/.bin/tsx");
@@ -62,6 +72,7 @@ impl SidecarLaunch {
                 args: vec![path_str(&workspace.join("src/index.ts"))],
                 bundle_dir,
                 node: false,
+                install: None,
             };
         }
         Self {
@@ -69,6 +80,7 @@ impl SidecarLaunch {
             args: vec![path_str(&dist.join("sidecar.mjs"))],
             bundle_dir,
             node: true,
+            install: None,
         }
     }
 
@@ -86,6 +98,11 @@ impl SidecarLaunch {
         };
         let mut cmd = tokio::process::Command::new(program);
         cmd.args(&self.args);
+        if let Some(install) = &self.install
+            && std::env::var_os("BERTH_CLAUDE_PATH").is_none()
+        {
+            cmd.env("BERTH_CLAUDE_PATH", install.claude());
+        }
         Ok(cmd)
     }
 

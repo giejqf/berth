@@ -36,7 +36,10 @@ If a design decision is not here, it has not been made. Record new decisions her
    (ADR 0011). What crosses slots is a follow-up ("create slot from follow-up") or a
    message between their agents (`message_slot`, ADR 0021): each workflow keeps its
    own checkout, branch and session, and acts on a message in its own slot.
-8. **License: MIT.** Dependencies must be MIT/Apache-2.0/BSD-compatible.
+8. **License: MIT.** Dependencies must be MIT/Apache-2.0/BSD-compatible. The Claude
+   Agent SDK and Claude Code are Anthropic's and not open source: Berth.app never
+   ships them; it downloads the exact version it was built against from npm on
+   the user's Mac (ADR 0029).
 
 ---
 
@@ -131,7 +134,8 @@ berth/
 │   └── berth-svg/               build tooling: renders packaging/*.svg to PNG (resvg)
 ├── sidecar/
 │   ├── package.json             pnpm, Node 22+, TypeScript strict
-│   ├── build.mjs                esbuild bundle -> dist/sidecar.mjs (+ `--with-claude`)
+│   ├── build.mjs                esbuild bundle -> dist/sidecar.mjs, the SDK left out;
+│   │                            dist/claude-agent-sdk.json (what the app downloads)
 │   ├── src/index.ts             stdio NDJSON loop
 │   ├── src/session.ts           Agent SDK session lifecycle, round tracking, nudges
 │   ├── src/tools.ts             the "berth" MCP server (app-owned tools)
@@ -172,7 +176,7 @@ berth/
 | GitHub | `gh` CLI with `--json`, reusing the user's auth | No GitHub API client crate. |
 | Model provider | Claude Code's account, or an OpenAI-compatible API through `berth-proxy` (hyper server, reqwest client with rustls and the Mac's certificates and proxy settings), in its Responses API or Chat Completions | The proxy listens on `127.0.0.1` with a per-launch token; the API key stays in the Keychain and the app (ADR 0023, ADR 0025). |
 | Secrets | macOS Keychain via `security-framework` | Never written to SQLite or disk. |
-| Sidecar runtime | Node 22+, pnpm, `tsx` in dev, bundled with `esbuild` for release | Bundle shipped inside the app at `Contents/Resources/sidecar/`, with the SDK's native `claude` next to it. Claude binary: `$BERTH_CLAUDE_PATH`, else `claude` beside the bundle, else the SDK's own. Node: `node` on the login shell's `PATH` (`shell_env.rs`: read at launch, 3 s at most, while the main thread sets the font default; a shell that takes longer is stopped with what it started, and Berth goes on with the `PATH` it was given), else where Homebrew, MacPorts, Volta, mise, asdf, nodenv, n, nvm or fnm put it (`backend/launch.rs`; nvm's setup in `~/.zshrc` never reaches a login shell), looked up for each sidecar; without it, or older than 22, host agents don't start and the UI says so. TypeScript 6 (typescript-eslint does not support 7 yet), zod 4. |
+| Sidecar runtime | Node 22+, pnpm, `tsx` in dev, bundled with `esbuild` for release | Bundle shipped inside the app at `Contents/Resources/sidecar/` without the SDK, run from its copy in `~/Library/Application Support/Berth/sidecar/` (`BERTH_SIDECAR_BUNDLE`), where the app installs the SDK beside it and Claude Code in `claude-code/<version>/`: that exact version from npm, checked against the lockfile's SHA-512, at launch and before any sidecar runs (`backend/agent_sdk.rs`; Settings and Welcome show the download; ADR 0029). Claude binary: `$BERTH_CLAUDE_PATH` (host sidecars get the installed one), else the SDK's own (dev). Node: `node` on the login shell's `PATH` (`shell_env.rs`: read at launch, 3 s at most, while the main thread sets the font default; a shell that takes longer is stopped with what it started, and Berth goes on with the `PATH` it was given), else where Homebrew, MacPorts, Volta, mise, asdf, nodenv, n, nvm or fnm put it (`backend/launch.rs`; nvm's setup in `~/.zshrc` never reaches a login shell), looked up for each sidecar; without it, or older than 22, host agents don't start and the UI says so. TypeScript 6 (typescript-eslint does not support 7 yet), zod 4. |
 | Dev overrides | `BERTH_HOME` (app data), `BERTH_CONFIG_DIR` (slots/connectors), `BERTH_LOG_DIR`, `BERTH_SECRETS=memory`, `BERTH_SIDECAR` (command line), `BERTH_THEME=light\|dark`, `BERTH_DEV_SEED=<scenario>` (devtools) | Never needed in normal use. |
 | Logging | `tracing` (Rust), `pino` (TS); both to `~/Library/Logs/Berth/` | No telemetry. None. |
 
@@ -425,7 +429,8 @@ agent_placement = "host"   # "host" | "inside"
   for keeping the checkout visible to both sides (shared mount, rsync on `exec`, etc.).
 - `inside`: Claude Code runs inside the environment. `exec` must be able to run the
   sidecar there. The script is responsible for providing `node`, the sidecar bundle
-  (available at `$BERTH_SIDECAR_BUNDLE` during `create`), and Claude auth. The app
+  (available at `$BERTH_SIDECAR_BUNDLE` during `create`: `sidecar.mjs` and the Claude
+  Agent SDK beside it, in Application Support), and Claude auth. The app
   starts it with `slot.sh exec -- node "$BERTH_SIDECAR_BUNDLE/sidecar.mjs"` (same
   path value), so the script must make that path resolve inside the environment
   (bind mount at the same path, or copy). The bundle cannot use the SDK's host
@@ -1248,6 +1253,11 @@ owns it? what node type does it produce?
 - `.github/workflows/release.yml` builds one image per CPU (`macos-15`,
   `macos-15-intel`) on every run, checks it, and on a `v*` tag (which must match the
   `berth-app` version) drafts a GitHub release with both attached.
+- Nothing of Anthropic's is in the bundle (ADR 0029): `build.mjs` leaves the Claude
+  Agent SDK out and writes `claude-agent-sdk.json` (version, npm tarballs, SHA-512s
+  from `pnpm-lock.yaml`), which the app downloads by. The release check fails if the
+  SDK or a `claude` binary gets back into the image. `THIRD-PARTY-NOTICES.md`
+  (`just notices`) lists what it does ship.
 - The bundle is signed ad hoc (`BERTH_SIGN_IDENTITY` picks a real identity) and not
   notarized, so the first launch of a downloaded copy needs System Settings ›
   Privacy & Security › Open Anyway (§13).

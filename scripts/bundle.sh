@@ -11,15 +11,15 @@ version=$(cargo metadata --no-deps --format-version 1 |
 cargo build --release -p berth-app
 scripts/fetch-connectors.sh
 pnpm -C sidecar install --frozen-lockfile
-pnpm -C sidecar build -- --with-claude
+# Without the Claude Agent SDK and Claude Code: the app downloads them (ADR 0029).
+pnpm -C sidecar build
 
 app=dist/Berth.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/sidecar" "$app/Contents/Resources/slots" \
     "$app/Contents/Resources/connectors"
 cp target/release/berth "$app/Contents/MacOS/Berth"
-cp sidecar/dist/sidecar.mjs "$app/Contents/Resources/sidecar/"
-[ -f sidecar/dist/claude ] && cp sidecar/dist/claude "$app/Contents/Resources/sidecar/"
+cp sidecar/dist/sidecar.mjs sidecar/dist/claude-agent-sdk.json "$app/Contents/Resources/sidecar/"
 cp -R slots/examples/worktree slots/examples/docker slots/examples/vm "$app/Contents/Resources/slots/"
 cp -R connectors/linear connectors/posthog "$app/Contents/Resources/connectors/"
 cp LICENSE THIRD-PARTY-NOTICES.md "$app/Contents/Resources/"
