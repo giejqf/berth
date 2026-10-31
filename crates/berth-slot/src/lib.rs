@@ -19,6 +19,6 @@ pub use script::{
     SlotStatus,
 };
 pub use types::{
-    ParsePlacementError, Placement, RepoConfig, SlotType, SlotTypeSource, discover_slot_types,
-    global_slots_dir, load_repo_config,
+    Discovered, ParsePlacementError, Placement, RepoConfig, SlotType, SlotTypeSource,
+    discover_slot_types, global_slots_dir, load_repo_config,
 };

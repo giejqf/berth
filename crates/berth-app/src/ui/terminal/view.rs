@@ -96,6 +96,9 @@ pub enum TerminalEvent {
     CloseRequested,
 }
 
+/// The most a program in a terminal may put on the clipboard (OSC 52).
+const CLIPBOARD_MAX: usize = 1 << 20;
+
 pub struct TerminalView {
     term: Arc<FairMutex<Term<Listener>>>,
     pty: EventLoopSender,
@@ -111,6 +114,9 @@ pub struct TerminalView {
     geometry: Rc<Cell<Geometry>>,
     /// Focus and blur reports, for the window that shows the terminal.
     focus_reports: [gpui::Subscription; 2],
+    /// Whether the terminal has focus: only then may its program set the
+    /// clipboard.
+    focused: bool,
     _pump: gpui::Task<()>,
 }
 
@@ -188,6 +194,7 @@ impl TerminalView {
                 scroll_rest: 0.,
                 geometry: Rc::default(),
                 focus_reports,
+                focused: false,
                 _pump: pump,
             }
         });
@@ -249,8 +256,20 @@ impl TerminalView {
                 Event::PtyWrite(text) => {
                     let _ = self.pty.send(Msg::Input(text.into_bytes().into()));
                 }
+                // OSC 52: a program copying (vim, tmux). Only the terminal
+                // the user is in, and not a flood: output from a terminal in
+                // the background (a file `cat` printed, a script) must not
+                // replace what the user copied.
                 Event::ClipboardStore(_, text) => {
-                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                    if self.focused && text.len() <= CLIPBOARD_MAX {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                    } else {
+                        tracing::info!(
+                            focused = self.focused,
+                            bytes = text.len(),
+                            "terminal clipboard write ignored"
+                        );
+                    }
                 }
                 Event::ColorRequest(index, format) => {
                     let t = Tokens::get(cx);
@@ -284,6 +303,7 @@ impl TerminalView {
     }
 
     fn report_focus(&mut self, focused: bool, cx: &mut Context<'_, Self>) {
+        self.focused = focused;
         if self.term.lock().mode().contains(TermMode::FOCUS_IN_OUT) {
             let seq: &'static [u8] = if focused { b"\x1b[I" } else { b"\x1b[O" };
             let _ = self.pty.send(Msg::Input(seq.into()));

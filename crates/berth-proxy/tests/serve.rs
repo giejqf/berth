@@ -121,6 +121,18 @@ fn responses(
             json!({ "error": { "message": "max_output_tokens is too large: this model supports at most 8192" } }).to_string(),
         );
     }
+    if body["stream"] != true {
+        return respond(
+            200,
+            "application/json",
+            json!({ "id": "resp_2", "object": "response", "status": "completed", "error": null,
+                    "incomplete_details": null,
+                    "output": [{ "type": "message", "role": "assistant",
+                                 "content": [{ "type": "output_text", "text": "Hello.", "annotations": [] }] }],
+                    "usage": { "input_tokens": 5, "output_tokens": 2 } })
+            .to_string(),
+        );
+    }
     let events = [
         json!({ "type": "response.created", "response": { "id": "resp_1", "status": "in_progress", "error": null } }),
         json!({ "type": "response.output_item.added", "output_index": 0, "item": { "type": "message", "content": [] } }),
@@ -374,6 +386,24 @@ async fn a_responses_api_answer_streams_back_and_the_window_cuts_the_budget() {
     assert!(first < 16_384 && first > 8192, "{first}");
     assert_eq!(seen[1].1["max_output_tokens"], 8192);
     assert_eq!(seen[0].1["input"][0]["content"], "list the files");
+}
+
+#[tokio::test]
+async fn a_whole_responses_api_answer_is_an_answer() {
+    // Its `error` is there, and null.
+    let (base, _) = fake_upstream().await;
+    let proxy = proxy_on(&base, Api::Responses, None).await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/messages", proxy.base_url()))
+        .bearer_auth(proxy.token())
+        .json(&request(false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let v: Value = resp.json().await.unwrap();
+    assert_eq!(v["content"][0]["text"], "Hello.");
+    assert_eq!(v["stop_reason"], "end_turn");
 }
 
 #[tokio::test]

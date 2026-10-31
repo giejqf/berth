@@ -3,6 +3,26 @@
 
 use std::ops::Range;
 
+/// `url` when it is a web link, `http://` or `https://` and a host: the
+/// only kind Berth opens from what an agent, a connector or GitHub wrote.
+/// Anything else (`file://`, another app's scheme) could start something
+/// on this Mac with a click.
+#[must_use]
+pub fn web_url(url: &str) -> Option<&str> {
+    let url = url.trim();
+    let lower = url.get(..8).unwrap_or(url).to_ascii_lowercase();
+    let rest = if lower.starts_with("https://") {
+        &url[8..]
+    } else if lower.starts_with("http://") {
+        &url[7..]
+    } else {
+        return None;
+    };
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let ok = !host.is_empty() && !url.chars().any(|c| c.is_whitespace() || c.is_control());
+    ok.then_some(url)
+}
+
 /// The byte ranges of the `http://` and `https://` URLs in `text`. A URL
 /// runs to whitespace or a character that can't be in one (`<>"`` ` ``),
 /// without the punctuation that ends a sentence or closes a bracket it
@@ -72,6 +92,28 @@ mod tests {
 
     fn found(text: &str) -> Vec<&str> {
         urls(text).into_iter().map(|r| &text[r]).collect()
+    }
+
+    #[test]
+    fn only_web_links_open() {
+        assert_eq!(
+            web_url(" https://github.com/acme/app/pull/41 "),
+            Some("https://github.com/acme/app/pull/41")
+        );
+        assert_eq!(web_url("HTTP://x.dev"), Some("HTTP://x.dev"));
+        for no in [
+            "file:///etc/passwd",
+            "httpfoo://x",
+            "http-x:open",
+            "javascript:alert(1)",
+            "slack://open",
+            "https://",
+            "https:///path",
+            "https://x.dev/a b",
+            "",
+        ] {
+            assert_eq!(web_url(no), None, "{no}");
+        }
     }
 
     #[test]

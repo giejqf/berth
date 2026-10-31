@@ -107,3 +107,36 @@ async fn spawn_failure_is_reported() {
     let cmd = Command::new("/nonexistent/sidecar");
     assert!(Sidecar::spawn(cmd).is_err());
 }
+
+#[tokio::test]
+async fn a_stray_byte_does_not_stop_the_reading() {
+    // Not UTF-8 on both pipes, then more stderr than its pipe holds: a
+    // reader that stopped at the bad byte leaves the sidecar blocked.
+    let mut cmd = Command::new("/bin/sh");
+    cmd.args([
+        "-c",
+        r#"printf 'oops \377\n' >&2
+           printf 'caf\351 \n'
+           head -c 200000 /dev/zero | tr '\0' x >&2
+           printf '\nlast words\n' >&2
+           printf '{"id":"r1","type":"raw.event","seq":1,"kind":"assistant","json":{}}\n'
+           exit 4"#,
+    ]);
+    let (_sidecar, mut events) = Sidecar::spawn(cmd).unwrap();
+    let all = tokio::time::timeout(Duration::from_secs(10), async {
+        let mut all = vec![];
+        while let Some(e) = events.recv().await {
+            all.push(e);
+        }
+        all
+    })
+    .await
+    .expect("the sidecar ran to its end");
+    assert!(matches!(&all[0], SidecarEvent::ProtocolError { line, .. } if line == "caf\u{fffd} "));
+    assert!(matches!(&all[1], SidecarEvent::Message(_)));
+    let Some(SidecarEvent::Exited { code, stderr_tail }) = all.last() else {
+        panic!("{all:?}")
+    };
+    assert_eq!(*code, Some(4));
+    assert!(stderr_tail.ends_with("last words"), "{stderr_tail}");
+}

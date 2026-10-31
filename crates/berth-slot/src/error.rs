@@ -27,6 +27,9 @@ pub enum SlotError {
     /// A subcommand succeeded but its stdout did not match the contract.
     #[error("`slot.sh {subcommand}` produced unexpected output: {message}")]
     BadOutput { subcommand: String, message: String },
+    /// A slot type's directory is too big, or too deep, to fingerprint.
+    #[error("{} holds more than a slot type should ({message})", path.display())]
+    TooBig { path: PathBuf, message: String },
     #[error("slot script {} is missing or not executable (run `chmod +x` on it)", .0.display())]
     NotExecutable(PathBuf),
     /// `create`, `destroy`, or `status` ran longer than the configured timeout.

@@ -279,7 +279,9 @@ async fn messages(state: &State, req: Request<Incoming>) -> Response<Body> {
             format!("{host} answered with something that isn't JSON"),
         ));
     };
-    if let (Some(err), None) = (v.get("error"), v.get("choices")) {
+    // A Responses API answer always has `error`: null when all went well.
+    let err = v.get("error").filter(|e| !e.is_null());
+    if let (Some(err), None) = (err, v.get("choices")) {
         return error_response(&ApiError::in_stream(err));
     }
     let message = response::message(&v, up.api, echoed, &out.names, out.estimate);

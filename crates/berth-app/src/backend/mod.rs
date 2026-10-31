@@ -13,6 +13,7 @@ mod review;
 mod session;
 mod slots;
 mod terminal;
+mod trust;
 pub mod types;
 
 use std::collections::{HashMap, HashSet};
@@ -130,21 +131,40 @@ pub fn start(rt: &tokio::runtime::Handle, ui: UnboundedSender<UiEvent>) -> Resul
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Command>();
     rt.spawn(async move {
+        // A conversation's commands run one at a time, in order; the rest
+        // at once (some wait minutes, on a slot being made).
+        let mut queues: HashMap<String, mpsc::UnboundedSender<Command>> = HashMap::new();
         while let Some(cmd) = rx.recv().await {
-            let shared = shared.clone();
-            tokio::spawn(async move {
-                let repo_hint = shared.repo_hint(&cmd);
-                if let Err(e) = shared.clone().handle(cmd).await {
-                    tracing::error!(error = %format!("{e:#}"), "command failed");
-                    shared.toast(repo_hint, ToastLevel::Error, format!("{e:#}"));
-                }
+            let Some(workflow_id) = cmd.conversation().map(str::to_owned) else {
+                tokio::spawn(shared.clone().run(cmd));
+                continue;
+            };
+            let queue = queues.entry(workflow_id).or_insert_with(|| {
+                let (queue, mut commands) = mpsc::unbounded_channel::<Command>();
+                let shared = shared.clone();
+                tokio::spawn(async move {
+                    while let Some(cmd) = commands.recv().await {
+                        shared.clone().run(cmd).await;
+                    }
+                });
+                queue
             });
+            let _ = queue.send(cmd);
         }
     });
     Ok(BackendHandle { tx })
 }
 
 impl Shared {
+    /// Handle `cmd`; a failure is logged and shown as a toast.
+    async fn run(self: Arc<Self>, cmd: Command) {
+        let repo_hint = self.repo_hint(&cmd);
+        if let Err(e) = self.clone().handle(cmd).await {
+            tracing::error!(error = %format!("{e:#}"), "command failed");
+            self.toast(repo_hint, ToastLevel::Error, format!("{e:#}"));
+        }
+    }
+
     fn emit(&self, e: UiEvent) {
         let _ = self.ui.unbounded_send(e);
     }
@@ -166,6 +186,7 @@ impl Shared {
         let wf = match cmd {
             Command::NewWorkflow(n) => return Some(n.repo_id.clone()),
             Command::RefreshRepo { repo_id }
+            | Command::TrustSlotType { repo_id, .. }
             | Command::ListOrigins { repo_id, .. }
             | Command::LoadHistory { repo_id }
             | Command::MergeWindows { repo_id, .. }
@@ -384,6 +405,7 @@ impl Shared {
                 model,
                 effort,
             } => self.set_slot_agent(&slot_id, model, effort),
+            Command::TrustSlotType { repo_id, name } => self.trust_slot_type(&repo_id, &name),
             Command::RenameSlot { slot_id, name } => {
                 let name = name.as_deref().map(str::trim).filter(|n| !n.is_empty());
                 let slot = self.core().store.set_slot_custom_name(&slot_id, name)?;
@@ -822,8 +844,8 @@ impl Shared {
             return Ok(t.clone());
         }
         let repo = self.core().store.repo(&slot.repo_id)?;
-        let types = berth_slot::discover_slot_types(&berth_slot::global_slots_dir(), &repo.path)?;
-        types
+        berth_slot::discover_slot_types(&berth_slot::global_slots_dir(), &repo.path)
+            .types
             .into_iter()
             .find(|t| t.name == slot.slot_type)
             .ok_or_else(|| anyhow!("slot type `{}` is not installed", slot.slot_type))

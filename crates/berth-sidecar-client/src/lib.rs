@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use berth_protocol::{AppMessage, AppToSidecar, SidecarMessage};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot};
 
@@ -204,9 +204,29 @@ async fn write_loop(
     let _ = stdin.shutdown().await;
 }
 
+/// The next line of `r`, without its newline, invalid UTF-8 replaced: a
+/// stray byte must not stop the reading, or the pipe fills and the sidecar
+/// blocks writing to it. `None` at the end, or when reading fails.
+async fn next_line<R: AsyncBufRead + Unpin>(r: &mut R, buf: &mut Vec<u8>) -> Option<String> {
+    buf.clear();
+    match r.read_until(b'\n', buf).await {
+        Ok(0) => None,
+        Ok(_) => {
+            if buf.last() == Some(&b'\n') {
+                buf.pop();
+            }
+            Some(String::from_utf8_lossy(buf).into_owned())
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "sidecar pipe read failed");
+            None
+        }
+    }
+}
+
 async fn stderr_loop(stderr: tokio::process::ChildStderr, tail: Arc<Mutex<VecDeque<String>>>) {
-    let mut lines = BufReader::new(stderr).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
+    let (mut r, mut buf) = (BufReader::new(stderr), Vec::new());
+    while let Some(line) = next_line(&mut r, &mut buf).await {
         tracing::debug!(target: "sidecar_stderr", "{line}");
         let mut t = lock(&tail);
         if t.len() == STDERR_TAIL_LINES {
@@ -224,11 +244,11 @@ async fn read_loop(
     stderr_done: tokio::task::JoinHandle<()>,
     tail: Arc<Mutex<VecDeque<String>>>,
 ) {
-    let mut lines = BufReader::new(stdout).lines();
+    let (mut r, mut buf) = (BufReader::new(stdout), Vec::new());
     loop {
-        match lines.next_line().await {
-            Ok(Some(line)) if line.trim().is_empty() => {}
-            Ok(Some(line)) => match serde_json::from_str::<SidecarMessage>(&line) {
+        match next_line(&mut r, &mut buf).await {
+            Some(line) if line.trim().is_empty() => {}
+            Some(line) => match serde_json::from_str::<SidecarMessage>(&line) {
                 Ok(msg) => {
                     if let Some(reply_to) = &msg.reply_to
                         && let Some(waiter) = lock(&pending).remove(reply_to)
@@ -247,14 +267,11 @@ async fn read_loop(
                     });
                 }
             },
-            Ok(None) => break,
-            Err(e) => {
-                tracing::warn!(error = %e, "sidecar stdout read failed");
-                break;
-            }
+            None => break,
         }
     }
-    let _ = stderr_done.await;
+    // Something the sidecar started may hold its stderr open after it is gone.
+    let _ = tokio::time::timeout(Duration::from_secs(2), stderr_done).await;
     // Poll instead of holding the lock across `wait()`, so `kill()` stays usable.
     let code = loop {
         match child.lock().await.try_wait() {

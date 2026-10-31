@@ -11,11 +11,11 @@ use berth_git::{LocalGit, SnapshotIndex};
 use berth_protocol::{
     AppToSidecar, DiffSide, NodePayload, Origin, OriginKind, SlotRequest, SlotRequestResolved,
 };
-use berth_slot::{Placement, SlotEnv, SlotScript, SlotTypeSource};
+use berth_slot::{Placement, SlotEnv, SlotScript};
 
 use super::{
-    GhInfo, NewWorkflow, OriginChoice, OriginSource, RepoCtx, RepoSnapshot, Shared, SlotTypeInfo,
-    ToastLevel, UiEvent, lock,
+    GhInfo, NewWorkflow, OriginChoice, OriginSource, RepoCtx, RepoSnapshot, Shared, ToastLevel,
+    UiEvent, lock,
 };
 
 /// Slot types shipped with Berth, installed on first run if none exist.
@@ -44,7 +44,8 @@ impl Shared {
         };
         let repo = self.core().store.upsert_repo(&root)?;
         self.ensure_bundled_slot_types();
-        let slot_types = berth_slot::discover_slot_types(&berth_slot::global_slots_dir(), &root)?;
+        let found = berth_slot::discover_slot_types(&berth_slot::global_slots_dir(), &root);
+        let slot_types = found.types;
         let config = berth_slot::load_repo_config(&root)?;
         let default_slot = config
             .default_slot
@@ -57,15 +58,7 @@ impl Shared {
                     .map(|t| t.name.clone())
             })
             .or_else(|| slot_types.first().map(|t| t.name.clone()));
-        let infos = slot_types
-            .iter()
-            .map(|t| SlotTypeInfo {
-                name: t.name.clone(),
-                description: t.description.clone(),
-                placement: t.agent_placement.as_str().to_owned(),
-                from_repo: t.source == SlotTypeSource::Repo,
-            })
-            .collect();
+        let infos = self.slot_type_infos(&repo.id, &slot_types);
         lock(&self.repos).insert(
             repo.id.clone(),
             RepoCtx {
@@ -109,6 +102,15 @@ impl Shared {
         self.emit_models();
         self.emit_quota();
         self.emit_account();
+        // A type that can't be read is left out; the others still work.
+        for e in found.problems {
+            tracing::warn!(error = %e, "slot type left out");
+            self.toast(
+                Some(repo_id.clone()),
+                ToastLevel::Error,
+                format!("A slot type was left out: {e}"),
+            );
+        }
         self.emit(UiEvent::Commands {
             commands: self.commands(&repo_id),
             repo_id,
@@ -148,6 +150,7 @@ impl Shared {
 
     pub(super) fn slot_script(&self, slot: &Slot) -> Result<SlotScript> {
         let ty = self.slot_type_for(slot)?;
+        self.require_trusted(&slot.repo_id, &ty)?;
         let repo = self.repo_path(&slot.repo_id)?;
         let env = SlotEnv {
             repo,
@@ -267,6 +270,7 @@ impl Shared {
             }
             .ok_or_else(|| anyhow!("no slot type available; add one under ~/.config/berth/slots"))?
         };
+        self.require_trusted(&req.repo_id, &ty)?;
         let origin = self.enrich_origin(&repo_path, req.origin.clone()).await;
         let slot_id = new_id();
         // The app reads the repo to choose the branch and its base; making

@@ -277,6 +277,12 @@ pub fn origin_label(o: &Origin) -> String {
     }
 }
 
+/// A link from an origin or outcome, when it is one Berth opens: a web
+/// page, never `file://` or another app's scheme (`berth_core::links`).
+pub fn web_link(url: Option<&str>) -> Option<String> {
+    url.and_then(berth_core::links::web_url).map(str::to_owned)
+}
+
 /// The label for a link to where an origin lives.
 pub fn open_origin_label(kind: OriginKind) -> &'static str {
     match kind {
@@ -333,7 +339,7 @@ fn origin(t: &Tokens, node: &Node, o: &Origin, ctx: &RowCtx, line: bool) -> Div 
                             },
                         ))
                     })
-                    .when_some(o.url.clone(), |d, url| {
+                    .when_some(web_link(o.url.as_deref()), |d, url| {
                         d.child(div().flex_1()).child(link(
                             "open-origin",
                             open_origin_label(o.kind),
@@ -1961,12 +1967,14 @@ fn outcome(t: &Tokens, node: &Node, o: &Outcome, ctx: &RowCtx, line: bool) -> Di
                     .child(div().opacity(0.7).font_family(MONO).child("⌘⇧P")),
                 );
         }
-        OutcomeKind::Pr if r.starts_with("http") => {
+        OutcomeKind::Pr if web_link(Some(&r)).is_some() => {
             links = links.child(link("open-pr", "View PR", t, move |_, _, cx| {
                 cx.open_url(&r);
             }));
         }
-        OutcomeKind::ClaudeArtifact if r.starts_with("https://") => {
+        OutcomeKind::ClaudeArtifact
+            if r.starts_with("https://") && web_link(Some(&r)).is_some() =>
+        {
             let copied = r.clone();
             links = links
                 .child(link("copy-link", "Copy link", t, move |_, _, cx| {

@@ -53,6 +53,7 @@ import {
   quotaFromUsage,
 } from "./usage.js";
 import { berthToolName, createBerthServer, type CallContext, type ToolHost, type ToolOutcome } from "./tools.js";
+import { VERSION } from "./version.js";
 
 export const BERTH_SYSTEM_PROMPT = `You are working inside Berth. The user never reads or edits code: they follow your decisions, answer your questions, review diffs, and ship pull requests.
 
@@ -420,7 +421,7 @@ export class Session implements ToolHost {
       allowedTools: ["mcp__berth__*", ...msg.allowed_tools],
       disallowedTools: ["AskUserQuestion"],
       skills: "all",
-      env: { ...process.env, ...msg.env, CLAUDE_AGENT_SDK_CLIENT_APP: "berth/0.1.0" },
+      env: { ...process.env, ...msg.env, CLAUDE_AGENT_SDK_CLIENT_APP: `berth/${VERSION}` },
       ...(resume ? { resume } : {}),
       // A rewound conversation goes on from this entry; later ones are dropped
       // (ADR 0009). When it drops exactly one turn, Claude Code checks that

@@ -445,6 +445,36 @@ fn unterminated_round_gets_a_stub_summary() {
 }
 
 #[test]
+fn a_branch_still_running_when_the_sidecar_dies_is_cancelled() {
+    let (store, mut engine, wf) = setup();
+    engine.session_started(&wf);
+    engine
+        .submit_prompt(&store, &wf, "go", vec![], false)
+        .unwrap();
+    engine
+        .apply(
+            &store,
+            &wf,
+            &SidecarToApp::BranchSpawned(BranchSpawned {
+                branch_id: "bg".into(),
+                parent_tool_use_id: "tu-bg".into(),
+                parent_branch_id: None,
+                agent_name: "explore".into(),
+                description: "In the background".into(),
+                prompt: "look".into(),
+                parallel_group: None,
+            }),
+        )
+        .unwrap();
+    engine.sidecar_exited(&store, &wf, Some("crashed")).unwrap();
+    let view = store.workflow_view(&wf).unwrap();
+    assert_eq!(
+        view.branch("bg").unwrap().status,
+        berth_core::BranchState::Cancelled
+    );
+}
+
+#[test]
 fn branches_spawn_collect_and_cancel_at_outcome() {
     let (store, mut engine, wf) = setup();
     engine.session_started(&wf);

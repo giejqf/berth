@@ -123,6 +123,11 @@ pub enum Command {
         model: Option<String>,
         effort: Option<Effort>,
     },
+    /// Run this repository's own slot type, as its files are now (ADR 0028).
+    TrustSlotType {
+        repo_id: String,
+        name: String,
+    },
     /// `None` (or blank) goes back to the workflow's title.
     RenameSlot {
         slot_id: String,
@@ -209,6 +214,27 @@ pub enum Command {
     LoadRoundDetails {
         workflow_id: String,
     },
+}
+
+impl Command {
+    /// The workflow whose conversation this acts on, for the commands that
+    /// must run in the order they were sent: a prompt still starting its
+    /// agent is not overtaken by the Interrupt sent after it.
+    pub fn conversation(&self) -> Option<&str> {
+        match self {
+            Self::SendPrompt { workflow_id, .. }
+            | Self::Answer { workflow_id, .. }
+            | Self::AnswerReview { workflow_id, .. }
+            | Self::Rewind { workflow_id, .. }
+            | Self::Interrupt { workflow_id }
+            | Self::Background { workflow_id }
+            | Self::StopTask { workflow_id, .. }
+            | Self::SetStatus { workflow_id, .. }
+            | Self::ReleaseMessage { workflow_id, .. }
+            | Self::DismissMessage { workflow_id, .. } => Some(workflow_id),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -299,6 +325,29 @@ pub struct SlotTypeInfo {
     pub description: String,
     pub placement: String,
     pub from_repo: bool,
+    /// Its directory (Show in Finder, before trusting it).
+    pub dir: PathBuf,
+    pub trust: SlotTrust,
+}
+
+/// Whether Berth runs a slot type's script (ADR 0028): the user's own types
+/// always; a repository's own only once the user trusted it as it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotTrust {
+    /// One of the user's (`~/.config/berth/slots`).
+    Own,
+    /// The repository's, trusted as it is now.
+    Trusted,
+    /// The repository's, never trusted.
+    Untrusted,
+    /// The repository's, changed since the user trusted it.
+    Changed,
+}
+
+impl SlotTrust {
+    pub fn runs(self) -> bool {
+        matches!(self, Self::Own | Self::Trusted)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -602,6 +651,11 @@ pub enum UiEvent {
         error: Option<String>,
     },
     RepoOpened(Box<RepoSnapshot>),
+    /// The repository's slot types again: one was trusted (ADR 0028).
+    SlotTypes {
+        repo_id: String,
+        slot_types: Vec<SlotTypeInfo>,
+    },
     RepoFailed {
         path: PathBuf,
         message: String,

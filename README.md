@@ -17,7 +17,7 @@ anything a `slot.sh` script can produce.
 ## Install
 
 Download the disk image for your Mac from
-[Releases](https://github.com/berth-app/berth/releases) (`arm64` for Apple silicon,
+[Releases](https://github.com/giejqf/berth/releases) (`arm64` for Apple silicon,
 `x86_64` for Intel), open it, and drag Berth into Applications. Berth isn't
 notarized yet, so the first launch needs System Settings › Privacy & Security ›
 **Open Anyway**.
@@ -58,4 +58,6 @@ keep experiments out of your real data.
 
 ## License
 
-MIT. The Claude Agent SDK and Claude Code are distributed under Anthropic's terms.
+MIT. The app also ships third-party software under its own licenses, listed in
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md); the Claude Agent SDK and Claude Code
+are distributed under Anthropic's terms.

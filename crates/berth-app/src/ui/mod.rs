@@ -321,6 +321,18 @@ fn route(event: UiEvent, cx: &mut App) {
                 });
             }
         }
+        UiEvent::SlotTypes {
+            repo_id,
+            slot_types,
+        } => {
+            for state in repo_states(&repo_id, cx) {
+                let slot_types = slot_types.clone();
+                state.update(cx, |s, cx| {
+                    s.snapshot.slot_types = slot_types;
+                    cx.notify();
+                });
+            }
+        }
         UiEvent::RepoFailed { path, message } => {
             tracing::warn!(path = %path.display(), %message, "open repo failed");
         }

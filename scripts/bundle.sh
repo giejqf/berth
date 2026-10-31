@@ -22,6 +22,7 @@ cp sidecar/dist/sidecar.mjs "$app/Contents/Resources/sidecar/"
 [ -f sidecar/dist/claude ] && cp sidecar/dist/claude "$app/Contents/Resources/sidecar/"
 cp -R slots/examples/worktree slots/examples/docker slots/examples/vm "$app/Contents/Resources/slots/"
 cp -R connectors/linear connectors/posthog "$app/Contents/Resources/connectors/"
+cp LICENSE THIRD-PARTY-NOTICES.md "$app/Contents/Resources/"
 rm -f "$app"/Contents/Resources/connectors/*/bin/.version
 scripts/icon.sh "$app/Contents/Resources/Berth.icns"
 

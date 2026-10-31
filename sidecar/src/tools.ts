@@ -20,6 +20,7 @@ import {
   type ToolName,
   type WriteSummaryInput,
 } from "./protocol.js";
+import { VERSION } from "./version.js";
 
 const followUp = z.object({
   id: z.string().optional(),
@@ -161,7 +162,7 @@ function result(outcome: ToolOutcome) {
 export function createBerthServer(host: ToolHost): McpSdkServerConfigWithInstance {
   return createSdkMcpServer({
     name: MCP_SERVER_NAME,
-    version: "0.1.0",
+    version: VERSION,
     alwaysLoad: true,
     tools: [
       tool("record_decision", TOOLS.record_decision.description, shapes.record_decision, async (args, extra) =>

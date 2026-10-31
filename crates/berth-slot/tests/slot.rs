@@ -145,7 +145,7 @@ fn discovery_merges_global_and_repo_types() {
     );
     write_type(&repo_slots, "gamma", "agent_placement = \"inside\"\n");
 
-    let types = discover_slot_types(&global, &repo).unwrap();
+    let types = discover_slot_types(&global, &repo).types;
     let names: Vec<&str> = types.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(names, ["alpha", "beta", "gamma"]);
 
@@ -166,8 +166,8 @@ fn discovery_merges_global_and_repo_types() {
     assert_eq!(gamma.agent_placement, Placement::Inside);
 
     // Neither root existing is fine.
-    let none = discover_slot_types(&tmp.path().join("nope"), &tmp.path().join("nope")).unwrap();
-    assert!(none.is_empty());
+    let none = discover_slot_types(&tmp.path().join("nope"), &tmp.path().join("nope"));
+    assert!(none.types.is_empty() && none.problems.is_empty());
 }
 
 #[test]
@@ -176,19 +176,24 @@ fn discovery_follows_symlinked_types() {
     let global = tmp.path().join("global");
     fs::create_dir_all(&global).unwrap();
     std::os::unix::fs::symlink(examples_dir().join("worktree"), global.join("worktree")).unwrap();
-    let types = discover_slot_types(&global, &tmp.path().join("repo")).unwrap();
+    let types = discover_slot_types(&global, &tmp.path().join("repo")).types;
     assert_eq!(types.len(), 1);
     assert_eq!(types[0].name, "worktree");
 }
 
 #[test]
-fn invalid_slot_toml_is_an_error_naming_the_file() {
+fn a_bad_slot_toml_is_a_problem_naming_the_file_and_the_rest_still_load() {
     let tmp = tempfile::tempdir().unwrap();
     let global = tmp.path().join("global");
     write_type(&global, "good", "agent_placement = \"host\"\n");
     write_type(&global, "bad", "agent_placement = \"moon\"\n");
-    let err = discover_slot_types(&global, tmp.path()).unwrap_err();
-    let SlotError::Toml { path, .. } = &err else {
+    let found = discover_slot_types(&global, tmp.path());
+    let names: Vec<&str> = found.types.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, ["good"]);
+    let [err] = &found.problems[..] else {
+        panic!("{:?}", found.problems);
+    };
+    let SlotError::Toml { path, .. } = err else {
         panic!("expected Toml error, got {err:?}");
     };
     assert_eq!(path, &global.join("bad/slot.toml"));
@@ -196,8 +201,13 @@ fn invalid_slot_toml_is_an_error_naming_the_file() {
 
     let missing = tmp.path().join("missing");
     write_type(&missing, "m", "description = \"no placement\"\n");
-    let err = discover_slot_types(&missing, tmp.path()).unwrap_err();
-    assert!(matches!(err, SlotError::Toml { .. }), "{err:?}");
+    let found = discover_slot_types(&missing, tmp.path());
+    assert!(found.types.is_empty());
+    assert!(
+        matches!(found.problems[..], [SlotError::Toml { .. }]),
+        "{:?}",
+        found.problems
+    );
 
     let mismatch = tmp.path().join("mismatch");
     write_type(
@@ -205,12 +215,37 @@ fn invalid_slot_toml_is_an_error_naming_the_file() {
         "dir-name",
         "name = \"other\"\nagent_placement = \"host\"\n",
     );
-    let err = discover_slot_types(&mismatch, tmp.path()).unwrap_err();
-    let SlotError::InvalidSlotToml { path, message } = &err else {
-        panic!("expected InvalidSlotToml, got {err:?}");
+    let found = discover_slot_types(&mismatch, tmp.path());
+    let [SlotError::InvalidSlotToml { path, message }] = &found.problems[..] else {
+        panic!("expected InvalidSlotToml, got {:?}", found.problems);
     };
     assert_eq!(path, &mismatch.join("dir-name/slot.toml"));
     assert!(message.contains("other"), "{message}");
+}
+
+#[test]
+fn a_types_fingerprint_changes_with_any_of_its_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("slots");
+    write_type(&root, "t", "agent_placement = \"host\"\n");
+    let load = || discover_slot_types(&root, tmp.path()).types.remove(0);
+    let first = load().fingerprint().unwrap();
+    assert_eq!(first.len(), 64);
+    assert_eq!(load().fingerprint().unwrap(), first, "stable");
+
+    // A helper the script sources, in a folder.
+    fs::create_dir_all(root.join("t/lib")).unwrap();
+    fs::write(root.join("t/lib/helper.sh"), "echo hi\n").unwrap();
+    let with_helper = load().fingerprint().unwrap();
+    assert_ne!(with_helper, first);
+    fs::write(root.join("t/lib/helper.sh"), "echo bye\n").unwrap();
+    assert_ne!(load().fingerprint().unwrap(), with_helper);
+
+    // Its mode too: a file made executable is another script.
+    let helper = root.join("t/lib/helper.sh");
+    let before = load().fingerprint().unwrap();
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_ne!(load().fingerprint().unwrap(), before);
 }
 
 #[test]
@@ -534,7 +569,7 @@ fn example_types_load_and_parse() {
         ("docker", Placement::Inside),
         ("vm", Placement::Host),
     ];
-    let types = discover_slot_types(&examples_dir(), Path::new("/nonexistent")).unwrap();
+    let types = discover_slot_types(&examples_dir(), Path::new("/nonexistent")).types;
     assert_eq!(types.len(), expected.len());
     for (name, placement) in expected {
         let ty = types.iter().find(|t| t.name == name).unwrap();

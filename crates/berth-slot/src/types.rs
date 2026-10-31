@@ -138,6 +138,38 @@ impl SlotType {
         })
     }
 
+    /// A SHA-256 digest of every file under the type's directory: each one's
+    /// path within it, mode and contents, in order. What the user trusts
+    /// when they trust a repository's own type: change any file (a script
+    /// `slot.sh` runs included) and it is another type. Symlinks are
+    /// followed, as running the script would.
+    pub fn fingerprint(&self) -> Result<String, SlotError> {
+        use sha2::{Digest as _, Sha256};
+        let mut files = Vec::new();
+        collect_files(&self.dir, Path::new(""), 0, &mut files)?;
+        files.sort();
+        let mut hash = Sha256::new();
+        let mut total = 0u64;
+        for rel in files {
+            let path = self.dir.join(&rel);
+            let meta = fs::metadata(&path)?;
+            total += meta.len();
+            if total > FINGERPRINT_MAX_BYTES {
+                return Err(SlotError::TooBig {
+                    path: self.dir.clone(),
+                    message: format!("over {} MB of files", FINGERPRINT_MAX_BYTES >> 20),
+                });
+            }
+            let bytes = fs::read(&path)?;
+            hash.update(rel.as_os_str().as_encoded_bytes());
+            hash.update([0]);
+            hash.update(meta.permissions().mode().to_le_bytes());
+            hash.update((bytes.len() as u64).to_le_bytes());
+            hash.update(&bytes);
+        }
+        Ok(hash.finalize().iter().map(|b| format!("{b:02x}")).collect())
+    }
+
     /// Check that `slot.sh` exists and has an exec bit.
     pub fn ensure_executable(&self) -> Result<(), SlotError> {
         let script = self.script();
@@ -163,39 +195,95 @@ fn repo_slots_dir(repo: &Path) -> PathBuf {
     repo.join(".berth/slots")
 }
 
+/// What [`discover_slot_types`] found.
+#[derive(Debug, Default)]
+pub struct Discovered {
+    /// Sorted by name.
+    pub types: Vec<SlotType>,
+    /// Why a directory that looked like a type (it has a `slot.toml`), or a
+    /// root, could not be read. Left out; the others still work.
+    pub problems: Vec<SlotError>,
+}
+
 /// Find slot types in `<global_dir>/<type>/` and `<repo>/.berth/slots/<type>/`.
 ///
-/// A repo type overrides a global type of the same name. Directories without
-/// `slot.toml` are skipped; missing roots yield nothing. Sorted by name.
-pub fn discover_slot_types(global_dir: &Path, repo: &Path) -> Result<Vec<SlotType>, SlotError> {
+/// A repo type overrides a global type of the same name (the app runs it
+/// only once the user trusts it). Directories without `slot.toml` are
+/// skipped; missing roots yield nothing.
+#[must_use]
+pub fn discover_slot_types(global_dir: &Path, repo: &Path) -> Discovered {
     let mut by_name = BTreeMap::new();
+    let mut problems = Vec::new();
     let roots = [
         (global_dir.to_path_buf(), SlotTypeSource::Global),
         (repo_slots_dir(repo), SlotTypeSource::Repo),
     ];
     for (root, source) in roots {
-        for ty in scan_types(&root, source)? {
-            by_name.insert(ty.name.clone(), ty);
+        for found in scan_types(&root, source) {
+            match found {
+                Ok(ty) => {
+                    by_name.insert(ty.name.clone(), ty);
+                }
+                Err(e) => problems.push(e),
+            }
         }
     }
-    Ok(by_name.into_values().collect())
+    Discovered {
+        types: by_name.into_values().collect(),
+        problems,
+    }
 }
 
-fn scan_types(root: &Path, source: SlotTypeSource) -> Result<Vec<SlotType>, SlotError> {
+fn scan_types(root: &Path, source: SlotTypeSource) -> Vec<Result<SlotType, SlotError>> {
     let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(e.into()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Vec::new(),
+        Err(e) => return vec![Err(e.into())],
     };
     let mut types = Vec::new();
     for entry in entries {
-        let dir = entry?.path();
+        let dir = match entry {
+            Ok(entry) => entry.path(),
+            Err(e) => {
+                types.push(Err(e.into()));
+                continue;
+            }
+        };
         // `is_dir`/`is_file` follow symlinks, so symlinked types work.
         if dir.is_dir() && dir.join(SLOT_TOML).is_file() {
-            types.push(SlotType::load(&dir, source)?);
+            types.push(SlotType::load(&dir, source));
         }
     }
-    Ok(types)
+    types
+}
+
+/// How much a slot type's directory may hold for [`SlotType::fingerprint`].
+const FINGERPRINT_MAX_BYTES: u64 = 8 << 20;
+const FINGERPRINT_MAX_DEPTH: usize = 8;
+
+/// The files under `root/rel`, as paths relative to `root`.
+fn collect_files(
+    root: &Path,
+    rel: &Path,
+    depth: usize,
+    out: &mut Vec<PathBuf>,
+) -> Result<(), SlotError> {
+    if depth > FINGERPRINT_MAX_DEPTH {
+        return Err(SlotError::TooBig {
+            path: root.to_path_buf(),
+            message: format!("folders more than {FINGERPRINT_MAX_DEPTH} deep"),
+        });
+    }
+    for entry in fs::read_dir(root.join(rel))? {
+        let rel = rel.join(entry?.file_name());
+        let meta = fs::metadata(root.join(&rel))?;
+        if meta.is_dir() {
+            collect_files(root, &rel, depth + 1, out)?;
+        } else {
+            out.push(rel);
+        }
+    }
+    Ok(())
 }
 
 /// Per-repo settings from `<repo>/.berth/berth.toml`.

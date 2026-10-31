@@ -97,11 +97,13 @@ session changes.
 berth/
 ├── AGENTS.md
 ├── LICENSE                      MIT
+├── THIRD-PARTY-NOTICES.md       what the app ships under other licenses
 ├── Cargo.toml                   workspace
 ├── justfile                     dev commands
 ├── scripts/bundle.sh            `just bundle`: dist/Berth.app
 ├── scripts/dmg.sh               `just dmg`: dist/Berth-<version>-<arch>.dmg (§12.1)
 ├── scripts/icon.sh              packaging/AppIcon.svg → .icns
+├── scripts/notices.sh           `just notices`: THIRD-PARTY-NOTICES.md (shipped in the bundle)
 ├── scripts/dev-app.sh           runs `just dev` builds inside target/debug/Berth.app
 ├── scripts/fetch-connectors.sh  pinned CLIs for the built-in connectors
 ├── packaging/                   AppIcon.svg; dmg/ (window background, dmgbuild settings)
@@ -339,7 +341,8 @@ the main lane.
 - **Rounds.** A background subagent may collect in a later round, so a branch may
   span rounds. It never spans workflows; an unresolved branch at `record_outcome`
   is closed with `status = cancelled` (by the app's engine, so it also holds when the
-  sidecar is gone).
+  sidecar is gone). So is one still running when its sidecar exits (a crash, a
+  restart, the app quitting): it ran in that process.
 - **Diffs.** Branch diffs (spawn snapshot → collect snapshot) are best-effort because
   concurrent branches share one checkout. `touched_files` is derived from the branch's
   own Edit/Write/MultiEdit tool events and is authoritative. The section diff remains
@@ -400,6 +403,14 @@ terminal-bound commands. `berth_core::commands` (ADR 0015).
 A slot type is a directory: `~/.config/berth/slots/<type>/` containing `slot.toml` and
 `slot.sh`. A repo may override or add types under `.berth/slots/<type>/`. Repo config
 in `.berth/berth.toml` may set `default_slot = "<type>"`.
+
+A repo's own type runs only once the user trusts it (ADR 0028): its script runs on this
+Mac with the connector secrets. New workflow says so when one is picked (Show in Finder,
+**Trust it**; Create waits). Trust is a SHA-256 of every file under the type's
+directory (path, mode, contents; `SlotType::fingerprint`), per repo and type
+(`settings.trusted_slot_types`), checked before every `slot.sh` call and before a slot
+is recorded: a change to any file asks again. A type that can't be read is left out
+with a toast naming it; the others still work (`berth_slot::Discovered`).
 
 ### 6.1 `slot.toml`
 
@@ -693,7 +704,7 @@ settings         key, value          # last_repo, recent_repos, model, models, q
                                      # claude_identity, review_width, keep_awake, provider,
                                      # openai_base_url, openai_api, openai_models, openai_model,
                                      # openai_fast_model, openai_contexts, openai_catalog
-                                     # (ADR 0023, ADR 0025)
+                                     # (ADR 0023, ADR 0025), trusted_slot_types (ADR 0028)
 ```
 
 Timestamps are unix epoch milliseconds. `nodes.raw_first/raw_last` are `raw_events.id`
@@ -870,7 +881,10 @@ settles nothing (ADR 0013).
   flow fetches the diff they describe).
 - Views are GPUI `Render` entities; app state is held in `RepoState` entities in
   `berth-app`, fed by the tokio-side backend (`berth-app/src/backend/`) through a
-  `Command` / `UiEvent` channel pair. The backend executes `berth_core::Engine`
+  `Command` / `UiEvent` channel pair. A conversation's commands (a prompt, an answer,
+  a rewind, Interrupt, …; `Command::conversation`) run one at a time in the order they
+  were sent, so a prompt still starting its agent isn't overtaken by the Interrupt
+  after it; the rest run at once. The backend executes `berth_core::Engine`
   effects; it is glue, the rules are in `berth-core`. No business logic in views, and
   views never touch SQLite.
 - A pending `ask_user` question renders an **answer card** in its Question node
@@ -882,6 +896,9 @@ settles nothing (ADR 0013).
 - While the agent works, the composer still takes a message (ADR 0018): it joins the
   running round, the agent reads it at its next step, and the flow marks it "while the
   agent worked" (not a rewind point). Slash commands wait until the round ends.
+- Berth opens only web links (`http(s)://` and a host, `berth_core::links::web_url`)
+  from what an agent, a connector or GitHub wrote: an Origin's or Outcome's link in
+  another scheme (`file://`, another app's) isn't offered.
 - URLs in the composer's text (`http(s)://`, `berth_core::links`) are underlined;
   ⌘-click opens one in the browser, and with ⌘ down the one under the pointer shows
   the pointing hand. A plain click edits, as anywhere in the text.
@@ -1171,6 +1188,9 @@ VS Code's integrated terminal, per slot (`ui/terminal/`, ADR 0005):
 - Mouse: drag selects (double click a word, triple a line); programs that ask for
   the mouse get it (shift overrides); the wheel scrolls the scrollback (10,000
   lines), or sends arrows to full-screen programs.
+- A program may set the clipboard (OSC 52, as vim and tmux do) only from the terminal
+  that has focus, up to 1 MB: output in a terminal in the background never replaces
+  what the user copied. Reading the clipboard (OSC 52 queries) is never answered.
 - Gruvbox's 16 ANSI colors per theme on the rail color; xterm's 256 and true color.
   Switching slots while typing in a terminal keeps typing in the new slot's.
 
@@ -1187,6 +1207,7 @@ just test-e2e       sidecar round trip against a real `claude` (spends tokens)
 just lint           fmt check + clippy -D warnings (with and without devtools) + pnpm -C sidecar lint
 just fetch-connectors  pinned CLIs for the built-in connectors (connectors/*/bin/)
 just gen-protocol   regenerate sidecar/src/protocol.ts from berth-protocol
+just notices        rewrite THIRD-PARTY-NOTICES.md (after changing dependencies)
 just bundle         release build + sidecar bundle into dist/Berth.app
 just dmg            bundle, then the drag-to-install disk image in dist/
 ```

@@ -19,8 +19,11 @@ use gpui_component::scroll::Scrollbar;
 use super::RepoState;
 use super::kit::{Btn, Size, TypeExt as _, icon, input_frame, radio, slot_number, spinner};
 use super::modal;
+use super::nodes::web_link;
 use super::sign_in::SignInDialog;
-use crate::backend::{AgentFix, Command, NewWorkflow, OriginChoice, OriginSource};
+use crate::backend::{
+    AgentFix, Command, NewWorkflow, OriginChoice, OriginSource, SlotTrust, SlotTypeInfo,
+};
 use crate::keymap::{Confirm, OriginTab};
 use crate::theme::{MONO, Tokens, ty};
 
@@ -352,7 +355,7 @@ impl NewWorkflowForm {
                                 )
                             }),
                     )
-                    .when_some(item.url.clone(), |d, url| {
+                    .when_some(web_link(item.url.as_deref()), |d, url| {
                         // Shown on hover and on the selected row.
                         d.child(
                             div()
@@ -381,6 +384,22 @@ impl NewWorkflowForm {
             .collect()
     }
 
+    /// The new slot's type, when it is the repository's own and not trusted
+    /// as it is (ADR 0028): nothing is created until it is.
+    fn untrusted_type(&self, cx: &App) -> Option<SlotTypeInfo> {
+        let snap = &self.state.read(cx).snapshot;
+        let chosen = self
+            .slot_type
+            .clone()
+            .or_else(|| snap.default_slot.clone())
+            .or_else(|| snap.slot_types.first().map(|t| t.name.clone()))?;
+        snap.slot_types
+            .iter()
+            .find(|st| st.name == chosen)
+            .filter(|st| !st.trust.runs())
+            .cloned()
+    }
+
     fn submit(&mut self, _window: &mut Window, cx: &mut Context<'_, Self>) {
         let Some(origin) = self.origin(cx) else {
             return;
@@ -388,6 +407,7 @@ impl NewWorkflowForm {
         let slot_id = self.reuse_target(cx);
         if self.submitted
             || self.reuse.is_some() && slot_id.is_none()
+            || slot_id.is_none() && self.untrusted_type(cx).is_some()
             || self.agent_blocked(cx).is_some()
         {
             return;
@@ -411,6 +431,61 @@ impl Focusable for NewWorkflowForm {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
     }
+}
+
+/// Before a repository's own slot type runs: what it does, and Trust it
+/// (ADR 0028).
+fn trust_notice(t: &Tokens, st: &SlotTypeInfo, state: &Entity<RepoState>, cx: &App) -> gpui::Div {
+    let said = if st.trust == SlotTrust::Changed {
+        format!(
+            "{} changed since you trusted it. Its script runs on this Mac, with your \
+             connector keys, whenever Berth makes, uses or removes one of its slots: \
+             look at what changed before trusting it again.",
+            title_case(&st.name)
+        )
+    } else {
+        format!(
+            "{} is this repository's own slot type. Its script runs on this Mac, with your \
+             connector keys, whenever Berth makes, uses or removes one of its slots: use it \
+             only if you trust this repository.",
+            title_case(&st.name)
+        )
+    };
+    let (dir, name) = (st.dir.clone(), st.name.clone());
+    let (state, repo_id) = (state.clone(), state.read(cx).repo_id().to_owned());
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(8.))
+        .px(px(12.))
+        .py(px(10.))
+        .rounded(px(6.))
+        .border_1()
+        .border_color(t.attention)
+        .bg(t.attention_soft)
+        .child(div().ty(ty::META).text_color(t.text).child(said))
+        .child(
+            div()
+                .flex()
+                .gap(px(8.))
+                .child(
+                    Btn::new("slot-type-reveal")
+                        .size(Size::S26)
+                        .label("Show in Finder")
+                        .on_click(move |_, _, cx| cx.reveal_path(&dir)),
+                )
+                .child(
+                    Btn::new("slot-type-trust")
+                        .size(Size::S26)
+                        .label("Trust it")
+                        .on_click(move |_, _, cx| {
+                            state.read(cx).backend.send(Command::TrustSlotType {
+                                repo_id: repo_id.clone(),
+                                name: name.clone(),
+                            });
+                        }),
+                ),
+        )
 }
 
 /// A labelled field: 12px 500 label (with an optional muted note) above it.
@@ -710,13 +785,20 @@ impl Render for NewWorkflowForm {
                             .gap(px(8.))
                             .child(radio(&t, active, 14.))
                             .child(div().semibold().child(title_case(&st.name)))
-                            .when(default.as_deref() == Some(st.name.as_str()), |d| {
+                            .map(|d| {
+                                let is_default = default.as_deref() == Some(st.name.as_str());
+                                let note = match (is_default, st.from_repo) {
+                                    (true, true) => "default · this repo",
+                                    (true, false) => "default",
+                                    (false, true) => "this repo",
+                                    (false, false) => return d,
+                                };
                                 d.child(
                                     div()
                                         .ml_auto()
                                         .text_size(px(11.))
                                         .text_color(t.text3)
-                                        .child("default"),
+                                        .child(note),
                                 )
                             }),
                     )
@@ -731,6 +813,7 @@ impl Render for NewWorkflowForm {
             );
         }
         let no_slot_types = state.snapshot.slot_types.is_empty();
+        let untrusted = self.untrusted_type(cx);
 
         // Reuse: the repo's slots, each kept exactly as it is.
         let reusing = self.reuse.is_some();
@@ -830,7 +913,7 @@ impl Render for NewWorkflowForm {
             && if reusing {
                 self.reuse_target(cx).is_some()
             } else {
-                !no_slot_types
+                !no_slot_types && untrusted.is_none()
             };
         let this = cx.entity().downgrade();
         let close = this.clone();
@@ -939,7 +1022,15 @@ impl Render for NewWorkflowForm {
                                     .child("No slot types installed. Add one under ~/.config/berth/slots/<type>/.")
                                     .into_any_element()
                             } else {
-                                slots.into_any_element()
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(8.))
+                                    .child(slots)
+                                    .when_some(untrusted, |d, st| {
+                                        d.child(trust_notice(&t, &st, &self.state, cx))
+                                    })
+                                    .into_any_element()
                             }),
                     ),
             )

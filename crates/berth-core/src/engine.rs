@@ -1378,6 +1378,8 @@ impl Engine {
             workflow_id: workflow_id.to_owned(),
             activity: None,
         }];
+        // Its subagents ran in its process: they are gone with it.
+        self.cancel_open_branches(store, workflow_id, &mut fx)?;
         self.live.remove(workflow_id);
         if let Some(round) = store.open_round(workflow_id)? {
             let now = now_ms();
@@ -1548,7 +1550,8 @@ impl Engine {
         Ok(true)
     }
 
-    /// An unresolved branch at `record_outcome` is closed as cancelled (§5.4).
+    /// An unresolved branch at `record_outcome`, or when its agent's process
+    /// is gone, is closed as cancelled (§5.4).
     fn cancel_open_branches(
         &mut self,
         store: &Store,

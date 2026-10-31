@@ -57,6 +57,10 @@ sidecar-build:
 fetch-connectors:
     scripts/fetch-connectors.sh
 
+# Rewrite THIRD-PARTY-NOTICES.md from the dependencies (after changing them).
+notices:
+    scripts/notices.sh
+
 # Release build + sidecar bundle into dist/Berth.app.
 bundle:
     ./scripts/bundle.sh
