@@ -59,7 +59,12 @@ if [ -n "${BERTH_NOTARY_PROFILE:-}" ]; then
         fi
         exit 1
     fi
-    xcrun stapler staple -q "$dmg"
+    # A new ticket can take a while to reach the servers stapler asks.
+    for attempt in 1 2 3 4 5 6; do
+        xcrun stapler staple "$dmg" && break
+        [ "$attempt" = 6 ] && exit 1
+        sleep 20
+    done
     # What Gatekeeper decides for a download of it, and for the app inside.
     spctl --assess --type open --context context:primary-signature "$dmg"
     spctl --assess --type execute "$app"
