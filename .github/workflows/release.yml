@@ -71,12 +71,15 @@ jobs:
             -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           rm "$RUNNER_TEMP/cert.p12"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$pw" "$kc" >/dev/null
-          # Apple's Developer ID intermediate, which the chain needs.
-          curl -fsSL -o "$RUNNER_TEMP/devid-g2.cer" \
-            https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
-          echo "f16cd3c54c7f83cea4bf1a3e6a0819c8aaa8e4a1528fd144715f350643d2df3a  $RUNNER_TEMP/devid-g2.cer" |
-            shasum -a 256 -c
-          security import "$RUNNER_TEMP/devid-g2.cer" -k "$kc"
+          # Apple's Developer ID intermediate, which the chain needs, unless
+          # the .p12 brought it along.
+          if ! security find-certificate -a -Z "$kc" | grep -q 5B45F61068B29FCC8FFFF1A7E99B78DA9E9C4635; then
+            curl -fsSL -o "$RUNNER_TEMP/devid-g2.cer" \
+              https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
+            echo "f16cd3c54c7f83cea4bf1a3e6a0819c8aaa8e4a1528fd144715f350643d2df3a  $RUNNER_TEMP/devid-g2.cer" |
+              shasum -a 256 -c
+            security import "$RUNNER_TEMP/devid-g2.cer" -k "$kc"
+          fi
           printf %s "$NOTARY_API_KEY" | base64 --decode >"$RUNNER_TEMP/notary.p8"
           xcrun notarytool store-credentials berth-notary --key "$RUNNER_TEMP/notary.p8" \
             --key-id "$NOTARY_API_KEY_ID" --issuer "$NOTARY_API_ISSUER" --keychain "$kc"
