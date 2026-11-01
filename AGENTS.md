@@ -1259,15 +1259,25 @@ owns it? what node type does it produce?
   from `pnpm-lock.yaml`), which the app downloads by. The release check fails if the
   SDK or a `claude` binary gets back into the image. `THIRD-PARTY-NOTICES.md`
   (`just notices`) lists what it does ship.
-- The bundle is signed ad hoc (`BERTH_SIGN_IDENTITY` picks a real identity) and not
-  notarized, so the first launch of a downloaded copy needs System Settings ›
-  Privacy & Security › Open Anyway (§13).
+- Releases are signed with Berth's Developer ID and notarized, so a download opens
+  without Gatekeeper's Open Anyway. `BERTH_SIGN_IDENTITY` names the identity
+  ("Developer ID Application: …"): `bundle.sh` signs the connector CLIs, then the
+  app, with the hardened runtime (no entitlements: Berth loads no other code and
+  opens Terminal through a `.command` file, not Apple Events) and a secure
+  timestamp; `dmg.sh` signs the image, and with `BERTH_NOTARY_PROFILE` (a
+  `notarytool store-credentials` profile) has Apple notarize it, staples the
+  ticket and asks `spctl`. `release.yml` makes both from secrets
+  (`MACOS_CERTIFICATE`, a base64 .p12, and `MACOS_CERTIFICATE_PASSWORD`;
+  `NOTARY_API_KEY`, a base64 App Store Connect API key, `NOTARY_API_KEY_ID`,
+  `NOTARY_API_ISSUER`) in a keychain of its own, and fails a tag without them.
+  Without an identity (dev, forks) the bundle is signed ad hoc, and a downloaded
+  copy needs System Settings › Privacy & Security › Open Anyway.
 
 ---
 
 ## 13. Deferred / not in v1
 
-- Developer ID signing, notarization, auto-update (the disk image is signed ad hoc).
+- Auto-update.
 - Multiple workflows per slot concurrently.
 - Non-git slots.
 - Any OS other than macOS.

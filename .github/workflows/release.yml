@@ -2,7 +2,9 @@ name: Release
 
 # Builds the drag-to-install disk images (scripts/dmg.sh), one per CPU:
 # every run uploads them as artifacts; a v* tag also drafts a GitHub release
-# with them attached, to review and publish by hand.
+# with them attached, to review and publish by hand. With the signing secrets
+# the images are signed with Berth's Developer ID and notarized; a tag needs
+# them (AGENTS.md §12.1).
 on:
   push:
     tags: ["v*"]
@@ -39,6 +41,51 @@ jobs:
             jq -r '.packages[] | select(.name == "berth-app") | .version')
           test "v$version" = "$GITHUB_REF_NAME" ||
             { echo "tag $GITHUB_REF_NAME does not match berth-app $version"; exit 1; }
+      - name: Signing identity and notary key
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          NOTARY_API_KEY: ${{ secrets.NOTARY_API_KEY }}
+          NOTARY_API_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
+          NOTARY_API_ISSUER: ${{ secrets.NOTARY_API_ISSUER }}
+        run: |
+          if [ -z "$MACOS_CERTIFICATE" ]; then
+            if [[ $GITHUB_REF == refs/tags/* ]]; then
+              echo "::error::a release needs the signing secrets (MACOS_CERTIFICATE, NOTARY_API_KEY, …)"
+              exit 1
+            fi
+            echo "no signing secrets: the image is signed ad hoc"
+            exit 0
+          fi
+          # A keychain of its own, the default for this run, so codesign and
+          # notarytool find the identity and the profile without prompting.
+          kc="$RUNNER_TEMP/berth-signing.keychain-db"
+          pw=$(openssl rand -hex 24)
+          security create-keychain -p "$pw" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$pw" "$kc"
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | xargs)
+          security default-keychain -d user -s "$kc"
+          printf %s "$MACOS_CERTIFICATE" | base64 --decode >"$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$kc" -f pkcs12 \
+            -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$pw" "$kc" >/dev/null
+          # Apple's Developer ID intermediate, which the chain needs.
+          curl -fsSL -o "$RUNNER_TEMP/devid-g2.cer" \
+            https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
+          echo "f16cd3c54c7f83cea4bf1a3e6a0819c8aaa8e4a1528fd144715f350643d2df3a  $RUNNER_TEMP/devid-g2.cer" |
+            shasum -a 256 -c
+          security import "$RUNNER_TEMP/devid-g2.cer" -k "$kc"
+          printf %s "$NOTARY_API_KEY" | base64 --decode >"$RUNNER_TEMP/notary.p8"
+          xcrun notarytool store-credentials berth-notary --key "$RUNNER_TEMP/notary.p8" \
+            --key-id "$NOTARY_API_KEY_ID" --issuer "$NOTARY_API_ISSUER" --keychain "$kc"
+          rm "$RUNNER_TEMP/notary.p8"
+          security find-identity -v -p codesigning "$kc"
+          {
+            echo "BERTH_SIGN_IDENTITY=Developer ID Application"
+            echo "BERTH_NOTARY_PROFILE=berth-notary"
+          } >>"$GITHUB_ENV"
       - run: scripts/dmg.sh
       - name: Check the image
         run: |
@@ -62,6 +109,9 @@ jobs:
           name: dmg-${{ matrix.runner }}
           path: dist/Berth-*.dmg
           if-no-files-found: error
+      - name: Remove the signing keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/berth-signing.keychain-db" 2>/dev/null || true
 
   release:
     if: startsWith(github.ref, 'refs/tags/')
@@ -79,13 +129,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # A release drafted by hand, with its own notes, gets these images
+          # in place of any it was given.
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/Berth-*.dmg --repo "$GITHUB_REPOSITORY" --clobber
+            exit 0
+          fi
           cat >notes.md <<'NOTES'
           Open the disk image for your Mac (`arm64` for Apple silicon, `x86_64` for Intel)
           and drag Berth into Applications.
-
-          Berth isn't notarized yet, so macOS stops the first launch: open
-          System Settings › Privacy & Security and choose **Open Anyway** (or run
-          `xattr -dr com.apple.quarantine /Applications/Berth.app`).
           NOTES
           gh release create "$GITHUB_REF_NAME" dist/Berth-*.dmg \
             --repo "$GITHUB_REPOSITORY" --draft --title "Berth ${GITHUB_REF_NAME#v}" \

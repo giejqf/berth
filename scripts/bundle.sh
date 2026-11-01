@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build dist/Berth.app: release binary, sidecar bundle, reference slot types,
-# built-in connectors, the icon. Signed ad hoc, or with BERTH_SIGN_IDENTITY;
-# Developer ID signing and notarization are deferred (AGENTS.md §13).
+# built-in connectors, the icon. Signed ad hoc, or with BERTH_SIGN_IDENTITY
+# (a Developer ID Application identity, for a release; AGENTS.md §12.1).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -47,8 +47,18 @@ cat >"$app/Contents/Info.plist" <<PLIST
 PLIST
 
 # Seal the bundle (the linker signed only the binary), so it stays intact
-# when it is copied out of the disk image.
-codesign --force --sign "${BERTH_SIGN_IDENTITY:--}" "$app"
+# when it is copied out of the disk image. Notarization wants every
+# executable in it signed, the connector CLIs first, with the hardened
+# runtime and a secure timestamp.
+identity=${BERTH_SIGN_IDENTITY:--}
+sign=(codesign --force --options runtime --sign "$identity")
+[ "$identity" = - ] || sign+=(--timestamp)
+while IFS= read -r -d '' f; do
+    if file -b "$f" | grep -q Mach-O; then
+        "${sign[@]}" "$f"
+    fi
+done < <(find "$app/Contents/Resources" -type f -perm +111 -print0)
+"${sign[@]}" "$app"
 codesign --verify --strict "$app"
 
 echo "built $app ($version)"

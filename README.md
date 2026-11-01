@@ -18,10 +18,9 @@ anything a `slot.sh` script can produce.
 
 Download the disk image for your Mac from
 [Releases](https://github.com/giejqf/berth/releases) (`arm64` for Apple silicon,
-`x86_64` for Intel), open it, and drag Berth into Applications. Berth isn't
-notarized yet, so the first launch needs System Settings › Privacy & Security ›
-**Open Anyway**. On first launch Berth downloads the Claude Agent SDK and Claude
-Code (about 120 MB) from npm: they are Anthropic's, and not part of Berth.
+`x86_64` for Intel), open it, and drag Berth into Applications. Berth is signed
+and notarized by Apple. On first launch it downloads the Claude Agent SDK and
+Claude Code (about 120 MB) from npm: they are Anthropic's, and not part of Berth.
 
 ## Quick start
 
@@ -51,6 +50,10 @@ just test-e2e   # one real Claude Code round (spends tokens)
 just bundle     # dist/Berth.app (signed ad hoc)
 just dmg        # dist/Berth-<version>-<arch>.dmg, drag-to-install
 ```
+
+To sign and notarize a release build, name a Developer ID identity and a
+`notarytool` keychain profile: `BERTH_SIGN_IDENTITY="Developer ID Application: …"
+BERTH_NOTARY_PROFILE=<profile> just dmg` (see AGENTS.md §12.1).
 
 `just dev-tools` builds with the `devtools` feature: set `BERTH_DEV_SCRIPT` to a
 script of UI steps and `BERTH_DEV_SHOTS` to a directory for window screenshots

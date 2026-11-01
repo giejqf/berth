@@ -3,6 +3,9 @@
 # link, on a window that says to drag one onto the other. Builds
 # dist/Berth.app first (scripts/bundle.sh) unless BERTH_SKIP_BUNDLE=1.
 # Runs headless: dmgbuild writes the window layout without Finder.
+# With BERTH_SIGN_IDENTITY the image is signed too, and with
+# BERTH_NOTARY_PROFILE (a profile `xcrun notarytool store-credentials` saved)
+# Apple notarizes it and the ticket is stapled to it (AGENTS.md §12.1).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -37,5 +40,29 @@ for attempt in 1 2 3; do
     [ "$attempt" = 3 ] && exit 1
     sleep 5
 done
+
+if [ "${BERTH_SIGN_IDENTITY:--}" != - ]; then
+    codesign --force --timestamp --sign "$BERTH_SIGN_IDENTITY" "$dmg"
+fi
+if [ -n "${BERTH_NOTARY_PROFILE:-}" ]; then
+    [ "${BERTH_SIGN_IDENTITY:--}" != - ] ||
+        { echo "BERTH_NOTARY_PROFILE needs a Developer ID in BERTH_SIGN_IDENTITY" >&2; exit 1; }
+    echo "notarizing $dmg (a few minutes)"
+    out=$(xcrun notarytool submit "$dmg" --keychain-profile "$BERTH_NOTARY_PROFILE" \
+        --wait --output-format json) || true
+    status=$(plutil -extract status raw -o - - <<<"$out" 2>/dev/null) || status=
+    if [ "$status" != Accepted ]; then
+        echo "notarization failed: ${status:-$out}" >&2
+        # Apple's log says which file and why.
+        if id=$(plutil -extract id raw -o - - <<<"$out" 2>/dev/null); then
+            xcrun notarytool log "$id" --keychain-profile "$BERTH_NOTARY_PROFILE" >&2 || true
+        fi
+        exit 1
+    fi
+    xcrun stapler staple -q "$dmg"
+    # What Gatekeeper decides for a download of it, and for the app inside.
+    spctl --assess --type open --context context:primary-signature "$dmg"
+    spctl --assess --type execute "$app"
+fi
 
 echo "built $dmg"
