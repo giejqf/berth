@@ -25,6 +25,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^26.6.5",
+    "badge-maker": "6.0.0",
     "esbuild": "0.28.2",
     "eslint": "^10.13.0",
     "tsx": "4.23.15",

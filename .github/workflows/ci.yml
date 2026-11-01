@@ -27,6 +27,11 @@ jobs:
         run: |
           cargo run -q -p berth-protocol --bin gen-protocol
           git diff --exit-code -- sidecar/src/protocol.ts
+      - name: README images match their sources
+        run: |
+          node scripts/readme-images.mjs
+          git diff --exit-code -- docs/images
+          test -z "$(git status --porcelain -- docs/images)"
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace

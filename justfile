@@ -68,3 +68,11 @@ bundle:
 # Drag-to-install disk image: dist/Berth-<version>-<arch>.dmg (bundles first).
 dmg:
     scripts/dmg.sh
+
+# The README's badges and logo in docs/images, from the files that define them.
+readme-images:
+    node scripts/readme-images.mjs
+
+# The README's screenshot, docs/images/berth.png, from a seeded demo (opens a window).
+readme-screenshot:
+    scripts/readme-screenshot.sh

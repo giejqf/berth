@@ -109,6 +109,8 @@ berth/
 ├── scripts/notices.sh           `just notices`: THIRD-PARTY-NOTICES.md (shipped in the bundle)
 ├── scripts/dev-app.sh           runs `just dev` builds inside target/debug/Berth.app
 ├── scripts/fetch-connectors.sh  pinned CLIs for the built-in connectors
+├── scripts/readme-images.mjs    `just readme-images`: docs/images badges + logo (CI-checked)
+├── scripts/readme-screenshot.sh `just readme-screenshot`: docs/images/berth.png, seeded
 ├── packaging/                   AppIcon.svg; dmg/ (window background, dmgbuild settings)
 ├── .github/workflows/           ci.yml (checks), release.yml (disk images)
 ├── .githooks/                   installed by `just setup`
@@ -147,7 +149,7 @@ berth/
 │   └── test/                    vitest; SDK mocked; e2e.test.ts behind BERTH_E2E=1
 ├── slots/examples/              reference slot scripts: worktree, docker, vm
 ├── connectors/                  built-in connectors: linear, posthog (bin/ fetched, §8.2)
-└── docs/                        design notes; ADRs go in docs/adr/
+└── docs/                        design notes; ADRs go in docs/adr/; images/ for the README
 ```
 
 ### 3.2 Crate dependency rules
@@ -1216,6 +1218,8 @@ just gen-protocol   regenerate sidecar/src/protocol.ts from berth-protocol
 just notices        rewrite THIRD-PARTY-NOTICES.md (after changing dependencies)
 just bundle         release build + sidecar bundle into dist/Berth.app
 just dmg            bundle, then the drag-to-install disk image in dist/
+just readme-images  the README's badges and logo, from their sources (CI fails if stale)
+just readme-screenshot  the README's screenshot: the `comments` seed, fake agents
 ```
 
 Conventions:
