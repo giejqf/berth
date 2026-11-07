@@ -220,7 +220,12 @@ impl Render for ConfirmDialog {
         let close = this.clone();
         let cancel = this.clone();
         let ok = this;
+        // Scrolls when the window is too short for all of it (an agent's
+        // slot request can run to paragraphs), so the buttons stay in view.
         let mut body = div()
+            .id("confirm-body")
+            .min_h_0()
+            .overflow_y_scroll()
             .flex()
             .flex_col()
             .gap(px(8.))
