@@ -11,12 +11,27 @@ use berth_git::{LocalGit, SnapshotIndex};
 use berth_protocol::{
     AppToSidecar, DiffSide, NodePayload, Origin, OriginKind, SlotRequest, SlotRequestResolved,
 };
-use berth_slot::{Placement, SlotEnv, SlotScript};
+use berth_slot::{Placement, SlotEnv, SlotScript, SlotType};
 
 use super::{
     GhInfo, NewWorkflow, OriginChoice, OriginSource, RepoCtx, RepoSnapshot, Shared, ToastLevel,
     UiEvent, lock,
 };
+
+/// The type a new slot gets when none is picked: the one the repository's
+/// last slot was made with, else its `.berth/berth.toml` default, else
+/// `worktree`, else the first. A name no type has any more is passed over.
+fn default_slot_type<'a>(
+    types: &'a [SlotType],
+    last: Option<&str>,
+    configured: Option<&str>,
+) -> Option<&'a SlotType> {
+    let named = |n: &str| types.iter().find(|t| t.name == n);
+    last.and_then(named)
+        .or_else(|| configured.and_then(named))
+        .or_else(|| named("worktree"))
+        .or_else(|| types.first())
+}
 
 /// Slot types shipped with Berth, installed on first run if none exist.
 const BUNDLED_SLOT_TYPES: &[&str] = &["worktree"];
@@ -47,23 +62,19 @@ impl Shared {
         let found = berth_slot::discover_slot_types(&berth_slot::global_slots_dir(), &root);
         let slot_types = found.types;
         let config = berth_slot::load_repo_config(&root)?;
-        let default_slot = config
-            .default_slot
-            .or_else(|| repo.default_slot_type.clone())
-            .filter(|d| slot_types.iter().any(|t| &t.name == d))
-            .or_else(|| {
-                slot_types
-                    .iter()
-                    .find(|t| t.name == "worktree")
-                    .map(|t| t.name.clone())
-            })
-            .or_else(|| slot_types.first().map(|t| t.name.clone()));
+        let default_slot = default_slot_type(
+            &slot_types,
+            repo.default_slot_type.as_deref(),
+            config.default_slot.as_deref(),
+        )
+        .map(|t| t.name.clone());
         let infos = self.slot_type_infos(&repo.id, &slot_types);
         lock(&self.repos).insert(
             repo.id.clone(),
             RepoCtx {
                 repo: repo.clone(),
                 slot_types,
+                configured_slot: config.default_slot,
             },
         );
 
@@ -255,19 +266,15 @@ impl Shared {
             let ctx = repos
                 .get(&req.repo_id)
                 .ok_or_else(|| anyhow!("repository is not open"))?;
-            let name = req
-                .slot_type
-                .clone()
-                .or_else(|| ctx.repo.default_slot_type.clone());
-            match name {
-                Some(n) => ctx.slot_types.iter().find(|t| t.name == n).cloned(),
-                None => ctx
-                    .slot_types
-                    .iter()
-                    .find(|t| t.name == "worktree")
-                    .or(ctx.slot_types.first())
-                    .cloned(),
+            match &req.slot_type {
+                Some(n) => ctx.slot_types.iter().find(|t| &t.name == n),
+                None => default_slot_type(
+                    &ctx.slot_types,
+                    ctx.repo.default_slot_type.as_deref(),
+                    ctx.configured_slot.as_deref(),
+                ),
             }
+            .cloned()
             .ok_or_else(|| anyhow!("no slot type available; add one under ~/.config/berth/slots"))?
         };
         self.require_trusted(&req.repo_id, &ty)?;
@@ -320,10 +327,34 @@ impl Shared {
             }
             wf
         };
+        self.remember_slot_type(&req.repo_id, &ty.name)?;
         self.link_origin(&req.repo_id, &wf.id, &origin).await;
         self.emit_slots(&req.repo_id);
         self.emit_workflow(&wf.id);
         Ok((wf, slot))
+    }
+
+    /// The repository's next slot defaults to the type its last one was made
+    /// with; every window's New workflow starts on it.
+    fn remember_slot_type(&self, repo_id: &str, name: &str) -> Result<()> {
+        {
+            let mut repos = lock(&self.repos);
+            let Some(ctx) = repos.get_mut(repo_id) else {
+                return Ok(());
+            };
+            if ctx.repo.default_slot_type.as_deref() == Some(name) {
+                return Ok(());
+            }
+            ctx.repo.default_slot_type = Some(name.to_owned());
+        }
+        self.core()
+            .store
+            .set_repo_default_slot(repo_id, Some(name))?;
+        self.emit(UiEvent::DefaultSlotType {
+            repo_id: repo_id.to_owned(),
+            slot_type: name.to_owned(),
+        });
+        Ok(())
     }
 
     /// A new workflow in an existing slot (§6.3): its open workflow, if any, is
@@ -923,4 +954,46 @@ fn bundled_examples_dir() -> PathBuf {
         .and_then(|exe| exe.parent().map(|d| d.join("../Resources/slots")))
         .filter(|d| d.exists())
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../slots/examples"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use berth_slot::SlotTypeSource;
+
+    fn types(names: &[&str]) -> Vec<SlotType> {
+        names
+            .iter()
+            .map(|n| SlotType {
+                name: (*n).to_owned(),
+                description: String::new(),
+                agent_placement: Placement::Host,
+                dir: PathBuf::from(n),
+                source: SlotTypeSource::Global,
+            })
+            .collect()
+    }
+
+    fn pick(types: &[SlotType], last: Option<&str>, configured: Option<&str>) -> Option<String> {
+        default_slot_type(types, last, configured).map(|t| t.name.clone())
+    }
+
+    #[test]
+    fn the_last_used_type_comes_first() {
+        let t = types(&["docker", "vm", "worktree"]);
+        assert_eq!(pick(&t, Some("vm"), Some("docker")).as_deref(), Some("vm"));
+        assert_eq!(pick(&t, None, Some("docker")).as_deref(), Some("docker"));
+        assert_eq!(pick(&t, None, None).as_deref(), Some("worktree"));
+    }
+
+    #[test]
+    fn a_type_that_is_gone_is_passed_over() {
+        let t = types(&["docker", "vm"]);
+        assert_eq!(pick(&t, Some("lima"), Some("vm")).as_deref(), Some("vm"));
+        assert_eq!(
+            pick(&t, Some("lima"), Some("gone")).as_deref(),
+            Some("docker")
+        );
+        assert_eq!(pick(&[], Some("vm"), None), None);
+    }
 }

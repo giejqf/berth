@@ -408,7 +408,10 @@ terminal-bound commands. `berth_core::commands` (ADR 0015).
 
 A slot type is a directory: `~/.config/berth/slots/<type>/` containing `slot.toml` and
 `slot.sh`. A repo may override or add types under `.berth/slots/<type>/`. Repo config
-in `.berth/berth.toml` may set `default_slot = "<type>"`.
+in `.berth/berth.toml` may set `default_slot = "<type>"`. A new slot whose type isn't
+picked (and New workflow, to start with) gets the type the repo's last slot was made
+with (`repos.default_slot_type`), else that `default_slot`, else `worktree`, else the
+first; a type that is gone is passed over (`backend/slots.rs` `default_slot_type`).
 
 A repo's own type runs only once the user trusts it (ADR 0028): its script runs on this
 Mac with the connector secrets. New workflow says so when one is picked (Show in Finder,

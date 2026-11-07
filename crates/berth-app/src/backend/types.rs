@@ -630,6 +630,11 @@ pub enum UiEvent {
         repo_id: String,
         slot_types: Vec<SlotTypeInfo>,
     },
+    /// The type New workflow starts on: the last new slot's.
+    DefaultSlotType {
+        repo_id: String,
+        slot_type: String,
+    },
     RepoFailed {
         path: PathBuf,
         message: String,

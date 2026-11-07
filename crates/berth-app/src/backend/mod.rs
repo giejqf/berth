@@ -55,6 +55,8 @@ struct Core {
 struct RepoCtx {
     repo: Repo,
     slot_types: Vec<SlotType>,
+    /// `.berth/berth.toml`'s `default_slot`, as it was when the repo opened.
+    configured_slot: Option<String>,
 }
 
 pub(crate) struct Shared {
