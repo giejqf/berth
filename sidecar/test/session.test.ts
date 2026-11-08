@@ -23,6 +23,7 @@ const START: SessionStart = {
   env: { FOO: "bar" },
   allowed_tools: [],
   slot_messages: true,
+  agent: "claude",
   connector_skills: [{ name: "linear", description: "Linear issues" }],
 };
 

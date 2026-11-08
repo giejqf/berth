@@ -107,6 +107,11 @@ jobs:
           if grep -q CLAUDE_AGENT_SDK_VERSION "$sidecar/sidecar.mjs"; then
             echo "the Claude Agent SDK is bundled into sidecar.mjs"; exit 1
           fi
+          # Pi is downloaded on first use too (ADR 0033).
+          test -f "$sidecar/pi.json"
+          if grep -q "operating inside pi, a coding agent harness" "$sidecar/sidecar.mjs"; then
+            echo "Pi is bundled into sidecar.mjs"; exit 1
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: dmg-${{ matrix.runner }}

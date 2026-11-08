@@ -1,0 +1,8 @@
+{
+  "name": "berth-pi",
+  "private": true,
+  "description": "Pi, as Berth installs it on first use (ADR 0033); package-lock.json pins every package",
+  "dependencies": {
+    "@mariozechner/pi-coding-agent": "0.73.1"
+  }
+}

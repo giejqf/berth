@@ -132,6 +132,36 @@ export interface ToolHost {
   messageSlot(input: MessageSlotInput, call: CallContext): Promise<ToolOutcome>;
 }
 
+/** Run berth tool `name` on `host`; `args` were checked against its schema. */
+export function callTool(host: ToolHost, name: ToolName, args: unknown, call: CallContext): Promise<ToolOutcome> {
+  switch (name) {
+    case "record_decision":
+      return host.recordDecision(args as RecordDecisionInput, call);
+    case "ask_user":
+      return host.askUser(args as AskUserInput, call);
+    case "write_summary":
+      return host.writeSummary(args as WriteSummaryInput, call);
+    case "reply":
+      return host.reply(args as ReplyInput, call);
+    case "record_outcome":
+      return host.recordOutcome(args as RecordOutcomeInput, call);
+    case "request_slot":
+      return host.requestSlot(args as RequestSlotInput, call);
+    case "present_artifact":
+      return host.presentArtifact(args as PresentArtifactInput, call);
+    case "present_review":
+      return host.presentReview(args as PresentReviewInput, call);
+    case "message_slot":
+      return host.messageSlot(args as MessageSlotInput, call);
+  }
+}
+
+/** The berth tools on offer: `message_slot` only when Settings allows
+ * messages between slots (ADR 0032). */
+export function offeredTools(options: ServerOptions): ToolName[] {
+  return (Object.keys(shapes) as ToolName[]).filter((name) => name !== "message_slot" || options.slotMessages);
+}
+
 /** Fully qualified name the model sees, e.g. `mcp__berth__ask_user`. */
 export function qualifiedToolName(name: ToolName): string {
   return `mcp__${MCP_SERVER_NAME}__${name}`;

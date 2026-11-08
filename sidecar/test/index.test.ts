@@ -36,6 +36,7 @@ describe("stdio NDJSON loop", () => {
         env: {},
         allowed_tools: [],
         slot_messages: true,
+        agent: "claude",
         connector_skills: [],
       })}\n`,
     );

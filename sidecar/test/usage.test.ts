@@ -12,6 +12,7 @@ const START = {
   env: {},
   allowed_tools: [],
   slot_messages: true,
+  agent: "claude" as const,
   connector_skills: [],
 };
 

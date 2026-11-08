@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, bail};
 
 use super::agent_sdk::Install;
+use super::pi_install::PiInstall;
 
 /// The oldest Node.js the sidecar runs on (AGENTS.md §4).
 pub const NODE_MIN_MAJOR: u32 = 22;
@@ -24,6 +25,9 @@ pub struct SidecarLaunch {
     /// Berth.app's sidecar runs from Application Support, beside the Claude
     /// Agent SDK the app installs there (ADR 0029).
     pub install: Option<Install>,
+    /// Pi as Berth.app installs it on first use (ADR 0033); `None` run from
+    /// the workspace, where the sidecar has its own.
+    pub pi: Option<PiInstall>,
 }
 
 impl SidecarLaunch {
@@ -35,11 +39,18 @@ impl SidecarLaunch {
     pub fn resolve() -> Self {
         let node = PathBuf::from("node");
         let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../sidecar");
-        let install = std::env::current_exe()
+        let resources = std::env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().map(|d| d.join("../Resources/sidecar")))
-            .filter(|d| d.join("sidecar.mjs").exists())
-            .and_then(|d| Install::read(&d, &berth_core::paths::app_support_dir().join("sidecar")));
+            .filter(|d| d.join("sidecar.mjs").exists());
+        let support = berth_core::paths::app_support_dir();
+        let install = resources
+            .as_ref()
+            .and_then(|d| Install::read(d, &support.join("sidecar")));
+        let pi = resources
+            .as_ref()
+            .filter(|_| install.is_some())
+            .and_then(|d| PiInstall::read(d, &support.join("pi")));
         let bundled = install.as_ref().map(|i| i.bundle_dir.clone());
         let dist = workspace.join("dist");
         let bundle_dir = bundled.clone().unwrap_or_else(|| dist.clone());
@@ -53,6 +64,7 @@ impl SidecarLaunch {
                     bundle_dir,
                     node: false,
                     install,
+                    pi,
                 };
             }
         }
@@ -63,6 +75,7 @@ impl SidecarLaunch {
                 bundle_dir: dir,
                 node: true,
                 install,
+                pi,
             };
         }
         let tsx = workspace.join("node_modules/.bin/tsx");
@@ -73,14 +86,19 @@ impl SidecarLaunch {
                 bundle_dir,
                 node: false,
                 install: None,
+                pi: None,
             };
         }
+        // The built sidecar (`BERTH_SIDECAR_DIST`) gets Pi as Berth.app does:
+        // downloaded by its `pi.json` (ADR 0033).
+        let pi = PiInstall::read(&dist, &support.join("pi"));
         Self {
             program: node,
             args: vec![path_str(&dist.join("sidecar.mjs"))],
             bundle_dir,
             node: true,
             install: None,
+            pi,
         }
     }
 
@@ -103,6 +121,15 @@ impl SidecarLaunch {
         {
             cmd.env("BERTH_CLAUDE_PATH", install.claude());
         }
+        // Where Pi is, and where it keeps its sessions: Berth's own, apart
+        // from the user's own Pi (ADR 0033).
+        if let Some(pi) = &self.pi {
+            cmd.env("BERTH_PI_DIR", pi.dir());
+        }
+        cmd.env(
+            "BERTH_PI_AGENT_DIR",
+            berth_core::paths::app_support_dir().join("pi-agent"),
+        );
         Ok(cmd)
     }
 

@@ -9,6 +9,7 @@ mod files;
 mod history;
 mod launch;
 mod messages;
+mod pi_install;
 mod provider;
 mod review;
 mod session;
@@ -85,6 +86,8 @@ pub(crate) struct Shared {
     /// What each live session's agent was given of Settings' limits when it
     /// started (ADR 0032): a change restarts the ones it concerns.
     session_limits: Mutex<HashMap<String, berth_core::AgentLimits>>,
+    /// Pi's download (ADR 0033).
+    pi_installer: pi_install::PiInstaller,
     /// Workflows whose session runs a task: a subagent, a command (ADR 0022).
     tasks: Mutex<HashSet<String>>,
     /// Keeps the Mac awake while agents work.
@@ -134,6 +137,7 @@ pub fn start(rt: &tokio::runtime::Handle, ui: UnboundedSender<UiEvent>) -> Resul
         diff_cache: Mutex::default(),
         restart_after_round: Mutex::default(),
         session_limits: Mutex::default(),
+        pi_installer: pi_install::PiInstaller::default(),
         tasks: Mutex::default(),
         awake: awake::Awake::start(),
         proxy: tokio::sync::OnceCell::new(),
@@ -568,6 +572,9 @@ impl Shared {
             }
             Command::CheckEnvironment => {
                 self.install_agent();
+                if self.provider().agent == berth_protocol::Agent::Pi {
+                    self.install_pi_soon();
+                }
                 self.check_environment().await;
                 Ok(())
             }

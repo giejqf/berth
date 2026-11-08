@@ -164,8 +164,18 @@ pub fn model_name(value: &str, models: &[ModelChoice]) -> String {
     })
 }
 
-/// What the composer's chip says for a slot: "Opus · High", "Default model".
+/// What the composer's chip says for a slot: "Opus · High", "Default model";
+/// a conversation on Pi says so first, "Pi · gpt-5" (ADR 0033).
 pub fn agent_label(entry: &SlotEntry, default_model: Option<&str>, cx: &App) -> String {
+    let label = model_label_of(entry, default_model, cx);
+    if entry.facts.agent == berth_protocol::Agent::Pi {
+        format!("Pi · {label}")
+    } else {
+        label
+    }
+}
+
+fn model_label_of(entry: &SlotEntry, default_model: Option<&str>, cx: &App) -> String {
     let models = slot_models(entry, cx);
     let model = match (
         slot_model(entry, cx),

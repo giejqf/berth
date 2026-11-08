@@ -17,10 +17,13 @@ If a design decision is not here, it has not been made. Record new decisions her
    edit", "open in editor", or file-tree-with-contents features. The terminal panel
    (§11.1) is a shell in the slot, not an editor: Berth adds nothing to it that opens,
    shows or edits files (no file links, no "open in editor"). ADR 0005.
-2. **Claude Code is the only agent.** No abstraction layer for other agents. The
-   sidecar talks to the official Claude Agent SDK and nothing else. The model
-   behind it may be another provider's (an OpenAI-compatible API through Berth's
-   proxy, ADR 0023): the agent, its tools and its sessions are still Claude Code's.
+2. **Claude Code is the agent; Pi only under an OpenAI-compatible API.** The
+   sidecar talks to the official Claude Agent SDK. The model behind it may be
+   another provider's (an OpenAI-compatible API through Berth's proxy, ADR 0023):
+   the agent, its tools and its sessions are still Claude Code's. Under that API,
+   Settings may pick Pi instead (`@mariozechner/pi-coding-agent`, MIT), which
+   speaks it itself: a second session class in the sidecar behind the same
+   protocol, no agent abstraction in the app, and nothing else (ADR 0033).
 3. **macOS only.** No `#[cfg(windows)]`, no Linux code paths, no cross-platform
    abstractions that cost macOS performance or polish.
 4. **Rust everywhere except the sidecar.** The app is pure Rust on GPUI. The sidecar
@@ -60,8 +63,9 @@ If a design decision is not here, it has not been made. Record new decisions her
 | **Gate** | Anything the repo wants to run before a PR (tests, lint, typecheck). Not a Berth concept; just commands run through the slot's `exec`. |
 | **Integration** | First-class, app-owned: **GitHub** via `gh`. PR, Issue, Branch, Commit, Comment are typed entities in SQLite. |
 | **Connector** | User-defined, global, extensible: a CLI tool plus a `SKILL.md` (§8). Linear, PostHog, etc. Not MCP. |
-| **Sidecar** | The TypeScript process that hosts the Claude Agent SDK and Berth's agent tools. One sidecar per active session. |
-| **Model provider** | What agents on this Mac run on: Claude Code's own account, or an OpenAI-compatible API (OpenAI, OpenRouter, DeepSeek, Ollama, …) whose Responses API or Chat Completions Berth's proxy speaks for Claude Code (ADR 0023, ADR 0025). |
+| **Sidecar** | The TypeScript process that hosts the agent (the Claude Agent SDK, or Pi's SDK) and Berth's agent tools. One sidecar per active session. |
+| **Model provider** | What agents on this Mac run on: Claude Code's own account, or an OpenAI-compatible API (OpenAI, OpenRouter, DeepSeek, Ollama, …) whose Responses API or Chat Completions Berth's proxy speaks for Claude Code (ADR 0023, ADR 0025), or Pi speaks itself (ADR 0033). |
+| **Agent** | What runs a conversation: Claude Code, or Pi under an OpenAI-compatible API (`workflows.agent`, ADR 0033). A conversation keeps the one it started on. |
 
 ---
 
@@ -92,7 +96,8 @@ over that pipe. This is why there is no Unix socket: one transport works in both
 Under an OpenAI-compatible model provider, Claude Code on the host sends its model
 requests to `berth-proxy` on `127.0.0.1` (`ANTHROPIC_BASE_URL`), which sends them on in
 the Responses API or as Chat Completions (ADR 0023, ADR 0025). Nothing else about a
-session changes.
+session changes. If Settings picks Pi there, the sidecar runs Pi's SDK in place of
+Claude Code's, and Pi sends its requests to the API itself (ADR 0033).
 
 ### 3.1 Repo layout
 
@@ -136,17 +141,25 @@ berth/
 │   └── berth-svg/               build tooling: renders packaging/*.svg to PNG (resvg)
 ├── sidecar/
 │   ├── package.json             pnpm, Node 22+, TypeScript strict
-│   ├── build.mjs                esbuild bundle -> dist/sidecar.mjs, the SDK left out;
-│   │                            dist/claude-agent-sdk.json (what the app downloads)
-│   ├── src/index.ts             stdio NDJSON loop
-│   ├── src/session.ts           Agent SDK session lifecycle, round tracking, nudges
+│   ├── build.mjs                esbuild bundle -> dist/sidecar.mjs, the SDK and Pi left
+│   │                            out; dist/claude-agent-sdk.json, dist/pi.json (what the
+│   │                            app downloads)
+│   ├── pi/                      Pi as the app installs it: package.json, npm's
+│   │                            package-lock.json (ADR 0033)
+│   ├── src/index.ts             stdio NDJSON loop; starts the session the app asks for
+│   ├── src/host.ts              what every session does: Berth's tools, round rules
+│   ├── src/session.ts           Claude Agent SDK session lifecycle, attribution, nudges
+│   ├── src/pi.ts, pi-events.ts  Pi's session (ADR 0033); its messages in the SDK's shape
+│   ├── src/pi-load.ts           where Pi is loaded from; its key out of the environment
+│   ├── src/prompt.ts            Berth's part of the system prompt
 │   ├── src/tools.ts             the "berth" MCP server (app-owned tools)
 │   ├── src/branches.ts          subagent branch tracking from the stream
 │   ├── src/history.ts           the repo's Claude Code sessions (`sessions.list`)
 │   ├── src/usage.ts             context window and plan limits, SDK shapes → protocol
 │   ├── src/ndjson.ts, queue.ts, log.ts
 │   ├── src/protocol.ts          GENERATED from berth-protocol via ts-rs; do not edit
-│   └── test/                    vitest; SDK mocked; e2e.test.ts behind BERTH_E2E=1
+│   └── test/                    vitest; SDK mocked; Pi against a scripted API (pi.test.ts);
+│                                e2e.test.ts behind BERTH_E2E=1
 ├── slots/examples/              reference slot scripts: worktree, docker, vm
 ├── connectors/                  built-in connectors: linear, posthog (bin/ fetched, §8.2)
 └── docs/                        design notes; ADRs go in docs/adr/; images/ for the README
@@ -169,7 +182,7 @@ berth/
 |---|---|---|
 | UI | **GPUI** (Zed's framework) + `gpui-component` where it fits | Pinned exactly: `gpui-pre =0.3.9` (the crates.io snapshot of zed@93d7456), `gpui-pre-platform =0.3.9` with `runtime_shaders` (builds without Xcode), `gpui-component =0.7.3` (built against that snapshot), with its base `gpui-base =0.7.3` for motion. Bump them together, deliberately. See ADR 0001. |
 | Language | Rust 2024 edition, MSRV = stable at repo creation | `clippy::all` + selected `pedantic` lints; see `Cargo.toml` `[workspace.lints]`. |
-| Agent | **Claude Agent SDK (TypeScript)** in the sidecar | Never call `claude` directly from Rust. |
+| Agent | **Claude Agent SDK (TypeScript)** in the sidecar; under an OpenAI-compatible API, optionally **Pi** (`@mariozechner/pi-coding-agent`, pinned exactly in `sidecar/pi/` and the sidecar's devDependencies) | Never call `claude` directly from Rust. Pi is downloaded on first use, never shipped (ADR 0033). |
 | Persistence | **SQLite** via `rusqlite` (bundled), embedded migrations | One DB at `~/Library/Application Support/Berth/berth.db`. |
 | Protocol types | `serde` structs in `berth-protocol`, exported with `ts-rs` | `just gen-protocol` regenerates `sidecar/src/protocol.ts`. CI fails if stale. |
 | Diff rendering | Berth's own read-only `ui/diff_view.rs` over `berth-git`'s typed model (a virtualized GPUI `list`; colors from gpui-component's tree-sitter highlighter via the `tree-sitter-languages` feature; the words that changed within a line from `similar`, `ui/word_diff.rs`) | Read-only. No editing widgets. Drawn to the design's 36/36/16 gutter with inline comment cards (ADR 0003, ADR 0026). |
@@ -218,7 +231,8 @@ table so "show details" can reveal the exact transcript slice behind it.
 
 ### 5.2 Agent tools (the "berth" MCP server in the sidecar)
 
-Defined in `sidecar/src/tools.ts` with `createSdkMcpServer`. Schemas live in
+Defined in `sidecar/src/tools.ts` with `createSdkMcpServer` (for Pi, the same tools as
+Pi custom tools, their schemas as JSON Schema; `callTool` runs both). Schemas live in
 `berth-protocol` and are the single source of truth: tool names, descriptions, and
 terminal/subagent flags are generated into `protocol.ts` (`TOOLS`), and the zod
 schemas are compile-time checked against the generated input types. Follow-ups the
@@ -642,7 +656,7 @@ bin/…              the CLI (any language)
 
 On session start the app installs each connector's `SKILL.md` into the slot's
 `.claude/skills/<name>/SKILL.md` (via `exec`) and adds the binary dir to the agent's
-PATH. The installed file is listed in the repo's `info/exclude`, so it never shows
+PATH. Pi reads them there too, as its skills (ADR 0033). The installed file is listed in the repo's `info/exclude`, so it never shows
 in a diff or lands in a commit; a copy the repo tracks itself is left alone. Both the agent and the app may invoke connector binaries (e.g. "New workflow
 from Linear issue" calls `linear-cli` to list issues).
 
@@ -722,7 +736,7 @@ settings         key, value          # last_repo, recent_repos, model, models, q
                                      # openai_base_url, openai_api, openai_models, openai_model,
                                      # openai_fast_model, openai_contexts, openai_catalog
                                      # (ADR 0023, ADR 0025), trusted_slot_types (ADR 0028),
-                                     # slot_messages, max_subagents (ADR 0032)
+                                     # slot_messages, max_subagents (ADR 0032), openai_agent (ADR 0033)
 ```
 
 Timestamps are unix epoch milliseconds. `nodes.raw_first/raw_last` are `raw_events.id`
@@ -750,7 +764,7 @@ from `berth-protocol`; the list below is the contract, the Rust types are the tr
 
 **App → sidecar**
 ```
-session.start    { workflow_id, cwd, system_prompt, env, allowed_tools, connector_skills, model?, effort?, title?,
+session.start    { workflow_id, cwd, system_prompt, env, allowed_tools, connector_skills, model?, effort?, title?, agent, pi?,
                    slot_messages, max_subagents? }   # Settings' limits (ADR 0032): message_slot offered; subagents at once, 0 = none
 session.resume   { workflow_id, claude_session_id, resume_at?, drops_turn?, cwd, … }   # resume_at: a rewind (ADR 0009); drops_turn: its one turn (ADR 0016)
 session.turn     { text, attachments?: [{ path, mime }], uuid? }   # a Prompt or nudge; images become image blocks; uuid: the turn's in the transcript; during a round it joins it (ADR 0018)
@@ -771,7 +785,7 @@ review.answer    { review_id, text }  # the decisions on a review's findings, as
 **Sidecar → app**
 ```
 session.started  { claude_session_id }
-raw.event        { seq, kind, json, branch_id? }   # every SDK message, verbatim
+raw.event        { seq, kind, json, branch_id? }   # every SDK message, verbatim; Pi's messages in that envelope (ADR 0033)
 node.decision    { …, branch_id? }   node.question { question_id, … }
 node.summary     { … }               node.outcome  { …, title? }   # title: a Claude artifact's (ADR 0020)
 node.artifact    { artifact_id, path, title, description?, size_bytes }
@@ -1056,6 +1070,22 @@ settles nothing (ADR 0013).
   plan limits and the account hide under the provider, and the Claude Code row says
   what agents run on ("via openrouter.ai"), or blocks them with Settings… until the
   API has a URL and a model. `inside` slots sign in by themselves, as before.
+- **Pi** (ADR 0033; `sidecar/src/pi.ts`, `backend/pi_install.rs`): under an
+  OpenAI-compatible API, Settings › Model provider › Agent picks Claude Code (through
+  the proxy) or Pi for new conversations in host slots; picking Pi starts its download,
+  and the row says how it goes. A conversation keeps the agent it started on
+  (`workflows.agent`, set at its first session; under Claude Code's account a Pi one
+  says to switch back, or start anew); the composer's model chip reads "Pi · model".
+  Pi gets the base URL, the API, the models and their windows in `session.start.pi`,
+  the key in the sidecar's environment (`BERTH_PI_API_KEY`, taken out before the agent
+  runs anything, given to Pi as a runtime key), and keeps its sessions in
+  `Application Support/Berth/pi-agent/` (`BERTH_PI_AGENT_DIR`), apart from the user's
+  own Pi: no extensions or prompt templates, settings in memory. Its tools are its
+  own (`read`, `bash`, `edit`, `write`) and Berth's; the round rules, nodes and flow
+  are Claude Code's. A model reasons only when the slot sets an effort (`max` is Pi's
+  `xhigh`). A rewind branches Pi's session tree at the entry before the message; a
+  message mid-round steers; `/compact` is its one slash command. No subagents, tasks,
+  Background, plan limits, suggestions or Claude Code history for it.
 - **Keeping the Mac awake** (`backend/awake.rs`): while an agent works anywhere (a
   round in flight, a slot being created or torn down, something in a session's
   background; `Store::agents_working`), Berth holds a user-initiated `NSProcessInfo`
@@ -1291,6 +1321,13 @@ owns it? what node type does it produce?
   from `pnpm-lock.yaml`), which the app downloads by. The release check fails if the
   SDK or a `claude` binary gets back into the image. `THIRD-PARTY-NOTICES.md`
   (`just notices`) lists what it does ship.
+- Pi is left out too (ADR 0033): `build.mjs` writes `pi.json` from
+  `sidecar/pi/package-lock.json` (each package's install path, tarball, SHA-512, CPU;
+  optional ones only when built for macOS), and the app installs those packages in
+  `Application Support/Berth/pi/<version>/` (`backend/pi_install.rs`): downloaded a
+  few at a time, each checked, unpacked parents first into a folder of its own that
+  moves into place once complete, no install script run. The built sidecar
+  (`BERTH_SIDECAR_DIST`) installs it the same way; `just dev` uses the workspace's.
 - Releases are signed with Berth's Developer ID and notarized, so a download opens
   without Gatekeeper's Open Anyway. `BERTH_SIGN_IDENTITY` names the identity
   ("Developer ID Application: …"): `bundle.sh` signs the connector CLIs, then the
@@ -1314,8 +1351,10 @@ owns it? what node type does it produce?
 - Non-git slots.
 - Any OS other than macOS.
 - Pushing review comments to Linear/PostHog (GitHub only).
-- Agent backends other than Claude Code.
+- Agent backends other than Claude Code and Pi; Pi outside an OpenAI-compatible API
+  (its own providers and sign-ins), Pi's subagents (it has none), its extensions and
+  prompt templates.
 - `inside` slots' agents on the model provider (the proxy listens on the host's
-  loopback); model APIs other than OpenAI's Responses and Chat Completions (Gemini's
+  loopback, and Pi runs only on the host); model APIs other than OpenAI's Responses and Chat Completions (Gemini's
   own); passing reasoning items back to a provider across turns.
 

@@ -35,7 +35,7 @@ impl Shared {
         Provider::load(&self.core().store).unwrap_or_default()
     }
 
-    fn provider_key(&self) -> Option<String> {
+    pub(super) fn provider_key(&self) -> Option<String> {
         let (service, account) = KEY_SERVICE;
         self.secrets
             .get(service, account)
@@ -112,6 +112,7 @@ impl Shared {
             provider: self.provider(),
             key_set: self.provider_key().is_some(),
             check: lock(&self.provider_check).clone(),
+            pi: self.pi_status(),
         };
         self.emit(UiEvent::Provider(Box::new(info)));
     }
@@ -132,6 +133,11 @@ impl Shared {
                 self.emit_quota();
                 self.emit_account();
             }
+        }
+        // Conversations keep the agent they started on; new ones need Pi
+        // downloaded (ADR 0033).
+        if p.is_openai() && p.agent == berth_protocol::Agent::Pi {
+            self.install_pi_soon();
         }
         if !p.is_openai() || p.base_url.is_empty() {
             *lock(&self.provider_check) = ProviderCheck::Unchecked;
@@ -194,6 +200,7 @@ impl Shared {
             ProviderEdit::Model(m) => p.model = m,
             ProviderEdit::FastModel(m) => p.fast_model = m,
             ProviderEdit::Api(api) => p.api = api,
+            ProviderEdit::Agent(agent) => p.agent = agent,
             ProviderEdit::Context(model, tokens) => match tokens {
                 Some(t) => {
                     p.contexts.insert(model, t);
@@ -270,11 +277,14 @@ pub(super) fn provider_status(p: &Provider) -> ToolStatus {
     }
     let host = berth_proxy::host_of(&p.base_url);
     let model = p.default_model().map(|m| p.name_of(m)).unwrap_or_default();
+    let agent = p.agent.label();
     let mut s = ToolStatus::new(
         ToolState::Ok,
         &format!("via {host}"),
-        &format!("Agents on this Mac run on {model} at {host}, an OpenAI-compatible API"),
+        &format!(
+            "New agents on this Mac are {agent}, running on {model} at {host}, an OpenAI-compatible API"
+        ),
     );
-    s.tip = Some(format!("Claude Code, running on {model} at {host}"));
+    s.tip = Some(format!("{agent}, running on {model} at {host}"));
     s
 }

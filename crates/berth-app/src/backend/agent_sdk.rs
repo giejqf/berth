@@ -285,60 +285,24 @@ impl Shared {
 
     /// `pkg`, checked, unpacked into `<tmp>/package`.
     async fn unpack(self: &Arc<Self>, pkg: &Package, tmp: &Path) -> Result<()> {
-        std::fs::create_dir_all(tmp.join("package"))?;
+        std::fs::create_dir_all(tmp)?;
         let tgz = tmp.join("package.tgz");
         self.download(pkg, &tgz).await?;
-        let out = tokio::process::Command::new("/usr/bin/tar")
-            .arg("-xzf")
-            .arg(&tgz)
-            .arg("-C")
-            .arg(tmp.join("package"))
-            .args(["--strip-components", "1"])
-            .output()
-            .await?;
-        if !out.status.success() {
-            bail!(
-                "unpacking it failed: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
-        }
+        untar(&tgz, &tmp.join("package")).await?;
         std::fs::write(tmp.join("package").join(MARKER), &pkg.sha512)?;
         Ok(())
     }
 
     async fn download(self: &Arc<Self>, pkg: &Package, to: &Path) -> Result<()> {
-        let client = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(30))
-            .read_timeout(Duration::from_secs(60))
-            .build()?;
-        let mut resp = client
-            .get(&pkg.url)
-            .send()
-            .await
-            .and_then(reqwest::Response::error_for_status)
-            .map_err(|e| unreachable(&e))?;
-        let total = resp.content_length();
-        let mut file = tokio::fs::File::create(to).await?;
-        let mut hash = Sha512::new();
-        let mut done = 0u64;
         let mut shown = Instant::now();
-        self.download_progress(0, total);
-        while let Some(chunk) = resp.chunk().await.map_err(|e| unreachable(&e))? {
-            hash.update(&chunk);
-            file.write_all(&chunk).await?;
-            done += chunk.len() as u64;
+        self.download_progress(0, None);
+        download_checked(&npm_client()?, &pkg.url, &pkg.sha512, to, |done, total| {
             if shown.elapsed() > Duration::from_millis(500) {
                 shown = Instant::now();
                 self.download_progress(done, total);
             }
-        }
-        file.flush().await?;
-        let got: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
-        if got != pkg.sha512 {
-            tracing::error!(url = %pkg.url, sha512 = %got, expected = %pkg.sha512, "checksum");
-            bail!("what npm sent isn't the version Berth was built with");
-        }
-        Ok(())
+        })
+        .await
     }
 
     fn download_progress(&self, done: u64, total: Option<u64>) {
@@ -353,6 +317,68 @@ impl Shared {
         env.claude = claude;
         self.emit(UiEvent::Environment(Box::new(env)));
     }
+}
+
+/// A client for registry.npmjs.org.
+pub(super) fn npm_client() -> Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .read_timeout(Duration::from_secs(60))
+        .build()?)
+}
+
+/// Download `url` into `to`, checked against `sha512` (hex); `progress` sees
+/// the bytes so far and the whole, when the registry says.
+pub(super) async fn download_checked(
+    client: &reqwest::Client,
+    url: &str,
+    sha512: &str,
+    to: &Path,
+    mut progress: impl FnMut(u64, Option<u64>),
+) -> Result<()> {
+    let mut resp = client
+        .get(url)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|e| unreachable(&e))?;
+    let total = resp.content_length();
+    let mut file = tokio::fs::File::create(to).await?;
+    let mut hash = Sha512::new();
+    let mut done = 0u64;
+    while let Some(chunk) = resp.chunk().await.map_err(|e| unreachable(&e))? {
+        hash.update(&chunk);
+        file.write_all(&chunk).await?;
+        done += chunk.len() as u64;
+        progress(done, total);
+    }
+    file.flush().await?;
+    let got: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    if got != sha512 {
+        tracing::error!(url = %url, sha512 = %got, expected = %sha512, "checksum");
+        bail!("what npm sent isn't the version Berth was built with");
+    }
+    Ok(())
+}
+
+/// Unpack the npm tarball `tgz` into `into`, its `package/` folder's contents.
+pub(super) async fn untar(tgz: &Path, into: &Path) -> Result<()> {
+    std::fs::create_dir_all(into)?;
+    let out = tokio::process::Command::new("/usr/bin/tar")
+        .arg("-xzf")
+        .arg(tgz)
+        .arg("-C")
+        .arg(into)
+        .args(["--strip-components", "1"])
+        .output()
+        .await?;
+    if !out.status.success() {
+        bail!(
+            "unpacking it failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
 }
 
 /// A failed request, in a few words (the log has the rest).

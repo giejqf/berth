@@ -13,6 +13,7 @@ const START: SessionStart = {
   env: {},
   allowed_tools: [],
   slot_messages: true,
+  agent: "claude",
   connector_skills: [],
   title: "Fix the login redirect",
 };

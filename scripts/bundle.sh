@@ -19,7 +19,7 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/sidecar" "$app/Contents/Resources/slots" \
     "$app/Contents/Resources/connectors"
 cp target/release/berth "$app/Contents/MacOS/Berth"
-cp sidecar/dist/sidecar.mjs sidecar/dist/claude-agent-sdk.json "$app/Contents/Resources/sidecar/"
+cp sidecar/dist/sidecar.mjs sidecar/dist/claude-agent-sdk.json sidecar/dist/pi.json "$app/Contents/Resources/sidecar/"
 cp -R slots/examples/worktree slots/examples/docker slots/examples/vm "$app/Contents/Resources/slots/"
 cp -R connectors/linear connectors/posthog "$app/Contents/Resources/connectors/"
 cp LICENSE THIRD-PARTY-NOTICES.md "$app/Contents/Resources/"

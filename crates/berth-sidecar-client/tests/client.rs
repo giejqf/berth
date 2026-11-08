@@ -29,6 +29,8 @@ fn start() -> AppToSidecar {
         title: None,
         slot_messages: true,
         max_subagents: None,
+        agent: Default::default(),
+        pi: None,
     })
 }
 

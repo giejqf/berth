@@ -1,8 +1,10 @@
 //! Where agents on this Mac send their model requests (ADR 0023): Claude
-//! Code's own account, or an OpenAI-compatible API through Berth's proxy.
-//! The agent is Claude Code either way; only the model behind it changes.
+//! Code's own account, or an OpenAI-compatible API. On that API the agent
+//! is Claude Code through Berth's proxy, or Pi, which speaks it itself
+//! (ADR 0033).
 //!
 //! Settings: `provider` ("openai", else Claude Code's account),
+//! `openai_agent` ("pi", else Claude Code),
 //! `openai_base_url`, `openai_api` ("chat" for Chat Completions, else the
 //! Responses API), `openai_models` (the ids on offer, JSON), `openai_model`
 //! (the default), `openai_fast_model` (Claude Code's quick requests),
@@ -12,6 +14,7 @@
 
 use std::collections::BTreeMap;
 
+use berth_protocol::Agent;
 use serde::{Deserialize, Serialize};
 
 use crate::{Result, Store};
@@ -52,6 +55,9 @@ pub struct ProviderModel {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Provider {
     pub kind: ProviderKind,
+    /// The agent new conversations run on under the OpenAI-compatible API
+    /// (ADR 0033); Claude Code on Claude Code's account, whatever this says.
+    pub agent: Agent,
     pub base_url: String,
     pub api: ProviderApi,
     /// The models on offer, in the order they were added.
@@ -92,6 +98,7 @@ impl Provider {
         };
         Ok(Self {
             kind,
+            agent: Agent::parse(text("openai_agent")?.as_deref().unwrap_or_default()),
             base_url: text("openai_base_url")?.unwrap_or_default(),
             api,
             contexts,
@@ -111,6 +118,7 @@ impl Provider {
         };
         let kind = (self.kind == ProviderKind::OpenAi).then_some("openai");
         put("provider", kind)?;
+        put("openai_agent", (self.agent == Agent::Pi).then_some("pi"))?;
         put("openai_base_url", Some(self.base_url.trim()))?;
         let models = serde_json::to_string(&self.models).unwrap_or_default();
         put(
@@ -136,6 +144,17 @@ impl Provider {
     #[must_use]
     pub fn is_openai(&self) -> bool {
         self.kind == ProviderKind::OpenAi
+    }
+
+    /// The agent a new conversation starts on in a slot on this Mac
+    /// (`host`); an `inside` slot's is always Claude Code (ADR 0033).
+    #[must_use]
+    pub fn new_agent(&self, host: bool) -> Agent {
+        if host && self.is_openai() {
+            self.agent
+        } else {
+            Agent::Claude
+        }
     }
 
     /// The model slots without their own run on.

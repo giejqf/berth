@@ -508,8 +508,11 @@ fn a_workflow_knows_where_it_came_from_and_whom_it_messaged() {
     // where from wasn't kept.
     {
         let conn = rusqlite::Connection::open(&path).unwrap();
-        conn.execute_batch("ALTER TABLE workflows DROP COLUMN from_workflow_id")
-            .unwrap();
+        conn.execute_batch(
+            "ALTER TABLE workflows DROP COLUMN from_workflow_id;
+             ALTER TABLE workflows DROP COLUMN agent;",
+        )
+        .unwrap();
         conn.pragma_update(None, "user_version", 12).unwrap();
     }
     let store = Store::open(&path).unwrap();
@@ -530,4 +533,38 @@ fn a_workflow_knows_where_it_came_from_and_whom_it_messaged() {
     );
     assert_eq!(facts(&c).peers[0].workflow_id, b.id);
     assert!(facts(&a).peers.is_empty());
+}
+
+#[test]
+fn a_workflow_keeps_the_agent_it_started_on() {
+    use berth_core::{Workflow, WorkflowState};
+    use berth_protocol::Agent;
+    let store = Store::open_in_memory().unwrap();
+    let repo = store.upsert_repo(Path::new("/tmp/repo")).unwrap();
+    let mut s = slot(&repo.id);
+    store.insert_slot(&mut s).unwrap();
+    let wf = Workflow {
+        id: new_id(),
+        slot_id: s.id.clone(),
+        origin: berth_protocol::Origin {
+            kind: berth_protocol::OriginKind::Thought,
+            r#ref: String::new(),
+            title: "x".into(),
+            body: String::new(),
+            custom_prompt: None,
+            url: None,
+        },
+        state: WorkflowState::Idle,
+        claude_session_id: None,
+        section_no: 1,
+        total_cost_usd: 0.0,
+        last_error: None,
+        created_at: now_ms(),
+        closed_at: None,
+    };
+    store.insert_workflow(&wf).unwrap();
+    // Claude Code until its first session says otherwise (ADR 0033).
+    assert_eq!(store.workflow_agent(&wf.id).unwrap(), Agent::Claude);
+    store.set_workflow_agent(&wf.id, Agent::Pi).unwrap();
+    assert_eq!(store.workflow_agent(&wf.id).unwrap(), Agent::Pi);
 }

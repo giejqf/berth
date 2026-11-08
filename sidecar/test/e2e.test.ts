@@ -27,6 +27,7 @@ describe.skipIf(!enabled)("e2e: real claude", () => {
         env: {},
         allowed_tools: [],
         slot_messages: true,
+        agent: "claude",
         connector_skills: [],
         ...(process.env.BERTH_E2E_MODEL ? { model: process.env.BERTH_E2E_MODEL } : {}),
       },

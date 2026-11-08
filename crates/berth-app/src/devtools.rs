@@ -150,6 +150,19 @@ pub fn start(cx: &mut App) {
                         berth_core::ProviderKind::OpenAi,
                     )));
                 }),
+                // `agent pi|claude`: what new conversations run on under the
+                // OpenAI-compatible API; `provider_api chat|responses` (ADR 0033).
+                "agent" | "provider_api" => cx.update(|cx| {
+                    let Some(state) = ui::first_repo_state(cx) else {
+                        return;
+                    };
+                    let edit = match (cmd, arg.trim()) {
+                        ("agent", a) => ProviderEdit::Agent(berth_protocol::Agent::parse(a)),
+                        (_, "chat") => ProviderEdit::Api(berth_core::ProviderApi::ChatCompletions),
+                        _ => ProviderEdit::Api(berth_core::ProviderApi::Responses),
+                    };
+                    state.read(cx).backend.send(Command::EditProvider(edit));
+                }),
                 "prompt" | "answer" => cx.update(|cx| {
                     let Some(state) = ui::first_repo_state(cx) else {
                         return;

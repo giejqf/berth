@@ -1,2 +1,6 @@
 allowBuilds:
   esbuild: true
+  # Pi's dependencies (dev only, ADR 0033): not needed, never run.
+  "@google/genai": false
+  koffi: false
+  protobufjs: false

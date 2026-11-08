@@ -277,16 +277,49 @@ pub fn describe(name: &str, input: &Value) -> Option<(String, String)> {
                 (format!("Running {}", tick(c)), format!("Ran {}", tick(c)))
             }
         },
-        "Grep" => {
+        "Grep" | "grep" => {
             let p = s("pattern").unwrap_or_default();
             (
                 format!("Searching for {}", tick(p)),
                 format!("Searched for {}", tick(p)),
             )
         }
-        "Glob" => {
+        "Glob" | "find" => {
             let p = s("pattern").unwrap_or_default();
             (format!("Finding {}", tick(p)), format!("Found {}", tick(p)))
+        }
+        // Pi's own tools (ADR 0033).
+        "read" => {
+            let f = file("path").unwrap_or_default();
+            (
+                format!("Reading {}", tick(&f)),
+                format!("Read {}", tick(&f)),
+            )
+        }
+        "edit" => {
+            let f = file("path").unwrap_or_default();
+            (
+                format!("Editing {}", tick(&f)),
+                format!("Edited {}", tick(&f)),
+            )
+        }
+        "write" => {
+            let f = file("path").unwrap_or_default();
+            (
+                format!("Writing {}", tick(&f)),
+                format!("Wrote {}", tick(&f)),
+            )
+        }
+        "bash" => {
+            let c = s("command").unwrap_or_default();
+            (format!("Running {}", tick(c)), format!("Ran {}", tick(c)))
+        }
+        "ls" => {
+            let p = s("path").unwrap_or(".");
+            (
+                format!("Listing {}", tick(p)),
+                format!("Listed {}", tick(p)),
+            )
         }
         "WebFetch" => {
             let u = s("url").unwrap_or_default();
@@ -372,6 +405,25 @@ mod tests {
         // The agent's line is still there once it is done.
         assert_eq!(a.headline(), "Reading the config");
         assert!(!a.observe("system", &serde_json::json!({"subtype": "init"}), None, 3));
+    }
+
+    #[test]
+    fn pis_tools_are_steps_too() {
+        let d = |name: &str, input: Value| describe(name, &input).map(|(doing, _)| doing);
+        assert_eq!(
+            d("read", json!({"path": "/w/src/main.rs"})).as_deref(),
+            Some("Reading `main.rs`")
+        );
+        assert_eq!(
+            d("edit", json!({"path": "lib.rs", "edits": []})).as_deref(),
+            Some("Editing `lib.rs`")
+        );
+        assert_eq!(
+            d("bash", json!({"command": "ls"})).as_deref(),
+            Some("Running `ls`")
+        );
+        // Berth's own tools are no step, as from Claude Code.
+        assert_eq!(d("mcp__berth__write_summary", json!({})), None);
     }
 
     #[test]

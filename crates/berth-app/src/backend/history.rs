@@ -91,6 +91,10 @@ impl Shared {
         let Some(session_id) = wf.claude_session_id.clone() else {
             return;
         };
+        // A Pi conversation isn't in Claude Code's history (ADR 0033).
+        if self.core().store.workflow_agent(&wf.id).ok() == Some(berth_protocol::Agent::Pi) {
+            return;
+        }
         let title = slot
             .custom_name
             .clone()

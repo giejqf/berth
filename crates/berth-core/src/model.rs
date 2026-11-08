@@ -434,6 +434,8 @@ pub struct WorkflowFacts {
     /// The workflows it exchanged messages with, in the order they first did
     /// (ADR 0021).
     pub peers: Vec<MessagePeer>,
+    /// The agent its conversation runs on (ADR 0033).
+    pub agent: berth_protocol::Agent,
 }
 
 /// Another slot's workflow a workflow exchanged messages with.

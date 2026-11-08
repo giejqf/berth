@@ -4,9 +4,7 @@
 // the app, which persists it. It owns only what must happen in-process: blocking
 // tool calls, branch attribution from the stream, and the nudge loop.
 
-import { randomUUID } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
 
 import {
   query as sdkQuery,
@@ -23,26 +21,7 @@ import {
 import { AGENT_TOOLS, BranchTracker, agentResult, taskStatus, type Branch } from "./branches.js";
 import type { Logger } from "./log.js";
 import type { Emitter } from "./ndjson.js";
-import type {
-  AskUserInput,
-  Effort,
-  FollowUp,
-  FollowUpInput,
-  JsonValue,
-  MessageSlotInput,
-  PresentArtifactInput,
-  PresentReviewInput,
-  RecordDecisionInput,
-  RecordOutcomeInput,
-  ReplyInput,
-  RequestSlotInput,
-  RequestSlotResult,
-  SessionResume,
-  SessionStart,
-  TerminalKind,
-  TurnAttachment,
-  WriteSummaryInput,
-} from "./protocol.js";
+import type { Effort, JsonValue, SessionResume, SessionStart, TurnAttachment } from "./protocol.js";
 import { AsyncQueue } from "./queue.js";
 import { TaskTracker } from "./tasks.js";
 import {
@@ -53,88 +32,16 @@ import {
   quotaFromRateLimit,
   quotaFromUsage,
 } from "./usage.js";
-import { berthToolName, createBerthServer, type CallContext, type ToolHost, type ToolOutcome } from "./tools.js";
+import { BerthHost, SLASH_COMMAND, artifactLink, type Lane } from "./host.js";
+import { berthSystemPrompt, skillsPrompt, subagentLimitText, type AgentLimits } from "./prompt.js";
+import { berthToolName, createBerthServer, type CallContext } from "./tools.js";
 import { VERSION } from "./version.js";
-
-/** What Settings lets the agent do beyond its slot (ADR 0032). */
-export interface AgentLimits {
-  /** `message_slot` is on offer. */
-  slotMessages: boolean;
-  /** The most subagents at once; 0, none; undefined, no limit of Berth's. */
-  maxSubagents?: number;
-}
-
-/** Berth's part of the system prompt, for what the agent may do. */
-export function berthSystemPrompt(limits: AgentLimits): string {
-  const max = limits.maxSubagents;
-  return [
-    BERTH_PROMPT_HEAD,
-    ...(limits.slotMessages ? [MESSAGE_SLOT_PROMPT] : []),
-    BERTH_PROMPT_TAIL,
-    ...(max === undefined || max === 0
-      ? []
-      : [
-          `- Run at most ${max} ${max === 1 ? "subagent" : "subagents"} at a time (the user's setting in Berth); start another once one has finished.`,
-        ]),
-    // Without subagents, Claude Code's Agent tool isn't on offer either.
-    ...(max === 0 ? [] : [SUBAGENT_PROMPT]),
-  ].join("\n");
-}
-
-const BERTH_PROMPT_HEAD = `You are working inside Berth. The user never reads or edits code: they follow your decisions, answer your questions, review diffs, and ship pull requests.
-
-How to work:
-- Announce each meaningful decision with the berth \`record_decision\` tool the moment you make it (an approach chosen, a trade-off accepted, a convention adopted). Short title; the why goes in the rationale.
-- Never narrate file edits or tool use in prose. The user reviews the diff separately.
-- End every round with exactly one of these berth tools: \`ask_user\` when you need the user's input, \`write_summary\` when you finished a chunk of work for the user to review, \`reply\` when you answered a question or discussed something without changing files for them to review, or \`record_outcome\` when the workflow is done (usually right after opening a PR). Never end a turn without one of them, and never call two.
-- The user reads only the berth tools' content, not your other text. When they ask you something, the answer goes in \`reply\` (or in \`write_summary\`'s notes when you also changed files), complete and in Markdown.
-- Ask questions only through \`ask_user\`, never through AskUserQuestion or plain text.
-- Use \`gh\` for GitHub. Open PRs with \`gh pr create\`, then call \`record_outcome\` with kind "pr" and the PR URL as ref.
-- When the workflow's result is a page you published with Claude Code's \`Artifact\` tool rather than code to merge, end it with \`record_outcome\` kind "claude_artifact" and the claude.ai link the publish returned as ref. (\`present_artifact\` only shows the user a file; it publishes nothing.)
-- Use the connector CLIs described by their skills for external systems (Linear, PostHog, ...).
-- Run the repository's gates (tests, lint, typecheck) before \`write_summary\` when you changed code.
-- When you review code (because the user asked, or a reviewer subagent reported back), present the findings with \`present_review\` rather than listing them in prose or a summary, then act on the decisions it returns: fix what the user marked fix, leave the dismissed ones, follow their words on the rest.`;
-
-const MESSAGE_SLOT_PROMPT = `- Other slots in this repository may be building other parts of the same thing (the backend to your frontend). When their work needs to know something (a bug you found in their part, an interface you need from them or changed for them), tell them with \`message_slot\` rather than changing their code, then carry on with your own work. A turn that starts with "Message from slot" is another slot's agent writing to you: act on it as you would on the user's request, answer with \`message_slot\` when it needs an answer, and end the round as usual.`;
-
-const BERTH_PROMPT_TAIL = `- When you make something the user should see (a screenshot, a screen recording, a rendered chart or page, a report), save it to a file and call \`present_artifact\` with its path and a short title. Never paste images or long output into text.
-- Files the user attached are listed at the end of their message, with paths you can read; attached images are also shown to you directly.`;
-
-const SUBAGENT_PROMPT = "- Subagents may only call `record_decision`; they report everything else back to you.";
-
-/** The whole of it, with every tool on offer and no subagent limit. */
-export const BERTH_SYSTEM_PROMPT = berthSystemPrompt({ slotMessages: true });
-
-/** What an agent reads when the subagent limit holds a spawn back. */
-export function subagentLimitText(max: number): string {
-  const what = max === 1 ? "one subagent at a time" : `${max} subagents at a time`;
-  return `Not started: the user's setting in Berth allows ${what}, and that many are running. Start it once one has finished, or do this part yourself.`;
-}
 
 /** Claude Code's tool that publishes pages to claude.ai. */
 const ARTIFACT_TOOL = "Artifact";
-const ARTIFACT_REF_ERROR =
-  "For kind claude_artifact, ref must be the artifact's claude.ai link (https://claude.ai/artifact/… or https://claude.ai/code/artifact/…), as the Artifact tool's publish returned it.";
 
-/** A claude.ai artifact link in one form (https, no query, no trailing
- * slash), or undefined when `ref` is not one. */
-export function artifactLink(ref: string): string | undefined {
-  const raw = ref.trim();
-  let url: URL;
-  try {
-    url = new URL(/^claude\.ai\//.test(raw) ? `https://${raw}` : raw);
-  } catch {
-    return undefined;
-  }
-  const path = url.pathname.replace(/\/+$/, "");
-  if (url.protocol !== "https:" || url.hostname !== "claude.ai") return undefined;
-  if (!/^\/(code\/)?artifact\/[^/]+$/.test(path)) return undefined;
-  return `https://claude.ai${path}`;
-}
-
-export const NUDGE_TEXT = "End this round with ask_user, write_summary, reply, or record_outcome.";
-export const MAX_NUDGES = 2;
-export const SUBAGENT_TOOL_ERROR = "Not available to subagents; report this back to the main agent.";
+export { MAX_NUDGES, NUDGE_TEXT, SUBAGENT_TOOL_ERROR, artifactLink } from "./host.js";
+export { BERTH_SYSTEM_PROMPT, berthSystemPrompt, subagentLimitText, type AgentLimits } from "./prompt.js";
 /** Largest attached image sent to Claude as an image block (larger ones go by path only). */
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"] as const;
@@ -174,25 +81,8 @@ export function claudePath(): string | undefined {
   return process.env.BERTH_CLAUDE_PATH || undefined;
 }
 
-type TerminalTool = "ask_user" | "present_review" | "write_summary" | "record_outcome" | "reply";
-
-interface Round {
-  startedAt: number;
-  startTotalUsd: number;
-  nudges: number;
-  /** Accepted terminal call; `ask_user` and `present_review` clear again once answered (§5.3). */
-  terminal: TerminalTool | null;
-  interrupted: boolean;
-  lastText?: string;
-  /** The turn that opened it was a slash command (`/name`). */
-  command?: boolean;
-}
-
 /** How Claude Code's refusal of a guarded resume starts (`resumeDropsTurn`). */
 export const RESUME_REJECTED = "Resume rejected by --resume-drops-turn:";
-
-/** `/name` at the start of a turn: what Claude Code would run as a command. */
-const SLASH_COMMAND = /^\/[A-Za-z0-9][A-Za-z0-9:._-]*(?:\s|$)/;
 
 interface ObservedToolUse {
   id: string;
@@ -202,11 +92,6 @@ interface ObservedToolUse {
   claimed: boolean;
 }
 
-interface Pending<T> {
-  resolve(value: T): void;
-  reject(err: Error): void;
-}
-
 export interface SessionDeps {
   emitter: Emitter;
   log: Logger;
@@ -214,11 +99,8 @@ export interface SessionDeps {
   now?: () => number;
 }
 
-export class Session implements ToolHost {
-  private readonly emitter: Emitter;
-  private readonly log: Logger;
+export class Session extends BerthHost {
   private readonly queryFn: QueryFn;
-  private readonly now: () => number;
   private input = new AsyncQueue<SDKUserMessage>();
   /** How the session started, for a plain resume when Claude Code refuses
    * a rewind's guarded one (ADR 0016). */
@@ -230,14 +112,6 @@ export class Session implements ToolHost {
   private readonly tasks: TaskTracker;
   private readonly toolUses = new Map<string, ObservedToolUse>();
   private readonly toolUseWaiters = new Map<string, Array<(t: ObservedToolUse) => void>>();
-  private readonly questions = new Map<string, Pending<string>>();
-  private readonly reviews = new Map<string, Pending<string>>();
-  private readonly slotRequests = new Map<string, Pending<RequestSlotResult>>();
-  /** `message_slot` calls waiting for the app to say where the message went. */
-  private readonly slotMessages = new Map<string, Pending<ToolOutcome>>();
-  /** claude.ai artifacts this session published with the Artifact tool:
-   * link → title, for an Outcome that names one (ADR 0020). */
-  private readonly published = new Map<string, string | undefined>();
   /** The most subagents at once, as the app said at the start (ADR 0032). */
   private maxSubagents?: number;
   /** Agent calls the limit let through, until their branch collects. */
@@ -249,10 +123,7 @@ export class Session implements ToolHost {
   private consuming?: Promise<void>;
   private startReplyTo?: string;
   private claudeSessionId?: string;
-  private round?: Round;
-  private cwd = "";
   private seq = 0;
-  private totalUsd = 0;
   /** A context report is being made; `contextAgain` asks for one more after it. */
   private contextBusy = false;
   private contextAgain = false;
@@ -261,10 +132,8 @@ export class Session implements ToolHost {
   private terminalCommands: string[] = [];
 
   constructor(deps: SessionDeps) {
-    this.emitter = deps.emitter;
-    this.log = deps.log;
+    super(deps.emitter, deps.log, deps.now ?? Date.now);
     this.queryFn = deps.query ?? defaultQuery;
-    this.now = deps.now ?? Date.now;
     this.branches = new BranchTracker(this.now);
     this.tasks = new TaskTracker(this.now);
   }
@@ -369,17 +238,7 @@ export class Session implements ToolHost {
   async interrupt(): Promise<void> {
     if (!this.q || !this.round) return;
     this.round.interrupted = true;
-    for (const pending of [this.questions, this.reviews]) {
-      for (const [id, p] of pending) {
-        p.reject(new Error("Interrupted by the user."));
-        pending.delete(id);
-      }
-    }
-    for (const [id, p] of this.slotRequests) {
-      p.resolve({ approved: false });
-      this.slotRequests.delete(id);
-    }
-    this.settleSlotMessages("Interrupted by the user before the app confirmed delivery.");
+    this.abandonPending("Interrupted by the user.", "Interrupted by the user before the app confirmed delivery.");
     try {
       await this.q.interrupt();
     } catch (e) {
@@ -392,51 +251,10 @@ export class Session implements ToolHost {
     this.q?.close();
   }
 
-  answer(questionId: string, text: string): void {
-    const pending = this.questions.get(questionId);
-    if (!pending) {
-      this.error(`no pending question ${questionId}`, false);
-      return;
-    }
-    this.questions.delete(questionId);
-    pending.resolve(text);
-  }
 
-  answerReview(reviewId: string, text: string): void {
-    const pending = this.reviews.get(reviewId);
-    if (!pending) {
-      this.error(`no pending review ${reviewId}`, false);
-      return;
-    }
-    this.reviews.delete(reviewId);
-    pending.resolve(text);
-  }
 
-  /** The app routed a `message_slot` call: its result is what the agent reads. */
-  resolveSlotMessage(requestId: string, ok: boolean, text: string): void {
-    const pending = this.slotMessages.get(requestId);
-    if (!pending) {
-      this.error(`no pending slot message ${requestId}`, false);
-      return;
-    }
-    this.slotMessages.delete(requestId);
-    pending.resolve(ok ? { ok: true, text } : { ok: false, error: text });
-  }
 
-  private settleSlotMessages(why: string): void {
-    for (const p of this.slotMessages.values()) p.resolve({ ok: false, error: why });
-    this.slotMessages.clear();
-  }
 
-  resolveSlotRequest(requestId: string, approved: boolean, slotId?: string): void {
-    const pending = this.slotRequests.get(requestId);
-    if (!pending) {
-      this.error(`no pending slot request ${requestId}`, false);
-      return;
-    }
-    this.slotRequests.delete(requestId);
-    pending.resolve(slotId ? { approved, slot_id: slotId } : { approved });
-  }
 
   // ---- SDK stream ----
 
@@ -446,12 +264,7 @@ export class Session implements ToolHost {
     resumeAt: string | undefined,
     dropsTurn: string | undefined,
   ): Options {
-    const skills =
-      msg.connector_skills.length > 0
-        ? `\n\nConnector skills installed in this checkout:\n${msg.connector_skills
-            .map((s) => `- ${s.name}: ${s.description}`)
-            .join("\n")}`
-        : "";
+    const skills = skillsPrompt(msg.connector_skills);
     const limits: AgentLimits = {
       slotMessages: msg.slot_messages !== false,
       ...(msg.max_subagents === undefined ? {} : { maxSubagents: msg.max_subagents }),
@@ -514,13 +327,7 @@ export class Session implements ToolHost {
       if (q !== this.q) return;
       this.error(`agent stream failed: ${(e as Error).message}`, true);
     } finally {
-      for (const pending of [this.questions, this.reviews]) {
-        for (const p of pending.values()) p.reject(new Error("Session ended."));
-        pending.clear();
-      }
-      for (const p of this.slotRequests.values()) p.resolve({ approved: false });
-      this.slotRequests.clear();
-      this.settleSlotMessages("The session ended before the app confirmed delivery.");
+      this.abandonPending("Session ended.", "The session ended before the app confirmed delivery.");
     }
   }
 
@@ -898,25 +705,22 @@ export class Session implements ToolHost {
     this.emitter.emit({ type: "session.cost", total_usd: this.totalUsd });
     void this.reportContext();
     void this.reportQuota();
-    const round = this.round;
-    if (!round) return;
-    if (round.interrupted) return this.endRound("interrupted");
-    if (round.terminal === "write_summary" || round.terminal === "record_outcome" || round.terminal === "reply") {
-      return this.endRound(round.terminal);
-    }
-    if (isError) return this.endRound("error");
-    // A message the user sent while it worked runs next, and carries the
-    // round on: no nudge ahead of it (ADR 0018).
-    if (queued > 0) return;
-    // No model turn for a slash command: Claude Code ran it by itself
-    // (/compact, /context). Nothing to nudge (ADR 0015).
-    if (numTurns === 0 && round.nudges === 0 && round.command) return this.endRound("command");
-    if (round.nudges < MAX_NUDGES) {
-      round.nudges += 1;
-      this.push(NUDGE_TEXT);
-      return;
-    }
-    this.endRound("unterminated");
+    this.settleRound(isError, numTurns, queued);
+  }
+
+  protected nudge(text: string): void {
+    this.push(text);
+  }
+
+  protected override onRoundEnd(): void {
+    // A call let through that never showed up in the stream isn't running.
+    for (const id of this.admitted) if (!this.branches.get(id)) this.admitted.delete(id);
+    this.heldBack.clear();
+  }
+
+  /** Which lane a tool call belongs to, from the stream (§5.4). */
+  protected lane(call: CallContext, input: unknown, tool: string): Promise<Lane> {
+    return this.attribute(call, input, tool);
   }
 
   /** A PreToolUse hook on Claude Code's Agent tool: let it start while
@@ -938,26 +742,7 @@ export class Session implements ToolHost {
     };
   }
 
-  private endRound(kind: TerminalKind): void {
-    const round = this.round;
-    if (!round) return;
-    this.round = undefined;
-    // A call let through that never showed up in the stream isn't running.
-    for (const id of this.admitted) if (!this.branches.get(id)) this.admitted.delete(id);
-    this.heldBack.clear();
-    this.emitter.emit({
-      type: "round.ended",
-      terminal_kind: kind,
-      cost_usd: Math.max(0, this.totalUsd - round.startTotalUsd),
-      duration_ms: Math.max(0, this.now() - round.startedAt),
-      nudges: round.nudges,
-      ...(round.lastText ? { last_text: round.lastText } : {}),
-    });
-  }
 
-  private newRound(): Round {
-    return { startedAt: this.now(), startTotalUsd: this.totalUsd, nudges: 0, terminal: null, interrupted: false };
-  }
 
   private push(text: string, attachments: TurnAttachment[] = [], uuid?: string): void {
     const images = attachments.flatMap((a) => this.imageBlock(a));
@@ -990,10 +775,6 @@ export class Session implements ToolHost {
     }
   }
 
-  private error(message: string, fatal: boolean, replyTo?: string): void {
-    this.log.error({ fatal }, message);
-    this.emitter.emit({ type: "session.error", message, fatal }, replyTo);
-  }
 
   // ---- attribution ----
 
@@ -1020,8 +801,7 @@ export class Session implements ToolHost {
     });
   }
 
-  /** Which lane a tool call belongs to, from the stream (§5.4). */
-  private async attribute(call: CallContext, input: unknown, tool: string): Promise<{ branchId?: string; inSubagent: boolean }> {
+  private async attribute(call: CallContext, input: unknown, tool: string): Promise<Lane> {
     let observed: ObservedToolUse | undefined;
     if (call.toolUseId) {
       observed = await this.waitForToolUse(call.toolUseId);
@@ -1039,186 +819,16 @@ export class Session implements ToolHost {
     return { branchId: branch?.branchId, inSubagent: true };
   }
 
-  /** Accept a terminal call for the current round, or explain why not (§5.3). */
-  private claimTerminal(tool: TerminalTool): string | undefined {
-    this.round ??= this.newRound();
-    const current = this.round.terminal;
-    if (current) {
-      return `This round already ended with ${current}; only the first terminal call counts. End your turn now.`;
-    }
-    this.round.terminal = tool;
-    return undefined;
-  }
 
-  private followUps(input: FollowUpInput[] | undefined): FollowUp[] {
-    return (input ?? []).map((f) => ({ id: f.id ?? randomUUID(), title: f.title, description: f.description }));
-  }
 
   // ---- ToolHost ----
 
-  async recordDecision(input: RecordDecisionInput, call: CallContext): Promise<ToolOutcome> {
-    const lane = await this.attribute(call, input, "record_decision");
-    this.emitter.emit({
-      type: "node.decision",
-      title: input.title,
-      rationale: input.rationale,
-      affects: input.affects ?? [],
-      reversible: input.reversible ?? true,
-      ...(lane.branchId ? { branch_id: lane.branchId } : {}),
-    });
-    return { ok: true, text: "Decision recorded." };
-  }
 
-  async askUser(input: AskUserInput, call: CallContext): Promise<ToolOutcome> {
-    if ((await this.attribute(call, input, "ask_user")).inSubagent) return { ok: false, error: SUBAGENT_TOOL_ERROR };
-    const rejected = this.claimTerminal("ask_user");
-    if (rejected) return { ok: false, error: rejected };
-    const questionId = randomUUID();
-    const answer = new Promise<string>((resolve, reject) => this.questions.set(questionId, { resolve, reject }));
-    this.emitter.emit({
-      type: "node.question",
-      question_id: questionId,
-      question: input.question,
-      options: input.options ?? [],
-      allow_free_text: input.allow_free_text ?? true,
-    });
-    try {
-      const text = await answer;
-      return { ok: true, text: `The user answered: ${text}` };
-    } catch (e) {
-      return { ok: false, error: (e as Error).message };
-    } finally {
-      // The answer resumes the same round; it still needs its own terminal call.
-      if (this.round?.terminal === "ask_user") this.round.terminal = null;
-    }
-  }
 
-  async presentReview(input: PresentReviewInput, call: CallContext): Promise<ToolOutcome> {
-    if ((await this.attribute(call, input, "present_review")).inSubagent) {
-      return { ok: false, error: SUBAGENT_TOOL_ERROR };
-    }
-    const rejected = this.claimTerminal("present_review");
-    if (rejected) return { ok: false, error: rejected };
-    const reviewId = randomUUID();
-    const decisions = new Promise<string>((resolve, reject) => this.reviews.set(reviewId, { resolve, reject }));
-    this.emitter.emit({
-      type: "node.review",
-      review_id: reviewId,
-      findings: input.findings,
-      ...(input.summary ? { summary: input.summary } : {}),
-    });
-    try {
-      const text = await decisions;
-      return { ok: true, text: `The user's decisions on your findings:\n${text}` };
-    } catch (e) {
-      return { ok: false, error: (e as Error).message };
-    } finally {
-      // Like an answer, the decisions resume the round; it still needs its own terminal call.
-      if (this.round?.terminal === "present_review") this.round.terminal = null;
-    }
-  }
 
-  async writeSummary(input: WriteSummaryInput, call: CallContext): Promise<ToolOutcome> {
-    if ((await this.attribute(call, input, "write_summary")).inSubagent) {
-      return { ok: false, error: SUBAGENT_TOOL_ERROR };
-    }
-    const rejected = this.claimTerminal("write_summary");
-    if (rejected) return { ok: false, error: rejected };
-    this.emitter.emit({
-      type: "node.summary",
-      done: input.done,
-      remaining: input.remaining,
-      follow_ups: this.followUps(input.follow_ups),
-      ...(input.notes ? { notes: input.notes } : {}),
-    });
-    return { ok: true, text: "Summary recorded; the section is closed. End your turn now." };
-  }
 
-  async reply(input: ReplyInput, call: CallContext): Promise<ToolOutcome> {
-    if ((await this.attribute(call, input, "reply")).inSubagent) {
-      return { ok: false, error: SUBAGENT_TOOL_ERROR };
-    }
-    const rejected = this.claimTerminal("reply");
-    if (rejected) return { ok: false, error: rejected };
-    this.emitter.emit({ type: "node.reply", message: input.message });
-    return { ok: true, text: "Reply shown to the user. End your turn now." };
-  }
 
-  async recordOutcome(input: RecordOutcomeInput, call: CallContext): Promise<ToolOutcome> {
-    if ((await this.attribute(call, input, "record_outcome")).inSubagent) {
-      return { ok: false, error: SUBAGENT_TOOL_ERROR };
-    }
-    let ref = input.ref;
-    let title: string | undefined;
-    if (input.kind === "claude_artifact") {
-      const link = artifactLink(ref) ?? (this.published.has(ref.trim()) ? ref.trim() : undefined);
-      if (!link) return { ok: false, error: ARTIFACT_REF_ERROR };
-      ref = link;
-      title = this.published.get(link);
-    }
-    const rejected = this.claimTerminal("record_outcome");
-    if (rejected) return { ok: false, error: rejected };
-    this.emitter.emit({
-      type: "node.outcome",
-      kind: input.kind,
-      ref,
-      summary: input.summary,
-      follow_ups: this.followUps(input.follow_ups),
-      ...(title ? { title } : {}),
-    });
-    return { ok: true, text: "Outcome recorded; the workflow is complete. End your turn now." };
-  }
 
-  async presentArtifact(input: PresentArtifactInput, call: CallContext): Promise<ToolOutcome> {
-    if ((await this.attribute(call, input, "present_artifact")).inSubagent) {
-      return { ok: false, error: SUBAGENT_TOOL_ERROR };
-    }
-    const path = isAbsolute(input.path) ? input.path : resolve(this.cwd, input.path);
-    let size: number;
-    try {
-      const st = statSync(path);
-      if (!st.isFile()) return { ok: false, error: `Not a file: ${path}` };
-      size = st.size;
-    } catch {
-      return { ok: false, error: `No file at ${path}. Save it first, then call present_artifact.` };
-    }
-    this.emitter.emit({
-      type: "node.artifact",
-      artifact_id: randomUUID(),
-      path,
-      title: input.title,
-      ...(input.description ? { description: input.description } : {}),
-      size_bytes: size,
-    });
-    return { ok: true, text: `Shown to the user as "${input.title}".` };
-  }
 
-  async messageSlot(input: MessageSlotInput, call: CallContext): Promise<ToolOutcome> {
-    if ((await this.attribute(call, input, "message_slot")).inSubagent) {
-      return { ok: false, error: SUBAGENT_TOOL_ERROR };
-    }
-    const requestId = randomUUID();
-    const routed = new Promise<ToolOutcome>((resolve, reject) => this.slotMessages.set(requestId, { resolve, reject }));
-    this.emitter.emit({ type: "slot.message", request_id: requestId, to: input.to, message: input.message });
-    return routed;
-  }
 
-  async requestSlot(input: RequestSlotInput, call: CallContext): Promise<ToolOutcome> {
-    if ((await this.attribute(call, input, "request_slot")).inSubagent) {
-      return { ok: false, error: SUBAGENT_TOOL_ERROR };
-    }
-    const requestId = randomUUID();
-    const resolved = new Promise<RequestSlotResult>((resolve, reject) =>
-      this.slotRequests.set(requestId, { resolve, reject }),
-    );
-    this.emitter.emit({
-      type: "slot.request",
-      request_id: requestId,
-      name: input.name,
-      purpose: input.purpose,
-      ...(input.from_follow_up ? { from_follow_up: input.from_follow_up } : {}),
-    });
-    const r = await resolved;
-    return { ok: true, text: JSON.stringify(r) };
-  }
 }

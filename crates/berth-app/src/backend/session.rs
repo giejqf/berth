@@ -8,8 +8,8 @@ use std::time::Duration;
 use anyhow::{Result, anyhow};
 use berth_core::{AnswerDelivery, Effect, Engine, SlotState, WorkflowState, prompt};
 use berth_protocol::{
-    AppToSidecar, ConnectorSkill, FindingAction, QuestionAnswer, ReviewAnswer, SessionResume,
-    SessionStart, SessionTurn, TurnAttachment,
+    Agent, AppToSidecar, ConnectorSkill, FindingAction, PiApi, PiModel, PiProvider, QuestionAnswer,
+    ReviewAnswer, SessionResume, SessionStart, SessionTurn, TurnAttachment,
 };
 use berth_sidecar_client::{Sidecar, SidecarEvent};
 use berth_slot::Placement;
@@ -54,11 +54,29 @@ impl Shared {
             (wf, slot, repo)
         };
         // An `inside` slot's agent runs on its own sign-in; one on this Mac
-        // goes through the proxy under an OpenAI-compatible API (ADR 0023).
+        // goes through the proxy under an OpenAI-compatible API (ADR 0023),
+        // or is Pi there (ADR 0033).
         let host = slot.placement != Placement::Inside.as_str();
         let provider = self.provider();
-        let through_proxy = host && provider.is_openai();
-        let model = self.session_model(&provider, slot.model.as_deref(), through_proxy)?;
+        // A conversation keeps the agent it started on.
+        let agent = if wf.claude_session_id.is_some() {
+            self.core().store.workflow_agent(&wf.id)?
+        } else {
+            provider.new_agent(host)
+        };
+        let pi = agent == Agent::Pi;
+        if pi && !host {
+            return Err(anyhow!(
+                "This conversation ran on Pi, which runs only for slots on this Mac. Start a new workflow here."
+            ));
+        }
+        if pi && !provider.is_openai() {
+            return Err(anyhow!(
+                "This conversation ran on Pi, which needs the OpenAI-compatible API. Switch Settings › Model provider back to it, or start a new workflow."
+            ));
+        }
+        let through_proxy = host && provider.is_openai() && !pi;
+        let model = self.session_model(&provider, slot.model.as_deref(), through_proxy || pi)?;
         if !wf.state.is_open() {
             return Err(anyhow!("this workflow is closed"));
         }
@@ -77,8 +95,12 @@ impl Shared {
                 ),
             });
         }
-        // Berth.app's first agent waits for the SDK and Claude Code to download.
-        self.agent_installed(host).await?;
+        // Berth.app's first agent waits for the SDK and Claude Code to
+        // download; Pi's, for the SDK (the sidecar loads it) and Pi.
+        self.agent_installed(host && !pi).await?;
+        if pi {
+            self.pi_installed().await?;
+        }
         let checkout = slot
             .checkout_path
             .clone()
@@ -154,6 +176,11 @@ impl Shared {
         let cmd = if host {
             let mut cmd = self.launch.command()?;
             cmd.current_dir(&checkout).envs(&env);
+            // Pi's key: in the sidecar's environment, which it takes out
+            // before the agent runs anything; never in a message (ADR 0033).
+            if pi && let Some(key) = self.provider_key() {
+                cmd.env("BERTH_PI_API_KEY", key);
+            }
             if through_proxy {
                 for name in super::provider::DISPLACED_ENV {
                     if !env.contains_key(name) {
@@ -192,6 +219,22 @@ impl Shared {
             ),
             slot_messages: limits.messages.allows(),
             max_subagents: limits.max_subagents,
+            agent,
+            pi: pi.then(|| PiProvider {
+                base_url: provider.base_url.clone(),
+                api: match provider.api {
+                    berth_core::ProviderApi::Responses => PiApi::Responses,
+                    berth_core::ProviderApi::ChatCompletions => PiApi::Chat,
+                },
+                models: provider
+                    .models
+                    .iter()
+                    .map(|m| PiModel {
+                        id: m.clone(),
+                        context_window: provider.context_of(m),
+                    })
+                    .collect(),
+            }),
         };
         let (resume_at, drops_turn) = {
             let core = self.core();
@@ -209,6 +252,9 @@ impl Shared {
             }),
             None => AppToSidecar::SessionStart(start),
         };
+        if wf.claude_session_id.is_none() {
+            self.core().store.set_workflow_agent(&wf.id, agent)?;
+        }
         self.core().engine.session_started(&wf.id);
         session.send(msg)?;
         lock(&self.sessions).insert(wf.id.clone(), session.clone());

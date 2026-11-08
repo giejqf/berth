@@ -29,6 +29,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0011_workflow_status.sql"),
     include_str!("../migrations/0012_viewed_files.sql"),
     include_str!("../migrations/0013_workflow_from.sql"),
+    include_str!("../migrations/0014_workflow_agent.sql"),
 ];
 
 pub struct Store {
@@ -828,6 +829,25 @@ impl Store {
         Ok(())
     }
 
+    /// The agent the workflow's conversation runs on (ADR 0033).
+    pub fn workflow_agent(&self, id: &str) -> Result<berth_protocol::Agent> {
+        let agent: String =
+            self.conn
+                .query_row("SELECT agent FROM workflows WHERE id = ?1", [id], |r| {
+                    r.get(0)
+                })?;
+        Ok(berth_protocol::Agent::parse(&agent))
+    }
+
+    /// Set when the workflow's first session starts.
+    pub fn set_workflow_agent(&self, id: &str, agent: berth_protocol::Agent) -> Result<()> {
+        self.conn.execute(
+            "UPDATE workflows SET agent = ?2 WHERE id = ?1",
+            params![id, agent.as_str()],
+        )?;
+        Ok(())
+    }
+
     /// The uuid of the user message that opened round `id`, when Berth sent one.
     pub fn round_turn(&self, id: &str) -> Result<Option<String>> {
         Ok(self
@@ -1370,15 +1390,15 @@ impl Store {
             }
             _ => None,
         };
-        let from_workflow: Option<String> = self
+        let (from_workflow, agent): (Option<String>, String) = self
             .conn
             .query_row(
-                "SELECT from_workflow_id FROM workflows WHERE id = ?1",
+                "SELECT from_workflow_id, agent FROM workflows WHERE id = ?1",
                 [workflow_id],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?
-            .flatten();
+            .unwrap_or_default();
         let mut stmt = self.conn.prepare(
             "SELECT json_extract(payload_json, '$.peer_workflow_id'), \
              SUM(json_extract(payload_json, '$.direction') = 'sent'), \
@@ -1406,6 +1426,7 @@ impl Store {
             status,
             from_workflow,
             peers,
+            agent: berth_protocol::Agent::parse(&agent),
         })
     }
 

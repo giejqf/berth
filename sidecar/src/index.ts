@@ -1,12 +1,33 @@
-// Sidecar entrypoint: NDJSON over stdio between the app and one Agent SDK session.
+// Sidecar entrypoint: NDJSON over stdio between the app and one agent
+// session: Claude Code's (the Agent SDK), or Pi's (ADR 0033).
 
 import { listPast, renamePast } from "./history.js";
 import { createLogger, type Logger } from "./log.js";
 import { NdjsonWriter, parseAppMessage, readLines, type Emitter } from "./ndjson.js";
-import type { AppMessage } from "./protocol.js";
+import { PiSession, type PiSessionDeps } from "./pi.js";
+import { takeApiKey } from "./pi-load.js";
+import type { AppMessage, Effort, SessionResume, SessionStart, TurnAttachment } from "./protocol.js";
 import { Session, type QueryFn } from "./session.js";
 
-export function dispatch(session: Session, msg: AppMessage, emitter: Emitter): void {
+/** What the app's messages drive: either agent's session. */
+export interface AgentRunner {
+  readonly started: boolean;
+  readonly done: Promise<void>;
+  start(msg: SessionStart | SessionResume, replyTo: string): void;
+  turn(text: string, attachments?: TurnAttachment[], uuid?: string): void;
+  interrupt(): Promise<void>;
+  stop(): void;
+  answer(questionId: string, text: string): void;
+  answerReview(reviewId: string, text: string): void;
+  resolveSlotMessage(requestId: string, ok: boolean, text: string): void;
+  resolveSlotRequest(requestId: string, approved: boolean, slotId?: string): void;
+  configure(model: string | null, effort: Effort | null): Promise<void>;
+  background(toolUseId?: string): Promise<void>;
+  stopTask(taskId: string): Promise<void>;
+  readTask(taskId: string): Promise<void>;
+}
+
+export function dispatch(session: AgentRunner, msg: AppMessage, emitter: Emitter): void {
   switch (msg.type) {
     case "session.start":
     case "session.resume":
@@ -63,9 +84,12 @@ export async function run(opts: {
   output: NodeJS.WritableStream;
   log: Logger;
   query?: QueryFn;
+  pi?: Pick<PiSessionDeps, "load" | "agentDir">;
 }): Promise<void> {
+  // Out of the environment before any agent runs a command (ADR 0033).
+  takeApiKey();
   const emitter = new NdjsonWriter(opts.output as import("node:stream").Writable);
-  const session = new Session({ emitter, log: opts.log, query: opts.query });
+  let session: AgentRunner = new Session({ emitter, log: opts.log, query: opts.query });
   // `session.stop` ends the process as stdin closing does: the app waits for
   // the exit, and stdin stays open until it gives up.
   let stopped!: () => void;
@@ -78,6 +102,10 @@ export async function run(opts: {
       return;
     }
     opts.log.debug({ type: msg.type, id: msg.id }, "app message");
+    // A Pi session is the process's from its start on.
+    if ((msg.type === "session.start" || msg.type === "session.resume") && msg.agent === "pi" && !session.started) {
+      session = new PiSession({ emitter, log: opts.log, ...opts.pi });
+    }
     dispatch(session, msg, emitter);
     if (msg.type === "session.stop") stopped();
   });

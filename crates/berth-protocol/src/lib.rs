@@ -88,6 +88,10 @@ pub fn typescript() -> String {
         // messages
         ConnectorSkill,
         SessionStart,
+        Agent,
+        PiProvider,
+        PiApi,
+        PiModel,
         Effort,
         SessionConfigure,
         ModelChoice,
@@ -218,6 +222,15 @@ mod tests {
             title: Some("Fix login".into()),
             slot_messages: false,
             max_subagents: Some(2),
+            agent: Agent::Pi,
+            pi: Some(PiProvider {
+                base_url: "http://127.0.0.1:11434/v1".into(),
+                api: PiApi::Chat,
+                models: vec![PiModel {
+                    id: "qwen3".into(),
+                    context_window: Some(32_768),
+                }],
+            }),
         };
         roundtrip_app(&AppMessage {
             id: "3".into(),
@@ -242,6 +255,7 @@ mod tests {
         };
         assert!(start.slot_messages);
         assert_eq!(start.max_subagents, None);
+        assert_eq!(start.agent, Agent::Claude);
     }
 
     #[test]

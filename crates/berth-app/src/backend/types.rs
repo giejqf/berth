@@ -465,6 +465,32 @@ pub struct ProviderInfo {
     /// An API key is in the Keychain.
     pub key_set: bool,
     pub check: ProviderCheck,
+    /// Pi's download (ADR 0033).
+    pub pi: PiStatus,
+}
+
+/// Where Pi stands on this Mac (ADR 0033).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum PiStatus {
+    /// Run from the workspace: the sidecar's own Pi.
+    #[default]
+    Workspace,
+    /// Downloaded the first time it's needed.
+    NotInstalled {
+        version: String,
+    },
+    Downloading {
+        version: String,
+        done: usize,
+        total: usize,
+    },
+    Ready {
+        version: String,
+    },
+    Failed {
+        version: String,
+        error: String,
+    },
 }
 
 /// What listing the OpenAI-compatible API's models found.
@@ -493,6 +519,8 @@ pub enum ProviderEdit {
     FastModel(Option<String>),
     /// Responses or Chat Completions (ADR 0025).
     Api(berth_core::ProviderApi),
+    /// The agent new conversations run on there (ADR 0033).
+    Agent(berth_protocol::Agent),
     /// A model's context window by hand; `None` goes back to what the
     /// provider lists.
     Context(String, Option<u64>),

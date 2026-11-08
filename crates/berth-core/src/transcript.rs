@@ -383,7 +383,62 @@ impl Renderer {
                 e = e.body(truncate(s("new_source")), BodyStyle::Code);
                 used.extend(["notebook_path", "new_source"]);
             }
-            (false, "Grep" | "Glob") => {
+            // Pi's own tools (ADR 0033).
+            (false, "bash") => {
+                let cmd = s("command");
+                e.summary = one_line(cmd);
+                if cmd.trim().contains('\n') {
+                    e = e.body(cmd.trim(), BodyStyle::Code);
+                }
+                used.extend(["command", "timeout"]);
+            }
+            (false, "read") => {
+                e.summary = path("path");
+                let offset = input.get("offset").and_then(Value::as_u64);
+                let limit = input.get("limit").and_then(Value::as_u64);
+                if let Some(first) = offset.or(limit.map(|_| 1)) {
+                    match limit {
+                        Some(n) => {
+                            let last = first + n.saturating_sub(1);
+                            e.summary.push_str(&format!(" · lines {first}–{last}"));
+                        }
+                        None => e.summary.push_str(&format!(" · from line {first}")),
+                    }
+                }
+                used.extend(["path", "offset", "limit"]);
+            }
+            (false, "write") => {
+                e.summary = path("path");
+                e = e.body(truncate(s("content")), BodyStyle::Code);
+                used.extend(["path", "content"]);
+            }
+            (false, "edit") => {
+                e.summary = path("path");
+                let get =
+                    |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_owned();
+                let mut edits: Vec<(String, String)> = input
+                    .get("edits")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .map(|ed| (get(ed, "oldText"), get(ed, "newText")))
+                    .collect();
+                if edits.is_empty() && input.contains_key("oldText") {
+                    edits.push((s("oldText").to_owned(), s("newText").to_owned()));
+                }
+                let body = edits
+                    .iter()
+                    .map(|(old, new)| diff(old, new))
+                    .collect::<Vec<_>>()
+                    .join("\n⋯\n");
+                e = e.body(body, BodyStyle::Diff);
+                used.extend(["path", "edits", "oldText", "newText"]);
+            }
+            (false, "ls") => {
+                e.summary = path("path");
+                used.push("path");
+            }
+            (false, "Grep" | "Glob" | "grep" | "find") => {
                 e.summary = s("pattern").to_owned();
                 let p = path("path");
                 if !p.is_empty() && p != "." {
@@ -647,6 +702,35 @@ mod tests {
         assert_eq!(out, Some(("a\nb", true, 3_500)));
         assert!(t[1].failed());
         assert_eq!(t[2].summary, "1.5s · $0.5000 · 2 turns");
+    }
+
+    #[test]
+    fn pis_tools_read_as_claude_codes_do() {
+        let events = [
+            row(
+                "system",
+                r#"{"subtype":"init","agent":"pi","model":"m","cwd":"/r/co"}"#,
+                0,
+            ),
+            row(
+                "assistant",
+                r#"{"message":{"content":[
+                    {"type":"tool_use","id":"e","name":"edit","input":{"path":"/r/co/src/a.rs","edits":[{"oldText":"x","newText":"y"},{"oldText":"p","newText":"q"}]}},
+                    {"type":"tool_use","id":"r","name":"read","input":{"path":"src/b.rs","offset":10,"limit":5}},
+                    {"type":"tool_use","id":"b","name":"bash","input":{"command":"cargo test"}}
+                ]}}"#,
+                0,
+            ),
+        ];
+        let t = render(&events, Context::default());
+        assert_eq!(
+            (t[1].title.as_str(), t[1].summary.as_str()),
+            ("edit", "src/a.rs")
+        );
+        assert_eq!(t[1].body, "- x\n+ y\n⋯\n- p\n+ q");
+        assert_eq!(t[2].summary, "src/b.rs · lines 10–14");
+        assert_eq!(t[3].summary, "cargo test");
+        assert!(t[1..].iter().all(|e| e.fields.is_empty()));
     }
 
     #[test]

@@ -55,6 +55,79 @@ pub struct SessionStart {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub max_subagents: Option<u32>,
+    /// Which agent runs the session (ADR 0033).
+    #[serde(default)]
+    pub agent: Agent,
+    /// For Pi: the OpenAI-compatible API it talks to. Its key is in the
+    /// sidecar's environment (`BERTH_PI_API_KEY`), never in a message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub pi: Option<PiProvider>,
+}
+
+/// The agent a session runs: Claude Code, or Pi under an OpenAI-compatible
+/// provider (ADR 0033).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "lowercase")]
+pub enum Agent {
+    #[default]
+    Claude,
+    Pi,
+}
+
+impl Agent {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Pi => "pi",
+        }
+    }
+
+    /// The stored value; anything else is Claude Code.
+    #[must_use]
+    pub fn parse(value: &str) -> Self {
+        if value == "pi" {
+            Self::Pi
+        } else {
+            Self::Claude
+        }
+    }
+
+    /// Its name, as the user reads it.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Claude => "Claude Code",
+            Self::Pi => "Pi",
+        }
+    }
+}
+
+/// The OpenAI-compatible API a Pi session talks to (ADR 0033).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct PiProvider {
+    pub base_url: String,
+    pub api: PiApi,
+    /// The models on offer, the session's own among them.
+    pub models: Vec<PiModel>,
+}
+
+/// Which of OpenAI's APIs: Pi's `openai-responses` or `openai-completions`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "lowercase")]
+pub enum PiApi {
+    Responses,
+    Chat,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct PiModel {
+    pub id: String,
+    /// Its context window, when Berth knows it (set by hand, or listed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub context_window: Option<u64>,
 }
 
 fn yes() -> bool {

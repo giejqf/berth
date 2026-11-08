@@ -5,6 +5,9 @@
 // from `claude-agent-sdk/` beside itself, where the app installs it from npm;
 // dist/claude-agent-sdk.json names the exact packages, with the lockfile's
 // checksums. Run from the workspace, it falls back to sidecar/node_modules.
+//
+// Pi (ADR 0033) is left out too, and installed on first use: dist/pi.json
+// lists every package pi/package-lock.json pins, with its checksum.
 
 import { readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -12,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
 const SDK = "@anthropic-ai/claude-agent-sdk";
+const PI = "@mariozechner/pi-coding-agent";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const dist = join(root, "dist");
@@ -47,6 +51,8 @@ await build({
   format: "esm",
   sourcemap: "linked",
   legalComments: "linked",
+  // Loaded from where the app installs it (sidecar/src/pi-load.ts).
+  external: [PI],
   // CommonJS dependencies (pino) need `require` inside an ESM bundle.
   banner: { js: "import { createRequire as __berthRequire } from 'node:module'; const require = __berthRequire(import.meta.url);" },
   plugins: [
@@ -81,4 +87,36 @@ const manifest = {
 };
 writeFileSync(join(dist, "claude-agent-sdk.json"), `${JSON.stringify(manifest, null, 2)}\n`);
 
-console.log(`built ${join(dist, "sidecar.mjs")} (${SDK} ${version} left out)`);
+// What the app downloads for Pi: every package the lockfile installs, where
+// it goes, and its checksum. Optional packages only when built for macOS (the
+// clipboard's binaries; not koffi, which Pi's terminal UI alone uses). The
+// app skips a package built for the other CPU.
+const piDir = join(root, "pi");
+const piVersion = JSON.parse(readFileSync(join(piDir, "package.json"), "utf8")).dependencies[PI];
+const devPi = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).devDependencies[PI];
+if (piVersion !== devPi) throw new Error(`pi/package.json pins ${PI} ${piVersion}, package.json ${devPi}: bump them together`);
+const piLock = JSON.parse(readFileSync(join(piDir, "package-lock.json"), "utf8"));
+const CPU = { arm64: "aarch64", x64: "x86_64" };
+const piPackages = [];
+for (const [path, p] of Object.entries(piLock.packages)) {
+  if (!path || p.link || p.dev) continue;
+  const macos = p.os?.includes("darwin");
+  if (p.os && !macos) continue;
+  if (p.optional && !macos) continue;
+  const integrity = /^sha512-([A-Za-z0-9+/=]+)$/.exec(p.integrity ?? "");
+  if (!integrity || !p.resolved?.startsWith("https://registry.npmjs.org/")) {
+    throw new Error(`pi/package-lock.json: ${path} has no npm tarball with a sha512`);
+  }
+  const cpus = (p.cpu ?? []).map((c) => CPU[c]).filter(Boolean);
+  if (p.cpu && cpus.length === 0) continue;
+  piPackages.push({
+    path,
+    url: p.resolved,
+    sha512: Buffer.from(integrity[1], "base64").toString("hex"),
+    ...(cpus.length ? { cpu: cpus } : {}),
+  });
+}
+const piManifest = { version: piVersion, entry: `node_modules/${PI}/dist/index.js`, packages: piPackages };
+writeFileSync(join(dist, "pi.json"), `${JSON.stringify(piManifest, null, 2)}\n`);
+
+console.log(`built ${join(dist, "sidecar.mjs")} (${SDK} ${version} and ${PI} ${piVersion}, ${piPackages.length} packages, left out)`);

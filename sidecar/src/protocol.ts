@@ -304,7 +304,32 @@ slot_messages: boolean,
  * The most subagents the agent runs at once; 0, none (Claude Code's
  * `Agent` tool is left out); absent, Berth sets no limit (ADR 0032).
  */
-max_subagents?: number, };
+max_subagents?: number, 
+/**
+ * Which agent runs the session (ADR 0033).
+ */
+agent: Agent, 
+/**
+ * For Pi: the OpenAI-compatible API it talks to. Its key is in the
+ * sidecar's environment (`BERTH_PI_API_KEY`), never in a message.
+ */
+pi?: PiProvider, };
+
+export type Agent = "claude" | "pi";
+
+export type PiProvider = { base_url: string, api: PiApi, 
+/**
+ * The models on offer, the session's own among them.
+ */
+models: Array<PiModel>, };
+
+export type PiApi = "responses" | "chat";
+
+export type PiModel = { id: string, 
+/**
+ * Its context window, when Berth knows it (set by hand, or listed).
+ */
+context_window?: number, };
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -379,7 +404,16 @@ slot_messages: boolean,
  * The most subagents the agent runs at once; 0, none (Claude Code's
  * `Agent` tool is left out); absent, Berth sets no limit (ADR 0032).
  */
-max_subagents?: number, };
+max_subagents?: number, 
+/**
+ * Which agent runs the session (ADR 0033).
+ */
+agent: Agent, 
+/**
+ * For Pi: the OpenAI-compatible API it talks to. Its key is in the
+ * sidecar's environment (`BERTH_PI_API_KEY`), never in a message.
+ */
+pi?: PiProvider, };
 
 export type SessionTurn = { text: string, 
 /**

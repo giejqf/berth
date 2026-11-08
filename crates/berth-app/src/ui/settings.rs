@@ -13,11 +13,14 @@ use gpui::{
 use gpui_component::input::{InputEvent, InputState};
 
 use berth_core::{MessagePolicy, ProviderApi, ProviderKind, ProviderModel, policy};
+use berth_protocol::Agent;
 
 use super::kit::{Btn, Size, TypeExt as _, caption, dot, icon, input_frame, radio};
 use super::modal::{self, ConfirmDialog};
 use super::{Berth, EnvGlobal, RepoState};
-use crate::backend::{Command, ProviderCheck, ProviderEdit, ProviderInfo, ToolState, ToolStatus};
+use crate::backend::{
+    Command, PiStatus, ProviderCheck, ProviderEdit, ProviderInfo, ToolState, ToolStatus,
+};
 use crate::keymap::Confirm;
 use crate::theme::{Appearance, MONO, Tokens, ty};
 
@@ -469,10 +472,12 @@ impl SettingsForm {
                     this.edit_provider(ProviderEdit::Kind(kind), cx);
                 }))
         };
-        let note = if p.is_openai() {
-            "Claude Code still runs every agent on this Mac, on this API's models."
-        } else {
-            "Claude's models, on the account Claude Code signs in with."
+        let note = match (p.is_openai(), p.agent) {
+            (false, _) => "Claude's models, on the account Claude Code signs in with.",
+            (true, Agent::Claude) => {
+                "Claude Code still runs every agent on this Mac, on this API's models."
+            }
+            (true, Agent::Pi) => "New conversations on this Mac run on Pi, with this API's models.",
         };
         let mut section = div()
             .flex()
@@ -643,6 +648,62 @@ impl SettingsForm {
                 )
                 .child(div().ty(ty::META).text_color(t.text3).child(api_note)),
         );
+        // Claude Code through the proxy, or Pi (ADR 0033).
+        let agent_seg = |id: &'static str, agent: Agent, cx: &mut Context<'_, Self>| {
+            segment(t, id, agent.label(), p.agent == agent).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    this.edit_provider(ProviderEdit::Agent(agent), cx);
+                },
+            ))
+        };
+        let (pi_color, pi_note) = match &info.pi {
+            PiStatus::Workspace => (
+                t.text3,
+                "Pi from the workspace (a development build).".to_owned(),
+            ),
+            PiStatus::NotInstalled { version } => (
+                t.text3,
+                format!("Pi {version} downloads from npm the first time an agent needs it."),
+            ),
+            PiStatus::Downloading {
+                version,
+                done,
+                total,
+            } => (
+                t.text3,
+                format!("Downloading Pi {version} from npm · {done} of {total} packages"),
+            ),
+            PiStatus::Ready { version } => (t.text3, format!("Pi {version}, installed.")),
+            PiStatus::Failed { error, .. } => (
+                t.attention,
+                format!("Couldn't download Pi: {error}. Berth tries again when an agent starts."),
+            ),
+        };
+        let agent_note = match p.agent {
+            Agent::Claude => "Claude Code, with Berth speaking this API for it.",
+            Agent::Pi => {
+                "Pi, which speaks this API itself. A conversation keeps the agent it started on."
+            }
+        };
+        let agent = field_row(t, "Agent", false).child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .gap(px(4.))
+                .child(
+                    div().flex().child(
+                        segments(t)
+                            .child(agent_seg("provider-agent-claude", Agent::Claude, cx))
+                            .child(agent_seg("provider-agent-pi", Agent::Pi, cx)),
+                    ),
+                )
+                .child(div().ty(ty::META).text_color(t.text3).child(agent_note))
+                .when(p.agent == Agent::Pi, |d| {
+                    d.child(div().ty(ty::META).text_color(pi_color).child(pi_note))
+                }),
+        );
         let key_note = if info.key_set {
             "A key is stored in the Keychain; saving another replaces it."
         } else {
@@ -799,7 +860,9 @@ impl SettingsForm {
         } else {
             Some("↩ adds the first".to_owned())
         };
-        let models = field_row(t, "Models", p.models.is_empty()).child(
+        // Claude Code's small requests: Pi makes none.
+        let claude = p.agent == Agent::Claude;
+        let models = field_row(t, "Models", p.models.is_empty() || !claude).child(
             div()
                 .flex()
                 .flex_col()
@@ -868,7 +931,7 @@ impl SettingsForm {
                 cx,
             ));
         }
-        let quick = (!p.models.is_empty()).then(|| {
+        let quick = (claude && !p.models.is_empty()).then(|| {
             field_row(t, "Quick tasks", true).child(
                 div()
                     .flex()
@@ -890,15 +953,18 @@ impl SettingsForm {
             .child(
                 group(t)
                     .child(status)
+                    .child(agent)
                     .child(url)
                     .child(api)
                     .child(key)
                     .child(models)
                     .children(quick),
             )
-            .child(div().ty(ty::META).text_color(t.text3).child(
-                "Berth hands Claude Code's requests to this API in its own terms, on this Mac; the key never leaves Berth. Agents in inside slots sign in by themselves.",
-            ));
+            .child(div().ty(ty::META).text_color(t.text3).child(if claude {
+                "Berth hands Claude Code's requests to this API in its own terms, on this Mac; the key never leaves Berth. Agents in inside slots sign in by themselves."
+            } else {
+                "Pi sends its requests to this API from this Mac; the key goes no further than Berth and Pi. Agents in inside slots run Claude Code, which signs in by itself."
+            }));
         section
     }
 }
