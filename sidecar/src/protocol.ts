@@ -302,7 +302,8 @@ title?: string,
 slot_messages: boolean, 
 /**
  * The most subagents the agent runs at once; 0, none (Claude Code's
- * `Agent` tool is left out); absent, Berth sets no limit (ADR 0032).
+ * `Agent` tool, Pi's `agent`, is left out); absent, Berth sets no limit
+ * (ADR 0032, ADR 0034).
  */
 max_subagents?: number, 
 /**
@@ -402,7 +403,8 @@ title?: string,
 slot_messages: boolean, 
 /**
  * The most subagents the agent runs at once; 0, none (Claude Code's
- * `Agent` tool is left out); absent, Berth sets no limit (ADR 0032).
+ * `Agent` tool, Pi's `agent`, is left out); absent, Berth sets no limit
+ * (ADR 0032, ADR 0034).
  */
 max_subagents?: number, 
 /**

@@ -74,7 +74,8 @@ far.
    at once doesn't apply), tasks and Background, plan limits, slash commands
    other than `/compact`, and prompt suggestions. Open from History still
    lists Pi workflows, which are Berth's own. Claude Code's history doesn't
-   have them.
+   have them. (Amended by ADR 0034: Pi's subagents are Berth's `agent` tool,
+   and Subagents at once applies.)
 
 ## Consequences
 

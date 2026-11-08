@@ -105,7 +105,7 @@ pub fn explain_max_subagents(max: Option<u32>) -> String {
         Some(0) => "Agents work alone, without subagents.".to_owned(),
         Some(1) => "An agent runs one subagent at a time.".to_owned(),
         Some(n) => format!("An agent runs up to {n} subagents at a time."),
-        None => "Claude Code decides how many subagents run at once.".to_owned(),
+        None => "The agent decides how many subagents run at once.".to_owned(),
     }
 }
 

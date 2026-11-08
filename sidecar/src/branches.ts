@@ -9,8 +9,8 @@ import type { BranchCollected, BranchSpawned, BranchStatus } from "./protocol.js
 
 /** Tool names that spawn subagents ("Task" is the pre-rename name). */
 export const AGENT_TOOLS = new Set(["Agent", "Task"]);
-/** Tools whose `file_path` input marks a file as touched. */
-const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
+/** Tools whose `file_path` input (Pi's: `path`) marks a file as touched. */
+const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit", "edit", "write"]);
 
 export interface Branch {
   branchId: string;
@@ -72,7 +72,7 @@ export class BranchTracker {
     branch.toolCalls += 1;
     if (!EDIT_TOOLS.has(name) || typeof input !== "object" || input === null) return;
     const i = input as Record<string, unknown>;
-    const path = i.file_path ?? i.notebook_path;
+    const path = i.file_path ?? i.notebook_path ?? i.path;
     if (typeof path === "string" && path.length > 0) branch.touchedFiles.add(path);
   }
 

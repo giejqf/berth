@@ -51,7 +51,8 @@ pub struct SessionStart {
     #[serde(default = "yes")]
     pub slot_messages: bool,
     /// The most subagents the agent runs at once; 0, none (Claude Code's
-    /// `Agent` tool is left out); absent, Berth sets no limit (ADR 0032).
+    /// `Agent` tool, Pi's `agent`, is left out); absent, Berth sets no limit
+    /// (ADR 0032, ADR 0034).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub max_subagents: Option<u32>,

@@ -1,7 +1,7 @@
 // PiSession with the real Pi (the workspace's devDependency) against a
 // scripted OpenAI-compatible server: no tokens spent (ADR 0033).
 
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +10,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { silentLogger } from "../src/log.js";
 import { NUDGE_TEXT } from "../src/host.js";
 import { PiSession, thinkingLevel } from "../src/pi.js";
+import { STOPPED_TEXT } from "../src/pi-subagents.js";
+import { subagentLimitText } from "../src/prompt.js";
 import type { SessionStart, SidecarToApp } from "../src/protocol.js";
 import { RecordingEmitter } from "./fakes.js";
 
@@ -147,12 +149,13 @@ describe("PiSession (ADR 0033)", () => {
     expect(process.env.BERTH_PI_API_KEY).toBeUndefined();
     // Pi's own tools, Berth's, and Berth's prompt after Pi's.
     expect(toolNames(requests[0] as Request)).toEqual(
-      ["ask_user", "bash", "edit", "message_slot", "present_artifact", "present_review", "read", "record_decision", "record_outcome", "reply", "request_slot", "write", "write_summary"],
+      ["agent", "ask_user", "bash", "edit", "message_slot", "present_artifact", "present_review", "read", "record_decision", "record_outcome", "reply", "request_slot", "write", "write_summary"],
     );
     expect(requests[0]?.system).toContain("You are working inside Berth.");
     expect(requests[0]?.system).toContain("Origin: add a greeting");
     expect(requests[0]?.system).not.toContain("AskUserQuestion");
-    expect(requests[0]?.system).not.toContain("Subagents");
+    expect(requests[0]?.system).toContain("start a subagent with the `agent` tool");
+    expect(requests[0]?.system).not.toContain("Run at most");
 
     // Raw events in the SDK's envelope, each message with its entry id.
     const raw = emitter.ofType("raw.event");
@@ -305,5 +308,172 @@ describe("PiSession (ADR 0033)", () => {
     expect(err.replyTo).toBe("s");
     expect(err.body).toMatchObject({ fatal: true });
     expect([thinkingLevel(null), thinkingLevel("high"), thinkingLevel("max")]).toEqual(["off", "high", "xhigh"]);
+  });
+});
+
+const SUBAGENT = "You are a subagent in Berth";
+const isChild = (r: Request) => r.system.includes(SUBAGENT);
+const toolResults = (r: Request) => r.messages.filter((m) => m.role === "tool").length;
+const task = (r: Request) => JSON.stringify(r.messages.find((m) => m.role === "user")?.content ?? "");
+
+describe("Pi's subagents (ADR 0034)", () => {
+  it("runs them side by side, each on its own branch", async () => {
+    requests.length = 0;
+    script = (r) => {
+      if (isChild(r)) {
+        const name = task(r).includes("alpha") ? "alpha" : "beta";
+        if (toolResults(r) > 0) return { text: `Wrote ${name}.txt` };
+        return {
+          calls: [
+            { name: "bash", args: { command: "sleep 0.3" } },
+            { name: "write", args: { path: `${name}.txt`, content: name } },
+            ...(name === "alpha" ? [{ name: "record_decision", args: { title: "Lowercase names", rationale: "As the repo does" } }] : []),
+          ],
+        };
+      }
+      const results = toolResults(r);
+      if (results === 0) {
+        return {
+          calls: [
+            { name: "agent", args: { description: "Write alpha", prompt: "Write alpha.txt" } },
+            { name: "agent", args: { description: "Write beta", prompt: "Write beta.txt" } },
+          ],
+        };
+      }
+      return results === 2 ? { calls: [{ name: "write_summary", args: { done: ["Both files"], remaining: [] } }] } : { text: "done" };
+    };
+    const { emitter, session, cwd } = setup();
+    session.turn("Write two files");
+    expect(await ended(emitter)).toMatchObject({ terminal_kind: "write_summary" });
+    expect(existsSync(join(cwd, "alpha.txt")) && existsSync(join(cwd, "beta.txt"))).toBe(true);
+
+    // Both started before either went on: they ran at the same time.
+    const children = requests.filter(isChild);
+    expect(children.slice(0, 2).map(toolResults)).toEqual([0, 0]);
+    expect(toolNames(children[0] as Request)).toEqual(["bash", "edit", "read", "record_decision", "write"]);
+    expect(children[0]?.system).toContain("Origin: add a greeting");
+    expect(children[0]?.system).not.toContain("You are working inside Berth.");
+
+    // One group of two, from one message; the call is Claude Code's Agent.
+    const spawned = emitter.ofType("branch.spawned");
+    expect(spawned.map((b) => b.description)).toEqual(["Write alpha", "Write beta"]);
+    expect(spawned[0]?.parallel_group).toBeDefined();
+    expect(spawned[1]?.parallel_group).toBe(spawned[0]?.parallel_group);
+    expect(spawned[0]?.prompt).toBe("Write alpha.txt");
+    const [alpha, beta] = spawned as [(typeof spawned)[0], (typeof spawned)[0]];
+    const sent = emitter.sent.map((s) => s.body);
+    const call = sent.findIndex(
+      (b) => b.type === "raw.event" && JSON.stringify(b.json).includes('"name":"Agent"') && !b.branch_id,
+    );
+    const spawn = sent.findIndex((b) => b.type === "branch.spawned");
+    const first = sent.findIndex((b) => b.type === "raw.event" && b.branch_id === alpha.branch_id);
+    expect(call).toBeGreaterThan(-1);
+    expect(call < spawn && spawn < first).toBe(true);
+
+    // Each subagent's messages are its branch's, the call they came from as their parent.
+    const lane = emitter.ofType("raw.event").filter((e) => e.branch_id === alpha.branch_id);
+    expect(lane.map((e) => e.kind)).toEqual(["user", "assistant", "user", "user", "user", "assistant"]);
+    expect(lane.every((e) => (e.json as { parent_tool_use_id?: string }).parent_tool_use_id === alpha.parent_tool_use_id)).toBe(true);
+    expect(emitter.ofType("node.decision")[0]).toMatchObject({ title: "Lowercase names", branch_id: alpha.branch_id });
+
+    const collected = emitter.ofType("branch.collected");
+    const of = (id: string) => collected.find((c) => c.branch_id === id);
+    expect(of(alpha.branch_id)).toMatchObject({
+      status: "ok",
+      result_text: "Wrote alpha.txt",
+      tool_calls: 3,
+      touched_files: [join(cwd, "alpha.txt")],
+    });
+    expect(of(beta.branch_id)).toMatchObject({ status: "ok", result_text: "Wrote beta.txt", tool_calls: 2 });
+    expect(JSON.stringify(requests.filter((r) => !isChild(r))[1]?.messages)).toContain("Wrote beta.txt");
+
+    // The Tasks panel listed both while they ran, by the calls that started them.
+    const tasks = emitter.ofType("session.tasks");
+    const both = tasks.find((t) => t.tasks.length === 2);
+    expect(both?.tasks.map((t) => t.tool_use_id)).toEqual([alpha.parent_tool_use_id, beta.parent_tool_use_id]);
+    expect(both?.tasks[0]).toMatchObject({ kind: "local_agent", description: "Write alpha", background: false });
+    expect(tasks.at(-1)?.tasks).toEqual([]);
+    session.stop();
+    await session.done;
+  });
+
+  it("holds back what Settings' limit doesn't let start", async () => {
+    requests.length = 0;
+    script = (r) => {
+      if (isChild(r)) return { text: "Looked" };
+      const results = toolResults(r);
+      if (results === 0) {
+        return {
+          calls: [
+            { name: "agent", args: { description: "Look here", prompt: "Look here" } },
+            { name: "agent", args: { description: "Look there", prompt: "Look there" } },
+          ],
+        };
+      }
+      return results === 2 ? { calls: [{ name: "reply", args: { message: "Looked once" } }] } : { text: "done" };
+    };
+    const { emitter, session } = setup({ max_subagents: 1 });
+    session.turn("Look around");
+    expect(await ended(emitter)).toMatchObject({ terminal_kind: "reply" });
+    expect(requests[0]?.system).toContain("Run at most 1 subagent at a time");
+    const collected = emitter.ofType("branch.collected");
+    expect(collected.map((c) => c.status).sort()).toEqual(["cancelled", "ok"]);
+    expect(collected.find((c) => c.status === "cancelled")).toMatchObject({
+      result_text: subagentLimitText(1),
+      duration_ms: 0,
+      tool_calls: 0,
+    });
+    expect(JSON.stringify(requests.filter((r) => !isChild(r))[1]?.messages)).toContain("Not started:");
+    session.stop();
+    await session.done;
+  });
+
+  it("offers no agent tool when Settings turns subagents off", async () => {
+    requests.length = 0;
+    script = (r) => (r.messages.at(-1)?.role === "tool" ? { text: "done" } : { calls: [{ name: "reply", args: { message: "ok" } }] });
+    const { emitter, session } = setup({ max_subagents: 0 });
+    session.turn("hi");
+    await ended(emitter);
+    expect(requests[0]?.tools).not.toContain("agent");
+    expect(requests[0]?.system).not.toContain("`agent` tool");
+    expect(requests[0]?.system).not.toContain("Subagents may only");
+    session.stop();
+    await session.done;
+  });
+
+  it("stops one subagent, and the round goes on without it", async () => {
+    requests.length = 0;
+    script = (r) => {
+      if (isChild(r)) return toolResults(r) > 0 ? { text: "Waited" } : { calls: [{ name: "bash", args: { command: "sleep 5" } }] };
+      const results = toolResults(r);
+      if (results === 0) return { calls: [{ name: "agent", args: { description: "Wait", prompt: "Wait a while" } }] };
+      return results === 1 ? { calls: [{ name: "reply", args: { message: "Went on" } }] } : { text: "done" };
+    };
+    const { emitter, session } = setup();
+    session.turn("Wait, then go on");
+    const running = await until(() => emitter.ofType("session.tasks").find((t) => t.tasks.length === 1)?.tasks[0]);
+    await until(() => requests.find(isChild));
+    await session.stopTask(running.task_id);
+    expect(await ended(emitter)).toMatchObject({ terminal_kind: "reply" });
+    expect(emitter.ofType("branch.collected")[0]).toMatchObject({ status: "cancelled", result_text: STOPPED_TEXT });
+    expect(JSON.stringify(requests.filter((r) => !isChild(r))[1]?.messages)).toContain("The user stopped this subagent");
+    session.stop();
+    await session.done;
+  });
+
+  it("cancels running subagents when the round is interrupted", async () => {
+    requests.length = 0;
+    script = (r) => {
+      if (isChild(r)) return toolResults(r) > 0 ? { text: "Waited" } : { calls: [{ name: "bash", args: { command: "sleep 5" } }] };
+      return toolResults(r) === 0 ? { calls: [{ name: "agent", args: { description: "Wait", prompt: "Wait a while" } }] } : { text: "stopped" };
+    };
+    const { emitter, session } = setup();
+    session.turn("Wait");
+    await until(() => requests.find(isChild));
+    await session.interrupt();
+    expect(await ended(emitter)).toMatchObject({ terminal_kind: "interrupted" });
+    expect(emitter.ofType("branch.collected")[0]).toMatchObject({ status: "cancelled", result_text: "Interrupted by the user." });
+    session.stop();
+    await session.done;
   });
 });

@@ -2,7 +2,8 @@
 // speaks for Claude Code, on Pi's SDK. Berth's tools are Pi custom tools and
 // the round rules are the shared ones (host.ts); Pi's messages reach the app
 // in the SDK's envelope (pi-events.ts). Pi keeps its sessions in Berth's own
-// directory, apart from the user's own Pi.
+// directory, apart from the user's own Pi. Its subagents are Berth's `agent`
+// tool, a child session each (pi-subagents.ts, ADR 0034).
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -11,6 +12,7 @@ import { join } from "node:path";
 import type {
   AgentSession,
   AgentSessionEvent,
+  AuthStorage,
   ModelRegistry,
   SessionManager,
   ToolDefinition,
@@ -20,9 +22,16 @@ import { z } from "zod";
 import { BerthHost, SLASH_COMMAND, type Lane } from "./host.js";
 import type { Logger } from "./log.js";
 import type { Emitter } from "./ndjson.js";
-import { lastText, messageEvent, resultEvent, type PiMessage } from "./pi-events.js";
+import { assistantId, lastText, messageEvent, resultEvent, type PiMessage } from "./pi-events.js";
 import { loadPi, takeApiKey, type PiModules, type TypeBox } from "./pi-load.js";
-import { berthSystemPrompt, skillsPrompt } from "./prompt.js";
+import {
+  AGENT_TOOL_DESCRIPTION,
+  AGENT_TOOL_SCHEMA,
+  PI_AGENT_TOOL,
+  PiSubagents,
+  type AgentInput,
+} from "./pi-subagents.js";
+import { berthSystemPrompt, piSubagentPrompt, skillsPrompt } from "./prompt.js";
 import {
   TOOLS,
   type Effort,
@@ -33,7 +42,7 @@ import {
   type ToolName,
   type TurnAttachment,
 } from "./protocol.js";
-import { callTool, offeredTools, shapes } from "./tools.js";
+import { callTool, offeredTools, shapes, type CallContext } from "./tools.js";
 
 /** The provider's name in Pi's model registry. */
 const PROVIDER = "berth";
@@ -95,7 +104,12 @@ export class PiSession extends BerthHost {
   private readonly agentDir: string;
   private ready?: Promise<boolean>;
   private session?: AgentSession;
+  private modules?: PiModules;
+  private auth?: AuthStorage;
   private registry?: ModelRegistry;
+  private subagents?: PiSubagents;
+  /** What a subagent's prompt gets of the session's: the slot, the skills. */
+  private context = "";
   private provider?: PiProvider;
   private startModel?: string;
   private effort: Effort | null = null;
@@ -143,7 +157,8 @@ export class PiSession extends BerthHost {
 
   private async open(msg: SessionStart | SessionResume, replyTo: string): Promise<boolean> {
     if (!msg.pi) throw new Error("no OpenAI-compatible API to run on");
-    const { pi, Type } = await this.load();
+    this.modules = await this.load();
+    const { pi, Type } = this.modules;
     this.provider = msg.pi;
     this.startModel = msg.model ?? msg.pi.models[0]?.id;
     this.effort = msg.effort ?? null;
@@ -155,6 +170,7 @@ export class PiSession extends BerthHost {
     // as a provider's configured key would be.
     const key = takeApiKey();
     if (key) auth.setRuntimeApiKey(PROVIDER, key);
+    this.auth = auth;
     this.registry = pi.ModelRegistry.inMemory(auth);
     this.register();
     const model = this.startModel ? this.registry.find(PROVIDER, this.startModel) : undefined;
@@ -166,21 +182,26 @@ export class PiSession extends BerthHost {
       ? this.reopen(pi.SessionManager, resume, sessionDir, msg.cwd, "resume_at" in msg ? msg.resume_at : undefined)
       : pi.SessionManager.create(msg.cwd, sessionDir);
     const slotMessages = msg.slot_messages !== false;
-    const loader = new pi.DefaultResourceLoader({
-      cwd: msg.cwd,
-      agentDir: this.agentDir,
-      noExtensions: true,
-      noPromptTemplates: true,
-      noThemes: true,
-      // Connector skills go where Claude Code reads them (§8.2).
-      additionalSkillPaths: [join(msg.cwd, ".claude", "skills")],
-      appendSystemPrompt: [
-        [berthSystemPrompt({ slotMessages, pi: true }) + skillsPrompt(msg.connector_skills), msg.system_prompt]
-          .filter((s) => s.trim().length > 0)
-          .join("\n\n"),
-      ],
-    });
-    await loader.reload();
+    const maxSubagents = msg.max_subagents;
+    this.subagents = new PiSubagents(
+      {
+        emitter: this.emitter,
+        now: this.now,
+        cwd: () => this.cwd,
+        sessionId: () => this.session?.sessionId,
+        raw: (kind, json, branchId) => this.raw(kind, json, branchId),
+        spent: (usd) => (this.totalUsd += usd),
+      },
+      maxSubagents,
+    );
+    this.context = [skillsPrompt(msg.connector_skills).trim(), msg.system_prompt]
+      .filter((s) => s.trim().length > 0)
+      .join("\n\n");
+    const loader = await this.loader(
+      [berthSystemPrompt({ slotMessages, maxSubagents, pi: true }) + skillsPrompt(msg.connector_skills), msg.system_prompt]
+        .filter((s) => s.trim().length > 0)
+        .join("\n\n"),
+    );
     const { session } = await pi.createAgentSession({
       cwd: msg.cwd,
       agentDir: this.agentDir,
@@ -188,7 +209,7 @@ export class PiSession extends BerthHost {
       modelRegistry: this.registry,
       model,
       thinkingLevel: thinkingLevel(this.effort),
-      customTools: this.tools(Type, slotMessages),
+      customTools: this.tools(Type, slotMessages, maxSubagents),
       resourceLoader: loader,
       sessionManager,
       settingsManager: pi.SettingsManager.inMemory({}),
@@ -273,18 +294,80 @@ export class PiSession extends BerthHost {
     });
   }
 
-  private tools(Type: TypeBox, slotMessages: boolean): ToolDefinition[] {
-    return offeredTools({ slotMessages }).map((name) => ({
+  /** Pi's resources for a session: Berth's prompt after Pi's, the
+   * checkout's context files and skills, and nothing of the user's own Pi. */
+  private async loader(prompt: string) {
+    const pi = this.modules?.pi;
+    if (!pi) throw new Error("Pi isn't loaded");
+    const loader = new pi.DefaultResourceLoader({
+      cwd: this.cwd,
+      agentDir: this.agentDir,
+      noExtensions: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      // Connector skills go where Claude Code reads them (§8.2).
+      additionalSkillPaths: [join(this.cwd, ".claude", "skills")],
+      appendSystemPrompt: [prompt],
+    });
+    await loader.reload();
+    return loader;
+  }
+
+  private tools(Type: TypeBox, slotMessages: boolean, maxSubagents: number | undefined): ToolDefinition[] {
+    const berth: ToolDefinition[] = offeredTools({ slotMessages }).map((name) => this.berthTool(Type, name));
+    if (maxSubagents === 0) return berth;
+    return [
+      ...berth,
+      {
+        name: PI_AGENT_TOOL,
+        label: "Agent",
+        description: AGENT_TOOL_DESCRIPTION,
+        parameters: Type.Unsafe(AGENT_TOOL_SCHEMA),
+        execute: async (toolCallId: string, params: unknown, signal?: AbortSignal) => {
+          const text = await this.subagents?.run(toolCallId, params as AgentInput, signal, (branchId) =>
+            this.openChild(branchId),
+          );
+          return { content: [{ type: "text" as const, text: text ?? "" }], details: {} };
+        },
+      },
+    ];
+  }
+
+  /** A berth tool as Pi's; `branchId`: a subagent's, on its lane. */
+  private berthTool(Type: TypeBox, name: ToolName, branchId?: string): ToolDefinition {
+    return {
       name,
       label: name,
       description: TOOLS[name].description,
       parameters: Type.Unsafe(inputSchema(name)),
       execute: async (toolCallId: string, params: unknown) => {
+        if (branchId) this.subagents?.bind(toolCallId, branchId);
         const out = await callTool(this, name, params, { toolUseId: toolCallId });
         if (!out.ok) throw new Error(out.error);
         return { content: [{ type: "text" as const, text: out.text }], details: {} };
       },
-    }));
+    };
+  }
+
+  /** A subagent's own session (ADR 0034): this checkout, provider and
+   * model; Pi's tools and \`record_decision\`; kept in memory only. */
+  private async openChild(branchId: string): Promise<AgentSession> {
+    const { modules, auth, registry, session } = this;
+    if (!modules || !auth || !registry || !session?.model) throw new Error("The session isn't running.");
+    const { pi, Type } = modules;
+    const { session: child } = await pi.createAgentSession({
+      cwd: this.cwd,
+      agentDir: this.agentDir,
+      authStorage: auth,
+      modelRegistry: registry,
+      model: session.model,
+      thinkingLevel: session.thinkingLevel,
+      customTools: [this.berthTool(Type, "record_decision", branchId)],
+      resourceLoader: await this.loader(piSubagentPrompt(this.context)),
+      sessionManager: pi.SessionManager.inMemory(this.cwd),
+      settingsManager: pi.SettingsManager.inMemory({}),
+    });
+    return child;
   }
 
   turn(text: string, attachments: TurnAttachment[] = []): void {
@@ -366,9 +449,10 @@ export class PiSession extends BerthHost {
     void this.run(text);
   }
 
-  protected lane(): Promise<Lane> {
-    // Pi has no subagents: every call is the main agent's.
-    return Promise.resolve({ inSubagent: false });
+  /** A subagent's `record_decision` is on its branch (ADR 0034). */
+  protected lane(call: CallContext): Promise<Lane> {
+    const branchId = this.subagents?.laneOf(call.toolUseId);
+    return Promise.resolve(branchId ? { branchId, inSubagent: true } : { inSubagent: false });
   }
 
   async configure(model: string | null, effort: Effort | null): Promise<void> {
@@ -424,7 +508,10 @@ export class PiSession extends BerthHost {
     this.error("Pi runs nothing in the background.", false);
   }
 
-  async stopTask(): Promise<void> {}
+  /** Its tasks are its subagents: one stops, the round goes on (ADR 0034). */
+  async stopTask(taskId: string): Promise<void> {
+    if (!this.subagents?.stop(taskId)) this.log.info({ taskId }, "no such subagent running");
+  }
 
   async readTask(taskId: string): Promise<void> {
     this.emitter.emit({
@@ -433,7 +520,7 @@ export class PiSession extends BerthHost {
       output: "",
       total_bytes: 0,
       truncated: false,
-      error: "Pi runs no tasks.",
+      error: "A subagent has no output to read.",
     });
   }
 
@@ -444,6 +531,12 @@ export class PiSession extends BerthHost {
     switch (e.type) {
       case "message_end":
         this.onMessage(e.message as PiMessage);
+        break;
+      case "tool_execution_end":
+        // After the call's own message went out, as its events come in.
+        if (e.toolName === PI_AGENT_TOOL) {
+          queueMicrotask(() => this.subagents?.ended(e.toolCallId, e.result, e.isError));
+        }
         break;
       case "queue_update":
         this.queued = e.steering.length + e.followUp.length;
@@ -495,11 +588,22 @@ export class PiSession extends BerthHost {
     queueMicrotask(() => {
       const event = messageEvent(m, this.session?.sessionId, this.session?.sessionManager.getLeafId() ?? undefined);
       if (event) this.raw(event.kind, event.json);
+      // The subagents it starts open their branches after it (§5.4).
+      if (m.role === "assistant" && "content" in m) {
+        const a = m as Extract<PiMessage, { role: "assistant" }>;
+        this.subagents?.spawned(assistantId(a), a.content);
+      }
     });
   }
 
-  private raw(kind: string, json: { [key: string]: JsonValue }): void {
-    this.emitter.emit({ type: "raw.event", seq: ++this.seq, kind, json });
+  private raw(kind: string, json: { [key: string]: JsonValue }, branchId?: string): void {
+    this.emitter.emit({
+      type: "raw.event",
+      seq: ++this.seq,
+      kind,
+      json,
+      ...(branchId ? { branch_id: branchId } : {}),
+    });
   }
 
   private reportContext(): void {

@@ -9,13 +9,14 @@ export interface AgentLimits {
   slotMessages: boolean;
   /** The most subagents at once; 0, none; undefined, no limit of Berth's. */
   maxSubagents?: number;
-  /** Pi: no subagents, no `AskUserQuestion`, no `Artifact` tool. */
+  /** Pi: no `AskUserQuestion`, no `Artifact` tool; subagents through
+   * Berth's `agent` tool (ADR 0034). */
   pi?: boolean;
 }
 
 /** Berth's part of the system prompt, for what the agent may do. */
 export function berthSystemPrompt(limits: AgentLimits): string {
-  const max = limits.pi ? 0 : limits.maxSubagents;
+  const max = limits.maxSubagents;
   const claude = !limits.pi;
   return [
     `You are working inside Berth. The user never reads or edits code: they follow your decisions, answer your questions, review diffs, and ship pull requests.
@@ -36,12 +37,13 @@ How to work:
       : []),
     `- Use the connector CLIs described by their skills for external systems (Linear, PostHog, ...).
 - Run the repository's gates (tests, lint, typecheck) before \`write_summary\` when you changed code.`,
-    claude
-      ? "- When you review code (because the user asked, or a reviewer subagent reported back), present the findings with `present_review` rather than listing them in prose or a summary, then act on the decisions it returns: fix what the user marked fix, leave the dismissed ones, follow their words on the rest."
-      : "- When you review code (because the user asked), present the findings with `present_review` rather than listing them in prose or a summary, then act on the decisions it returns: fix what the user marked fix, leave the dismissed ones, follow their words on the rest.",
+    max === 0
+      ? "- When you review code (because the user asked), present the findings with `present_review` rather than listing them in prose or a summary, then act on the decisions it returns: fix what the user marked fix, leave the dismissed ones, follow their words on the rest."
+      : "- When you review code (because the user asked, or a reviewer subagent reported back), present the findings with `present_review` rather than listing them in prose or a summary, then act on the decisions it returns: fix what the user marked fix, leave the dismissed ones, follow their words on the rest.",
     ...(limits.slotMessages ? [MESSAGE_SLOT_PROMPT] : []),
     `- When you make something the user should see (a screenshot, a screen recording, a rendered chart or page, a report), save it to a file and call \`present_artifact\` with its path and a short title. Never paste images or long output into text.
 - Files the user attached are listed at the end of their message, with paths you can read; attached images are also shown to you directly.`,
+    ...(limits.pi && max !== 0 ? [PI_AGENT_PROMPT] : []),
     ...(max === undefined || max === 0
       ? []
       : [
@@ -52,6 +54,8 @@ How to work:
   ].join("\n");
 }
 
+const PI_AGENT_PROMPT = `- For a self-contained part of the work that would fill your context (a broad search, an independent change, a review), you may start a subagent with the \`agent\` tool: a short description and a prompt that says everything it needs, since it sees none of this conversation. Several \`agent\` calls in one message run at the same time; each returns the subagent's report.`;
+
 const MESSAGE_SLOT_PROMPT = `- Other slots in this repository may be building other parts of the same thing (the backend to your frontend). When their work needs to know something (a bug you found in their part, an interface you need from them or changed for them), tell them with \`message_slot\` rather than changing their code, then carry on with your own work. A turn that starts with "Message from slot" is another slot's agent writing to you: act on it as you would on the user's request, answer with \`message_slot\` when it needs an answer, and end the round as usual.`;
 
 /** The whole of it, with every tool on offer and no subagent limit. */
@@ -61,6 +65,21 @@ export const BERTH_SYSTEM_PROMPT = berthSystemPrompt({ slotMessages: true });
 export function subagentLimitText(max: number): string {
   const what = max === 1 ? "one subagent at a time" : `${max} subagents at a time`;
   return `Not started: the user's setting in Berth allows ${what}, and that many are running. Start it once one has finished, or do this part yourself.`;
+}
+
+/** A Pi subagent's part of its system prompt (ADR 0034); `context`, the
+ * session's (the slot, its gates, the connector skills). */
+export function piSubagentPrompt(context: string): string {
+  return [
+    `You are a subagent in Berth: the main agent handed you the task in the first message. Do it in this checkout, then end with a final message reporting what the main agent needs: what you found or did, and where (file paths, commands). It reads only that message; the user reads none of yours.
+
+- You can't ask anyone anything. When something is unclear, make a sensible choice and say so in your report.
+- Announce a meaningful decision with the berth \`record_decision\` tool when you make it: it is the one berth tool you have.
+- Never narrate file edits or tool use in prose.`,
+    context,
+  ]
+    .filter((s) => s.trim().length > 0)
+    .join("\n\n");
 }
 
 /** Connector skills installed in the checkout, as the prompt lists them. */

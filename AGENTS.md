@@ -57,7 +57,7 @@ If a design decision is not here, it has not been made. Record new decisions her
 | **Section** | A span of rounds ending in a `Summary`. Diffs are computed per section by default. |
 | **Origin** | What sparked the workflow: a GitHub issue/PR, a Linear issue, a PostHog error, a user thought, or a follow-up from another workflow. |
 | **Outcome** | How the workflow ends — usually a PR. Workflow is closed after an Outcome. |
-| **Branch** | A subagent's lane in the event flow. Opens at a `SubagentSpawn` node and closes at a `CollectResults` node on the main lane. Depth 1 today (Claude Code subagents cannot spawn subagents); modeled as a tree anyway. |
+| **Branch** | A subagent's lane in the event flow. Opens at a `SubagentSpawn` node and closes at a `CollectResults` node on the main lane. Depth 1 today (neither Claude Code's subagents nor Pi's can spawn subagents); modeled as a tree anyway. |
 | **Message** | What one slot's agent tells another slot's in the same repo (`message_slot`): a bug in its part, an interface it needs. It joins or starts that agent's round, or waits for the user (ADR 0021). |
 | **Finding** | One issue in a code review the agent presents (`present_review`): a level (high, mid, low), a one-line title, the detail, where it is, and a suggested action (fix, dismiss, decide). The user picks the action for each; decide means they say what to do. |
 | **Gate** | Anything the repo wants to run before a PR (tests, lint, typecheck). Not a Berth concept; just commands run through the slot's `exec`. |
@@ -150,6 +150,7 @@ berth/
 │   ├── src/host.ts              what every session does: Berth's tools, round rules
 │   ├── src/session.ts           Claude Agent SDK session lifecycle, attribution, nudges
 │   ├── src/pi.ts, pi-events.ts  Pi's session (ADR 0033); its messages in the SDK's shape
+│   ├── src/pi-subagents.ts      Pi's subagents: the `agent` tool, a child session each (ADR 0034)
 │   ├── src/pi-load.ts           where Pi is loaded from; its key out of the environment
 │   ├── src/prompt.ts            Berth's part of the system prompt
 │   ├── src/tools.ts             the "berth" MCP server (app-owned tools)
@@ -369,7 +370,15 @@ the main lane.
   hook on `Agent|Task` deny a spawn while that many run (from the call it let through
   until the branch collects, a background one until its task notification), and the
   system prompt says so. A held-back spawn's branch collects as cancelled with why.
-  No limit (the default) leaves it to Claude Code.
+  No limit (the default) leaves it to the agent.
+- **Pi** (ADR 0034). Pi has no subagents of its own, and Berth loads no Pi
+  extensions: its subagents are Berth's `agent { description, prompt }` tool, a
+  child Pi session each in the sidecar (same checkout, provider, model; Pi's tools
+  and `record_decision`; kept in memory). Raw events call it `Agent`; it spawns
+  after the main agent's message (Pi runs one message's calls at once, one parallel
+  group) and collects when its call ends. The limit is the sidecar's count (Off
+  leaves the tool out); each running one is a `session.tasks` task, so Stop aborts
+  that child alone. No background subagents, progress summaries or subagent types.
 - **Diffs.** Branch diffs (spawn snapshot → collect snapshot) are best-effort because
   concurrent branches share one checkout. `touched_files` is derived from the branch's
   own Edit/Write/MultiEdit tool events and is authoritative. The section diff remains
@@ -1084,8 +1093,9 @@ settles nothing (ADR 0013).
   own (`read`, `bash`, `edit`, `write`) and Berth's; the round rules, nodes and flow
   are Claude Code's. A model reasons only when the slot sets an effort (`max` is Pi's
   `xhigh`). A rewind branches Pi's session tree at the entry before the message; a
-  message mid-round steers; `/compact` is its one slash command. No subagents, tasks,
-  Background, plan limits, suggestions or Claude Code history for it.
+  message mid-round steers; `/compact` is its one slash command. Its subagents are
+  Berth's `agent` tool (§5.4, ADR 0034), its only tasks. No Background, plan limits,
+  suggestions or Claude Code history for it.
 - **Keeping the Mac awake** (`backend/awake.rs`): while an agent works anywhere (a
   round in flight, a slot being created or torn down, something in a session's
   background; `Store::agents_working`), Berth holds a user-initiated `NSProcessInfo`
@@ -1352,8 +1362,8 @@ owns it? what node type does it produce?
 - Any OS other than macOS.
 - Pushing review comments to Linear/PostHog (GitHub only).
 - Agent backends other than Claude Code and Pi; Pi outside an OpenAI-compatible API
-  (its own providers and sign-ins), Pi's subagents (it has none), its extensions and
-  prompt templates.
+  (its own providers and sign-ins), its extensions and prompt templates; Pi's
+  subagents in the background, of a type (`.claude/agents/`), or of their own.
 - `inside` slots' agents on the model provider (the proxy listens on the host's
   loopback, and Pi runs only on the host); model APIs other than OpenAI's Responses and Chat Completions (Gemini's
   own); passing reasoning items back to a provider across turns.

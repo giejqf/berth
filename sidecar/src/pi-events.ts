@@ -9,6 +9,15 @@
 import { TOOLS, type JsonValue, type ToolName } from "./protocol.js";
 import { qualifiedToolName } from "./tools.js";
 
+/** Berth's subagent tool for Pi (pi-subagents.ts), as the model calls it. */
+export const PI_AGENT_TOOL = "agent";
+
+/** A Pi tool call's name as the app reads it. */
+function toolName(name: string): string {
+  if (name === PI_AGENT_TOOL) return "Agent";
+  return name in TOOLS ? qualifiedToolName(name as ToolName) : name;
+}
+
 /** Pi's message shapes, as far as Berth reads them (pi-ai's types). */
 export type PiContent =
   | { type: "text"; text: string }
@@ -60,7 +69,7 @@ function block(c: PiContent): Json | undefined {
       return {
         type: "tool_use",
         id: c.id,
-        name: c.name in TOOLS ? qualifiedToolName(c.name as ToolName) : c.name,
+        name: toolName(c.name),
         input: c.arguments as JsonValue,
       };
   }
@@ -70,17 +79,24 @@ function blocks(content: PiContent[]): Json[] {
   return content.map(block).filter((b): b is Json => b !== undefined);
 }
 
+/** An assistant message's id in its event: one subagent group per message. */
+export function assistantId(m: { responseId?: string; timestamp?: number }): string {
+  return m.responseId ?? `pi-${m.timestamp ?? 0}`;
+}
+
 const STOP: Record<string, string> = { stop: "end_turn", toolUse: "tool_use", length: "max_tokens" };
 
 /** The event for a Pi message; undefined for what isn't a conversation
- * message (compaction summaries, custom entries). */
+ * message (compaction summaries, custom entries). `parentToolUseId`: the
+ * \`agent\` call whose subagent wrote it. */
 export function messageEvent(
   m: PiMessage,
   sessionId: string | undefined,
   uuid: string | undefined,
+  parentToolUseId: string | null = null,
 ): { kind: "assistant" | "user"; json: Json } | undefined {
   const common: Json = {
-    parent_tool_use_id: null,
+    parent_tool_use_id: parentToolUseId,
     ...(sessionId ? { session_id: sessionId } : {}),
     ...(uuid ? { uuid } : {}),
   };
@@ -92,7 +108,7 @@ export function messageEvent(
       json: {
         type: "assistant",
         message: {
-          id: a.responseId ?? `pi-${a.timestamp ?? 0}`,
+          id: assistantId(a),
           type: "message",
           role: "assistant",
           model: a.model ?? "",
