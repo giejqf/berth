@@ -263,6 +263,7 @@ message_slot    { to, message }
      Tells another slot's agent something (`to`: its number, "slot 2", name or title;
      the session context lists the other slots by number). The result says
      whether it joined that agent's round, woke it, or is held for the user (ADR 0021).
+     Not offered when Settings turns messages between slots off (ADR 0032).
 
 present_review  { findings: [{ level, title, detail, path?, line?, suggested }], summary? }
   → BLOCKS until the app sends review.answer. Terminal, like ask_user; not
@@ -307,7 +308,7 @@ A round must end with **exactly one** terminal tool call.
   implicit round with the same rules. So does a message from another slot that wakes an
   idle agent; one that arrives while the agent works joins its round, as a Prompt does.
   `rounds.hop` counts agent messages in a row without the user; the third is held for
-  the user, not delivered (ADR 0021).
+  the user, not delivered (ADR 0021), unless Settings says Always allow (ADR 0032).
 - A Prompt sent while a round runs joins that round (ADR 0018): Claude Code folds it
   into the running turn between tool rounds, or runs it right after the turn. A
   `result` without a terminal call while a message still waits (`queued_turn_count >
@@ -349,6 +350,12 @@ the main lane.
   is closed with `status = cancelled` (by the app's engine, so it also holds when the
   sidecar is gone). So is one still running when its sidecar exits (a crash, a
   restart, the app quitting): it ran in that process.
+- **Limit** (ADR 0032). Settings › Subagents at once (`settings.max_subagents`):
+  Off disallows Claude Code's `Agent` tool; a number has the sidecar's `PreToolUse`
+  hook on `Agent|Task` deny a spawn while that many run (from the call it let through
+  until the branch collects, a background one until its task notification), and the
+  system prompt says so. A held-back spawn's branch collects as cancelled with why.
+  No limit (the default) leaves it to Claude Code.
 - **Diffs.** Branch diffs (spawn snapshot → collect snapshot) are best-effort because
   concurrent branches share one checkout. `touched_files` is derived from the branch's
   own Edit/Write/MultiEdit tool events and is authoritative. The section diff remains
@@ -714,7 +721,8 @@ settings         key, value          # last_repo, recent_repos, model, models, q
                                      # claude_identity, review_width, keep_awake, provider,
                                      # openai_base_url, openai_api, openai_models, openai_model,
                                      # openai_fast_model, openai_contexts, openai_catalog
-                                     # (ADR 0023, ADR 0025), trusted_slot_types (ADR 0028)
+                                     # (ADR 0023, ADR 0025), trusted_slot_types (ADR 0028),
+                                     # slot_messages, max_subagents (ADR 0032)
 ```
 
 Timestamps are unix epoch milliseconds. `nodes.raw_first/raw_last` are `raw_events.id`
@@ -742,7 +750,8 @@ from `berth-protocol`; the list below is the contract, the Rust types are the tr
 
 **App → sidecar**
 ```
-session.start    { workflow_id, cwd, system_prompt, env, allowed_tools, connector_skills, model?, effort?, title? }
+session.start    { workflow_id, cwd, system_prompt, env, allowed_tools, connector_skills, model?, effort?, title?,
+                   slot_messages, max_subagents? }   # Settings' limits (ADR 0032): message_slot offered; subagents at once, 0 = none
 session.resume   { workflow_id, claude_session_id, resume_at?, drops_turn?, cwd, … }   # resume_at: a rewind (ADR 0009); drops_turn: its one turn (ADR 0016)
 session.turn     { text, attachments?: [{ path, mime }], uuid? }   # a Prompt or nudge; images become image blocks; uuid: the turn's in the transcript; during a round it joins it (ADR 0018)
 session.background { tool_use_id? }   # move running foreground tool calls to the background (ADR 0016)
@@ -1095,6 +1104,13 @@ settles nothing (ADR 0013).
   closed or not yet started workflow) has **Send to agent** and **Dismiss**, and puts
   its slot under Needs you. `ui/nodes.rs` `message`, `backend/messages.rs`,
   `berth_core::messages`.
+- **What agents may do beyond their slot** (ADR 0032, `berth_core::policy`): Settings ›
+  Messages between slots is Always allow (no loop guard), Limited (the guard, the
+  default) or Disabled (no `message_slot`, and the session context lists no other
+  slots; a message from a session that started earlier is refused). Settings ›
+  Subagents at once is Off, 1, 2, 3, 5 or No limit (§5.4). A change restarts each live
+  session that started under other limits, as an account switch does (ADR 0017):
+  idle ones at once, others when their round ends; `inside` slots' too.
 - **Rewind conversation** (ADR 0009): go back to one of your messages. The dialog
   (`ui/rewind.rs`; R in the flow, on the message at or above the cursor; a message's
   Rewind link, shown on hover; More; ⌘K; the menu bar) lists them newest first with

@@ -5,10 +5,12 @@
 use std::fmt::Write as _;
 
 use crate::model::{Slot, SlotState, Workflow, WorkflowState};
+use crate::policy::MessagePolicy;
 
 /// Agent messages in a row, without the user, that still reach the other
 /// agent: a message and its answer. The next one waits for the user, so two
-/// agents can't keep each other going.
+/// agents can't keep each other going. Settings' Limited, the default
+/// (`MessagePolicy`, ADR 0032).
 pub const MAX_HOPS: u32 = 2;
 
 /// What happens to a message when it arrives.
@@ -122,15 +124,22 @@ pub fn slot_line(slot: &Slot, workflow: Option<&Workflow>) -> String {
 
 /// Where a message `hop` long goes in a workflow in `state`; `live`:
 /// whether that workflow's agent session is up, `slot` its slot's state.
+/// The loop guard holds the message only under `MessagePolicy::Limited`.
 #[must_use]
-pub fn plan(state: WorkflowState, slot: SlotState, hop: u32, live: bool) -> Delivery {
+pub fn plan(
+    state: WorkflowState,
+    slot: SlotState,
+    hop: u32,
+    live: bool,
+    policy: MessagePolicy,
+) -> Delivery {
     let hold = |why: &str| Delivery::Hold(why.to_owned());
     match (slot, state) {
         (SlotState::Failed, _) => hold("its slot failed"),
         (SlotState::Creating | SlotState::Destroying | SlotState::Destroyed, _)
         | (_, WorkflowState::Starting) => hold("its agent hasn't started yet"),
         (_, WorkflowState::Closed) => hold("its workflow is closed"),
-        _ if hop > MAX_HOPS => hold(
+        _ if policy == MessagePolicy::Limited && hop > MAX_HOPS => hold(
             "the agents have messaged each other back and forth without you; you decide whether it goes on",
         ),
         // Waiting on an answer, the agent's question is still open in its
@@ -277,9 +286,21 @@ mod tests {
     fn delivery_follows_the_recipient_and_the_guard() {
         use WorkflowState as W;
         let ready = SlotState::Ready;
-        assert_eq!(plan(W::Idle, ready, 1, false), Delivery::Wake);
-        assert_eq!(plan(W::Running, ready, 2, true), Delivery::Join);
-        assert_eq!(plan(W::AwaitingAnswer, ready, 1, true), Delivery::Join);
+        let limited = MessagePolicy::Limited;
+        assert_eq!(plan(W::Idle, ready, 1, false, limited), Delivery::Wake);
+        assert_eq!(plan(W::Running, ready, 2, true, limited), Delivery::Join);
+        assert_eq!(
+            plan(W::AwaitingAnswer, ready, 1, true, limited),
+            Delivery::Join
+        );
+        // Always allow: no guard; the recipient still has to be reachable.
+        let always = MessagePolicy::Always;
+        assert_eq!(plan(W::Idle, ready, 9, false, always), Delivery::Wake);
+        assert_eq!(plan(W::Running, ready, 9, true, always), Delivery::Join);
+        assert!(matches!(
+            plan(W::Closed, ready, 1, false, always),
+            Delivery::Hold(_)
+        ));
         for (state, slot, hop, live) in [
             (W::Idle, ready, MAX_HOPS + 1, false),
             (W::Running, ready, MAX_HOPS + 1, true),
@@ -289,7 +310,7 @@ mod tests {
             (W::Idle, SlotState::Failed, 1, false),
         ] {
             assert!(
-                matches!(plan(state, slot, hop, live), Delivery::Hold(_)),
+                matches!(plan(state, slot, hop, live, limited), Delivery::Hold(_)),
                 "{state:?} {slot:?} {hop}"
             );
         }

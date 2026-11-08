@@ -1,11 +1,19 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { HookInput } from "@anthropic-ai/claude-agent-sdk";
 import { describe, expect, it } from "vitest";
 
 import { silentLogger } from "../src/log.js";
 import type { SessionStart } from "../src/protocol.js";
-import { MAX_NUDGES, NUDGE_TEXT, SUBAGENT_TOOL_ERROR, Session, artifactLink } from "../src/session.js";
+import {
+  MAX_NUDGES,
+  NUDGE_TEXT,
+  SUBAGENT_TOOL_ERROR,
+  Session,
+  artifactLink,
+  subagentLimitText,
+} from "../src/session.js";
 import { RecordingEmitter, fakeQueryFn, flush, sdk } from "./fakes.js";
 
 const START: SessionStart = {
@@ -14,6 +22,7 @@ const START: SessionStart = {
   system_prompt: "Origin: fix the bug",
   env: { FOO: "bar" },
   allowed_tools: [],
+  slot_messages: true,
   connector_skills: [{ name: "linear", description: "Linear issues" }],
 };
 
@@ -380,6 +389,105 @@ describe("present_review", () => {
     });
     session.answerReview("nope", "x");
     expect(emitter.ofType("session.error")[0]).toMatchObject({ fatal: false });
+  });
+});
+
+describe("Settings' limits (ADR 0032)", () => {
+  function startWith(extra: Partial<SessionStart>) {
+    const emitter = new RecordingEmitter();
+    const q = fakeQueryFn();
+    const session = new Session({ emitter, log: silentLogger, query: q.fn });
+    session.start({ ...START, ...extra }, "start-1");
+    const options = q.last().options;
+    const sp = options?.systemPrompt;
+    const prompt = sp && typeof sp === "object" && "append" in sp ? (sp.append ?? "") : "";
+    const server = options?.mcpServers?.berth as unknown as { instance: { _registeredTools: Record<string, unknown> } };
+    return { emitter, session, q: q.last(), options, prompt, tools: Object.keys(server.instance._registeredTools) };
+  }
+  const preToolUse = (id: string, toolName = "Agent") =>
+    ({ hook_event_name: "PreToolUse", tool_name: toolName, tool_input: {}, tool_use_id: id }) as unknown as HookInput;
+
+  it("offers everything by default", () => {
+    const { options, prompt, tools } = startWith({});
+    expect(prompt).toContain("message_slot");
+    expect(prompt).toContain("Subagents may only call");
+    expect(prompt).not.toContain("at a time");
+    expect(tools).toContain("message_slot");
+    expect(options?.disallowedTools).toEqual(["AskUserQuestion"]);
+    expect(options?.hooks).toBeUndefined();
+  });
+
+  it("leaves message_slot out when messages are off", () => {
+    const { prompt, tools } = startWith({ slot_messages: false });
+    expect(prompt).not.toContain("message_slot");
+    expect(prompt).not.toContain("Other slots");
+    expect(tools).not.toContain("message_slot");
+    expect(tools).toContain("ask_user");
+  });
+
+  it("leaves Claude Code's Agent tool out without subagents", () => {
+    const { options, prompt } = startWith({ max_subagents: 0 });
+    expect(options?.disallowedTools).toEqual(expect.arrayContaining(["AskUserQuestion", "Agent", "Task"]));
+    expect(prompt).not.toContain("Subagents");
+    expect(options?.hooks).toBeUndefined();
+  });
+
+  it("holds a spawn back past the limit, and counts background agents until they finish", async () => {
+    const { emitter, session, q, options, prompt } = startWith({ max_subagents: 2 });
+    expect(prompt).toContain("Run at most 2 subagents at a time");
+    const matcher = options?.hooks?.PreToolUse?.[0];
+    expect(matcher?.matcher).toBe("Agent|Task");
+    const hook = matcher?.hooks[0];
+    if (!hook) throw new Error("no PreToolUse hook");
+    const gate = (id: string, toolName?: string) =>
+      hook(preToolUse(id, toolName), id, { signal: new AbortController().signal });
+    const held = (r: unknown) =>
+      (r as { hookSpecificOutput?: { permissionDecision?: string } }).hookSpecificOutput?.permissionDecision === "deny";
+
+    session.turn("explore");
+    // Three spawned together: two start, the third is held back.
+    expect(held(await gate("a1"))).toBe(false);
+    expect(held(await gate("a2"))).toBe(false);
+    const third = await gate("a3");
+    expect(held(third)).toBe(true);
+    expect(JSON.stringify(third)).toContain("allows 2 subagents at a time");
+    // Another tool isn't counted, should the hook see one.
+    expect(held(await gate("b1", "Bash"))).toBe(false);
+    for (const id of ["a1", "a2", "a3"]) q.send(sdk.toolUse(id, "Agent", { description: id, prompt: "p" }, null, "m1"));
+    q.send(sdk.toolResult("a3", "PreToolUse:Agent hook error: …", undefined, true));
+    await flush();
+    expect(emitter.ofType("branch.collected")).toEqual([
+      expect.objectContaining({ status: "cancelled", result_text: subagentLimitText(2), tool_calls: 0 }),
+    ]);
+
+    // a1 runs in the background: it still counts until its notification.
+    q.send(sdk.toolResult("a1", "launched", { status: "async_launched", agentId: "t1" }));
+    q.send(sdk.toolResult("a2", [{ type: "text", text: "done" }], { status: "completed", content: [] }));
+    await flush();
+    expect(held(await gate("a4"))).toBe(false);
+    expect(held(await gate("a5"))).toBe(true);
+    q.send({
+      type: "system",
+      subtype: "task_notification",
+      task_id: "t1",
+      tool_use_id: "a1",
+      status: "completed",
+      summary: "ok",
+      output_file: "/tmp/x",
+      uuid: "u",
+      session_id: "sess-1",
+    });
+    await flush();
+    // a4 never showed up in the stream; a round's end lets it go.
+    q.send(sdk.toolUse("r1", MCP("reply"), { message: "hi" }));
+    await session.reply({ message: "hi" }, { toolUseId: "r1" });
+    q.send(sdk.result(0));
+    await flush();
+    expect(emitter.ofType("round.ended")).toHaveLength(1);
+    session.turn("again");
+    expect(held(await gate("a6"))).toBe(false);
+    expect(held(await gate("a7"))).toBe(false);
+    expect(held(await gate("a8"))).toBe(true);
   });
 });
 

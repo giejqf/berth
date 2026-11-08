@@ -1,17 +1,18 @@
 //! Settings: connections (Claude Code, GitHub CLI, Docker), the agent model,
-//! connectors and their secrets (Keychain, §8.3), appearance. Saved as you go.
+//! what agents may do beyond their slot (ADR 0032), connectors and their
+//! secrets (Keychain, §8.3), appearance. Saved as you go.
 
 use std::collections::{HashMap, HashSet};
 
 use gpui::{
-    App, AppContext as _, Context, DismissEvent, Div, Entity, EventEmitter, FocusHandle, Focusable,
-    Hsla, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
+    App, AppContext as _, Context, DismissEvent, Div, ElementId, Entity, EventEmitter, FocusHandle,
+    Focusable, Hsla, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _,
+    Render, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Window, div,
     prelude::FluentBuilder as _, px,
 };
 use gpui_component::input::{InputEvent, InputState};
 
-use berth_core::{ProviderApi, ProviderKind, ProviderModel};
+use berth_core::{MessagePolicy, ProviderApi, ProviderKind, ProviderModel, policy};
 
 use super::kit::{Btn, Size, TypeExt as _, caption, dot, icon, input_frame, radio};
 use super::modal::{self, ConfirmDialog};
@@ -305,6 +306,17 @@ impl SettingsForm {
         backend.send(Command::SetSetting {
             key: "keep_awake".into(),
             value: if on { "on" } else { "off" }.into(),
+        });
+        backend.send(Command::LoadSettings);
+    }
+
+    /// Messages between slots and subagents at once (ADR 0032); the backend
+    /// restarts the sessions a change concerns.
+    fn set_limit(&mut self, key: &str, value: String, cx: &mut Context<'_, Self>) {
+        let backend = self.state.read(cx).backend.clone();
+        backend.send(Command::SetSetting {
+            key: key.into(),
+            value,
         });
         backend.send(Command::LoadSettings);
     }
@@ -935,6 +947,64 @@ fn field_row(t: &Tokens, label: &str, last: bool) -> Div {
     )
 }
 
+/// One choice of a segmented control: the window's color when chosen.
+fn segment(
+    t: &Tokens,
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    active: bool,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .h(px(26.))
+        .px(px(12.))
+        .flex()
+        .items_center()
+        .rounded(px(4.))
+        .ty(ty::META)
+        .cursor_pointer()
+        .when(active, |d| d.bg(t.win).text_color(t.text).medium())
+        .when(!active, |d| d.text_color(t.text2))
+        .child(label.into())
+}
+
+/// A segmented control's track.
+fn segments(t: &Tokens) -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .gap(px(2.))
+        .p(px(2.))
+        .bg(t.raised)
+        .rounded(px(6.))
+}
+
+/// A captioned setting: the control, and what its choice means beside it,
+/// wrapping there (under it only when less than 180px is left).
+fn choice_section(t: &Tokens, title: &str, control: Div, explain: impl Into<SharedString>) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(8.))
+        .child(caption(title, t.text3))
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(px(8.))
+                .child(control)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(180.))
+                        .ty(ty::META)
+                        .text_color(t.text3)
+                        .child(explain.into()),
+                ),
+        )
+}
+
 fn state_color(t: &Tokens, s: &ToolStatus) -> Hsla {
     match s.state {
         ToolState::Ok => t.done,
@@ -1241,39 +1311,46 @@ impl Render for SettingsForm {
 
         let seg =
             |id: &'static str, label: &'static str, a: Appearance, cx: &mut Context<'_, Self>| {
-                let active = theme == a;
-                div()
-                    .id(id)
-                    .h(px(26.))
-                    .px(px(12.))
-                    .flex()
-                    .items_center()
-                    .rounded(px(4.))
-                    .ty(ty::META)
-                    .cursor_pointer()
-                    .when(active, |d| d.bg(t.win).text_color(t.text).medium())
-                    .when(!active, |d| d.text_color(t.text2))
-                    .child(label)
+                segment(&t, id, label, theme == a)
                     .on_click(cx.listener(move |this, _, _, cx| this.set_theme(a, cx)))
             };
         let keep_awake = cx.global::<super::Berth>().keep_awake;
         let awake_seg =
             |id: &'static str, label: &'static str, on: bool, cx: &mut Context<'_, Self>| {
-                let active = keep_awake == on;
-                div()
-                    .id(id)
-                    .h(px(26.))
-                    .px(px(12.))
-                    .flex()
-                    .items_center()
-                    .rounded(px(4.))
-                    .ty(ty::META)
-                    .cursor_pointer()
-                    .when(active, |d| d.bg(t.win).text_color(t.text).medium())
-                    .when(!active, |d| d.text_color(t.text2))
-                    .child(label)
+                segment(&t, id, label, keep_awake == on)
                     .on_click(cx.listener(move |this, _, _, cx| this.set_keep_awake(on, cx)))
             };
+        // What agents may do beyond their slot (ADR 0032).
+        let limits = cx.global::<super::Berth>().limits;
+        let messages = MessagePolicy::ALL.into_iter().fold(segments(&t), |row, p| {
+            row.child(
+                segment(
+                    &t,
+                    SharedString::from(format!("messages-{}", p.as_str())),
+                    p.label(),
+                    limits.messages == p,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.set_limit("slot_messages", p.as_str().to_owned(), cx);
+                })),
+            )
+        });
+        let subagents = policy::SUBAGENT_CHOICES
+            .into_iter()
+            .fold(segments(&t), |row, max| {
+                let value = policy::max_subagents_value(max);
+                row.child(
+                    segment(
+                        &t,
+                        SharedString::from(format!("subagents-{value}")),
+                        policy::max_subagents_label(max),
+                        limits.max_subagents == max,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.set_limit("max_subagents", value.clone(), cx);
+                    })),
+                )
+            });
         let this = cx.entity().downgrade();
         let done = this.clone();
 
@@ -1330,6 +1407,11 @@ impl Render for SettingsForm {
                             })
                             .child(div().ty(ty::META).text_color(t.text3).child("For slots without their own (⌘⇧M sets a slot's model and effort). Takes effect when a session starts.")),
                     )
+                    .child(choice_section(&t, "Messages between slots", messages, limits.messages.explain()))
+                    .child(
+                        choice_section(&t, "Subagents at once", subagents, policy::explain_max_subagents(limits.max_subagents))
+                            .child(div().ty(ty::META).text_color(t.text3).child("A working agent picks up a change once its round ends.")),
+                    )
                     .child(
                         div()
                             .flex()
@@ -1357,12 +1439,7 @@ impl Render for SettingsForm {
                                     .items_center()
                                     .gap(px(8.))
                                     .child(
-                                        div()
-                                            .flex()
-                                            .gap(px(2.))
-                                            .p(px(2.))
-                                            .bg(t.raised)
-                                            .rounded(px(6.))
+                                        segments(&t)
                                             .child(seg("theme-system", "System", Appearance::System, cx))
                                             .child(seg("theme-light", "Light", Appearance::Light, cx))
                                             .child(seg("theme-dark", "Dark", Appearance::Dark, cx)),
@@ -1383,13 +1460,7 @@ impl Render for SettingsForm {
                                     .items_center()
                                     .gap(px(8.))
                                     .child(
-                                        div()
-                                            .flex()
-                                            .flex_none()
-                                            .gap(px(2.))
-                                            .p(px(2.))
-                                            .bg(t.raised)
-                                            .rounded(px(6.))
+                                        segments(&t)
                                             .child(awake_seg("awake-on", "Keep the Mac awake", true, cx))
                                             .child(awake_seg("awake-off", "Let it sleep", false, cx)),
                                     )

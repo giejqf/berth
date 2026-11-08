@@ -11,6 +11,8 @@ import { isAbsolute, resolve } from "node:path";
 import {
   query as sdkQuery,
   type AccountInfo,
+  type HookInput,
+  type HookJSONOutput,
   type ModelInfo,
   type Options,
   type SDKMessage,
@@ -54,7 +56,32 @@ import {
 import { berthToolName, createBerthServer, type CallContext, type ToolHost, type ToolOutcome } from "./tools.js";
 import { VERSION } from "./version.js";
 
-export const BERTH_SYSTEM_PROMPT = `You are working inside Berth. The user never reads or edits code: they follow your decisions, answer your questions, review diffs, and ship pull requests.
+/** What Settings lets the agent do beyond its slot (ADR 0032). */
+export interface AgentLimits {
+  /** `message_slot` is on offer. */
+  slotMessages: boolean;
+  /** The most subagents at once; 0, none; undefined, no limit of Berth's. */
+  maxSubagents?: number;
+}
+
+/** Berth's part of the system prompt, for what the agent may do. */
+export function berthSystemPrompt(limits: AgentLimits): string {
+  const max = limits.maxSubagents;
+  return [
+    BERTH_PROMPT_HEAD,
+    ...(limits.slotMessages ? [MESSAGE_SLOT_PROMPT] : []),
+    BERTH_PROMPT_TAIL,
+    ...(max === undefined || max === 0
+      ? []
+      : [
+          `- Run at most ${max} ${max === 1 ? "subagent" : "subagents"} at a time (the user's setting in Berth); start another once one has finished.`,
+        ]),
+    // Without subagents, Claude Code's Agent tool isn't on offer either.
+    ...(max === 0 ? [] : [SUBAGENT_PROMPT]),
+  ].join("\n");
+}
+
+const BERTH_PROMPT_HEAD = `You are working inside Berth. The user never reads or edits code: they follow your decisions, answer your questions, review diffs, and ship pull requests.
 
 How to work:
 - Announce each meaningful decision with the berth \`record_decision\` tool the moment you make it (an approach chosen, a trade-off accepted, a convention adopted). Short title; the why goes in the rationale.
@@ -66,11 +93,23 @@ How to work:
 - When the workflow's result is a page you published with Claude Code's \`Artifact\` tool rather than code to merge, end it with \`record_outcome\` kind "claude_artifact" and the claude.ai link the publish returned as ref. (\`present_artifact\` only shows the user a file; it publishes nothing.)
 - Use the connector CLIs described by their skills for external systems (Linear, PostHog, ...).
 - Run the repository's gates (tests, lint, typecheck) before \`write_summary\` when you changed code.
-- When you review code (because the user asked, or a reviewer subagent reported back), present the findings with \`present_review\` rather than listing them in prose or a summary, then act on the decisions it returns: fix what the user marked fix, leave the dismissed ones, follow their words on the rest.
-- Other slots in this repository may be building other parts of the same thing (the backend to your frontend). When their work needs to know something (a bug you found in their part, an interface you need from them or changed for them), tell them with \`message_slot\` rather than changing their code, then carry on with your own work. A turn that starts with "Message from slot" is another slot's agent writing to you: act on it as you would on the user's request, answer with \`message_slot\` when it needs an answer, and end the round as usual.
-- When you make something the user should see (a screenshot, a screen recording, a rendered chart or page, a report), save it to a file and call \`present_artifact\` with its path and a short title. Never paste images or long output into text.
-- Files the user attached are listed at the end of their message, with paths you can read; attached images are also shown to you directly.
-- Subagents may only call \`record_decision\`; they report everything else back to you.`;
+- When you review code (because the user asked, or a reviewer subagent reported back), present the findings with \`present_review\` rather than listing them in prose or a summary, then act on the decisions it returns: fix what the user marked fix, leave the dismissed ones, follow their words on the rest.`;
+
+const MESSAGE_SLOT_PROMPT = `- Other slots in this repository may be building other parts of the same thing (the backend to your frontend). When their work needs to know something (a bug you found in their part, an interface you need from them or changed for them), tell them with \`message_slot\` rather than changing their code, then carry on with your own work. A turn that starts with "Message from slot" is another slot's agent writing to you: act on it as you would on the user's request, answer with \`message_slot\` when it needs an answer, and end the round as usual.`;
+
+const BERTH_PROMPT_TAIL = `- When you make something the user should see (a screenshot, a screen recording, a rendered chart or page, a report), save it to a file and call \`present_artifact\` with its path and a short title. Never paste images or long output into text.
+- Files the user attached are listed at the end of their message, with paths you can read; attached images are also shown to you directly.`;
+
+const SUBAGENT_PROMPT = "- Subagents may only call `record_decision`; they report everything else back to you.";
+
+/** The whole of it, with every tool on offer and no subagent limit. */
+export const BERTH_SYSTEM_PROMPT = berthSystemPrompt({ slotMessages: true });
+
+/** What an agent reads when the subagent limit holds a spawn back. */
+export function subagentLimitText(max: number): string {
+  const what = max === 1 ? "one subagent at a time" : `${max} subagents at a time`;
+  return `Not started: the user's setting in Berth allows ${what}, and that many are running. Start it once one has finished, or do this part yourself.`;
+}
 
 /** Claude Code's tool that publishes pages to claude.ai. */
 const ARTIFACT_TOOL = "Artifact";
@@ -199,6 +238,12 @@ export class Session implements ToolHost {
   /** claude.ai artifacts this session published with the Artifact tool:
    * link → title, for an Outcome that names one (ADR 0020). */
   private readonly published = new Map<string, string | undefined>();
+  /** The most subagents at once, as the app said at the start (ADR 0032). */
+  private maxSubagents?: number;
+  /** Agent calls the limit let through, until their branch collects. */
+  private readonly admitted = new Set<string>();
+  /** Agent calls the limit held back, with what the agent read. */
+  private readonly heldBack = new Map<string, string>();
 
   private q?: AgentQuery;
   private consuming?: Promise<void>;
@@ -407,16 +452,32 @@ export class Session implements ToolHost {
             .map((s) => `- ${s.name}: ${s.description}`)
             .join("\n")}`
         : "";
-    const append = [BERTH_SYSTEM_PROMPT + skills, msg.system_prompt].filter((s) => s.trim().length > 0).join("\n\n");
+    const limits: AgentLimits = {
+      slotMessages: msg.slot_messages !== false,
+      ...(msg.max_subagents === undefined ? {} : { maxSubagents: msg.max_subagents }),
+    };
+    this.maxSubagents = limits.maxSubagents;
+    const append = [berthSystemPrompt(limits) + skills, msg.system_prompt]
+      .filter((s) => s.trim().length > 0)
+      .join("\n\n");
     return {
       cwd: msg.cwd,
       systemPrompt: { type: "preset", preset: "claude_code", append, snapshot: true },
       // Always auto-approve (§1.6): isolation is the slot's job.
       permissionMode: "bypassPermissions",
       allowDangerouslySkipPermissions: true,
-      mcpServers: { berth: createBerthServer(this) },
+      mcpServers: { berth: createBerthServer(this, { slotMessages: limits.slotMessages }) },
       allowedTools: ["mcp__berth__*", ...msg.allowed_tools],
-      disallowedTools: ["AskUserQuestion"],
+      // Without subagents, Claude Code's Agent tool isn't on offer (ADR 0032).
+      disallowedTools: ["AskUserQuestion", ...(limits.maxSubagents === 0 ? AGENT_TOOLS : [])],
+      // Up to a number, Berth counts them as they start (ADR 0032).
+      ...(limits.maxSubagents
+        ? {
+            hooks: {
+              PreToolUse: [{ matcher: [...AGENT_TOOLS].join("|"), hooks: [async (input) => this.gateSubagent(input)] }],
+            },
+          }
+        : {}),
       skills: "all",
       env: { ...process.env, ...msg.env, CLAUDE_AGENT_SDK_CLIENT_APP: `berth/${VERSION}` },
       ...(resume ? { resume } : {}),
@@ -778,6 +839,16 @@ export class Session implements ToolHost {
       }
       const branch = this.branches.get(block.tool_use_id);
       if (!branch || branch.collected) continue;
+      // Never started: the subagent limit held it back (ADR 0032).
+      const held = this.heldBack.get(block.tool_use_id);
+      if (held !== undefined) {
+        this.heldBack.delete(block.tool_use_id);
+        this.emitter.emit({
+          type: "branch.collected",
+          ...this.branches.collect(branch, { resultText: held, status: "cancelled", durationMs: 0, toolCalls: 0 }),
+        });
+        continue;
+      }
       const r = agentResult(block, toolUseResult);
       if (r.kind === "background") {
         branch.background = true;
@@ -848,10 +919,32 @@ export class Session implements ToolHost {
     this.endRound("unterminated");
   }
 
+  /** A PreToolUse hook on Claude Code's Agent tool: let it start while
+   * fewer than the limit run, else hold it back with why (ADR 0032). A
+   * subagent runs from its call until its branch collects, in the background
+   * too. */
+  gateSubagent(input: HookInput): HookJSONOutput {
+    const max = this.maxSubagents;
+    if (max === undefined || input.hook_event_name !== "PreToolUse" || !AGENT_TOOLS.has(input.tool_name)) return {};
+    for (const id of this.admitted) if (this.branches.get(id)?.collected) this.admitted.delete(id);
+    if (this.admitted.size < max) {
+      this.admitted.add(input.tool_use_id);
+      return {};
+    }
+    const why = subagentLimitText(max);
+    this.heldBack.set(input.tool_use_id, why);
+    return {
+      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: why },
+    };
+  }
+
   private endRound(kind: TerminalKind): void {
     const round = this.round;
     if (!round) return;
     this.round = undefined;
+    // A call let through that never showed up in the stream isn't running.
+    for (const id of this.admitted) if (!this.branches.get(id)) this.admitted.delete(id);
+    this.heldBack.clear();
     this.emitter.emit({
       type: "round.ended",
       terminal_kind: kind,

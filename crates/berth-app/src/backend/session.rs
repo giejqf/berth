@@ -127,6 +127,14 @@ impl Shared {
         }
         let slot_exec = host.then(|| script.ty.script().to_string_lossy().into_owned());
         let reused = self.core().store.workflows_for_slot(&slot.id)?.len() > 1;
+        // What Settings lets the agent do beyond its slot (ADR 0032); without
+        // messages, it doesn't hear of the other slots either.
+        let limits = self.agent_limits();
+        let other_slots = if limits.messages.allows() {
+            self.other_slots(&slot)
+        } else {
+            Vec::new()
+        };
         let system_prompt = prompt::session_context(&prompt::SessionContext {
             repo_name: &repo.name(),
             slot_name: &slot.name,
@@ -140,7 +148,7 @@ impl Shared {
             slot_exec: slot_exec
                 .as_deref()
                 .filter(|_| slot.slot_type != "worktree"),
-            other_slots: &self.other_slots(&slot),
+            other_slots: &other_slots,
         });
 
         let cmd = if host {
@@ -182,6 +190,8 @@ impl Shared {
                     .clone()
                     .unwrap_or_else(|| wf.origin.title.clone()),
             ),
+            slot_messages: limits.messages.allows(),
+            max_subagents: limits.max_subagents,
         };
         let (resume_at, drops_turn) = {
             let core = self.core();
@@ -205,6 +215,7 @@ impl Shared {
         if through_proxy {
             lock(&self.via_proxy).insert(wf.id.clone());
         }
+        lock(&self.session_limits).insert(wf.id.clone(), limits);
         tokio::spawn(self.clone().pump(wf.id.clone(), session.clone(), events));
         Ok(session)
     }
@@ -229,6 +240,7 @@ impl Shared {
         lock(&self.restart_after_round).remove(workflow_id);
         lock(&self.tasks).remove(workflow_id);
         lock(&self.via_proxy).remove(workflow_id);
+        lock(&self.session_limits).remove(workflow_id);
         self.keep_awake();
         let taken = lock(&self.sessions).remove(workflow_id);
         if taken.is_some() {
@@ -260,6 +272,33 @@ impl Shared {
         }
     }
 
+    /// What Settings lets agents do beyond their slot (ADR 0032).
+    pub(super) fn agent_limits(&self) -> berth_core::AgentLimits {
+        let core = self.core();
+        let setting = |key| core.store.setting(key).ok().flatten();
+        berth_core::AgentLimits::from_settings(
+            setting("slot_messages").as_deref(),
+            setting("max_subagents").as_deref(),
+        )
+    }
+
+    /// Settings changed what agents may do: every session that started under
+    /// other limits restarts as an account switch restarts it (ADR 0017), so
+    /// its agent gets the new ones; `inside` slots' too, the sidecar enforces
+    /// them (ADR 0032).
+    pub(super) fn restart_for_limits(self: &Arc<Self>) {
+        let now = self.agent_limits();
+        let stale: Vec<String> = lock(&self.session_limits)
+            .iter()
+            .filter(|(_, was)| was.session_differs(now))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for workflow_id in stale {
+            lock(&self.restart_after_round).insert(workflow_id.clone());
+            self.restart_if_due(&workflow_id);
+        }
+    }
+
     /// Restart the workflow's session if it waits for that and is quiet now:
     /// idle, nothing in the background.
     fn restart_if_due(self: &Arc<Self>, workflow_id: &str) {
@@ -272,7 +311,7 @@ impl Shared {
         if !quiet || !lock(&self.restart_after_round).remove(workflow_id) {
             return;
         }
-        tracing::info!(workflow_id, "restarting the session for the new account");
+        tracing::info!(workflow_id, "restarting the session on the new settings");
         self.retire_session(workflow_id);
         let fx = {
             let mut core = self.core();
@@ -888,6 +927,7 @@ impl Shared {
     /// The app's settings (the default model, the theme), for the windows.
     pub(super) fn emit_settings(&self) -> Result<()> {
         let provider = self.provider();
+        let limits = self.agent_limits();
         let (model, theme, review_width, keep_awake) = {
             let core = self.core();
             (
@@ -909,6 +949,7 @@ impl Shared {
             theme,
             review_width,
             keep_awake,
+            limits,
         });
         Ok(())
     }

@@ -12,6 +12,7 @@ const START: SessionStart = {
   system_prompt: "",
   env: {},
   allowed_tools: [],
+  slot_messages: true,
   connector_skills: [],
   title: "Fix the login redirect",
 };

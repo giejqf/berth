@@ -10,6 +10,7 @@ const START = {
   system_prompt: "",
   env: {},
   allowed_tools: [],
+  slot_messages: true,
   connector_skills: [],
 };
 

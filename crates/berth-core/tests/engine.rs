@@ -1780,6 +1780,7 @@ fn messages(store: &Store, wf: &str) -> Vec<berth_protocol::SlotMessage> {
 
 #[test]
 fn messages_between_slots_wake_join_and_stop_at_the_guard() {
+    use berth_core::MessagePolicy;
     use berth_core::messages::{Delivery, MAX_HOPS, plan};
     use berth_core::{Recipient, Sender};
     use berth_protocol::{MessageDirection, MessageStatus};
@@ -1795,7 +1796,7 @@ fn messages_between_slots_wake_join_and_stop_at_the_guard() {
     assert_eq!(hop, 1);
     let to = store.workflow(&api).unwrap();
     let slot_state = store.slot(&to.slot_id).unwrap().state;
-    let delivery = plan(to.state, slot_state, hop, false);
+    let delivery = plan(to.state, slot_state, hop, false, MessagePolicy::Limited);
     assert_eq!(delivery, Delivery::Wake);
     let from = store.workflow(&front).unwrap();
     let sender = Sender {
@@ -1832,7 +1833,16 @@ fn messages_between_slots_wake_join_and_stop_at_the_guard() {
     let hop = Engine::message_hop(&store, &api).unwrap();
     assert_eq!(hop, 2);
     let to = store.workflow(&front).unwrap();
-    assert_eq!(plan(to.state, SlotState::Ready, hop, true), Delivery::Join);
+    assert_eq!(
+        plan(
+            to.state,
+            SlotState::Ready,
+            hop,
+            true,
+            MessagePolicy::Limited
+        ),
+        Delivery::Join
+    );
     let from = store.workflow(&api).unwrap();
     let sender = Sender {
         workflow: &from,
@@ -1859,7 +1869,13 @@ fn messages_between_slots_wake_join_and_stop_at_the_guard() {
     let hop = Engine::message_hop(&store, &front).unwrap();
     assert_eq!(hop, MAX_HOPS + 1);
     let to = store.workflow(&api).unwrap();
-    let delivery = plan(to.state, SlotState::Ready, hop, true);
+    let delivery = plan(
+        to.state,
+        SlotState::Ready,
+        hop,
+        true,
+        MessagePolicy::Limited,
+    );
     assert!(matches!(delivery, Delivery::Hold(_)));
     let from = store.workflow(&front).unwrap();
     let sender = Sender {

@@ -731,6 +731,8 @@ pub enum UiEvent {
         review_width: Option<f32>,
         /// The Mac stays awake while agents work (`keep_awake` isn't "off").
         keep_awake: bool,
+        /// Messages between slots and subagents at once (ADR 0032).
+        limits: berth_core::AgentLimits,
     },
     /// The models the agent can run on, as the SDK last reported them.
     Models(Vec<ModelChoice>),

@@ -216,6 +216,8 @@ mod tests {
             model: None,
             effort: Some(Effort::Xhigh),
             title: Some("Fix login".into()),
+            slot_messages: false,
+            max_subagents: Some(2),
         };
         roundtrip_app(&AppMessage {
             id: "3".into(),
@@ -229,6 +231,17 @@ mod tests {
         let parsed: AppMessage =
             serde_json::from_str(r#"{"id":"4","type":"session.stop"}"#).unwrap();
         assert_eq!(parsed.body, AppToSidecar::SessionStop);
+        // Without a word on it, messages between slots are allowed and Berth
+        // sets no subagent limit.
+        let parsed: AppMessage = serde_json::from_str(
+            r#"{"id":"6","type":"session.start","workflow_id":"w","cwd":"/tmp"}"#,
+        )
+        .unwrap();
+        let AppToSidecar::SessionStart(start) = parsed.body else {
+            panic!("not a session.start");
+        };
+        assert!(start.slot_messages);
+        assert_eq!(start.max_subagents, None);
     }
 
     #[test]

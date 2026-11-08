@@ -159,7 +159,16 @@ function result(outcome: ToolOutcome) {
     : { content: [{ type: "text" as const, text: outcome.error }], isError: true };
 }
 
-export function createBerthServer(host: ToolHost): McpSdkServerConfigWithInstance {
+/** Which of the tools are on offer: `message_slot` only when Settings
+ * allows messages between slots (ADR 0032). */
+export interface ServerOptions {
+  slotMessages: boolean;
+}
+
+export function createBerthServer(
+  host: ToolHost,
+  options: ServerOptions = { slotMessages: true },
+): McpSdkServerConfigWithInstance {
   return createSdkMcpServer({
     name: MCP_SERVER_NAME,
     version: VERSION,
@@ -189,9 +198,13 @@ export function createBerthServer(host: ToolHost): McpSdkServerConfigWithInstanc
       tool("present_review", TOOLS.present_review.description, shapes.present_review, async (args, extra) =>
         result(await host.presentReview(args, callContext(extra))),
       ),
-      tool("message_slot", TOOLS.message_slot.description, shapes.message_slot, async (args, extra) =>
-        result(await host.messageSlot(args, callContext(extra))),
-      ),
+      ...(options.slotMessages
+        ? [
+            tool("message_slot", TOOLS.message_slot.description, shapes.message_slot, async (args, extra) =>
+              result(await host.messageSlot(args, callContext(extra))),
+            ),
+          ]
+        : []),
     ],
   });
 }

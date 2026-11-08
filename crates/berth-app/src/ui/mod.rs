@@ -93,6 +93,8 @@ pub struct Berth {
     pub review_width: Option<f32>,
     /// The Mac stays awake while agents work (`settings.keep_awake`).
     pub keep_awake: bool,
+    /// Messages between slots and subagents at once (ADR 0032).
+    pub limits: berth_core::AgentLimits,
     /// What agents on this Mac run on: Claude Code's account or an
     /// OpenAI-compatible API (ADR 0023).
     pub provider: crate::backend::ProviderInfo,
@@ -117,6 +119,7 @@ pub fn init(backend: BackendHandle, events: UnboundedReceiver<UiEvent>, cx: &mut
         account: None,
         review_width: None,
         keep_awake: true,
+        limits: berth_core::AgentLimits::default(),
         provider: crate::backend::ProviderInfo::default(),
     });
     cx.spawn(async move |cx| {
@@ -258,9 +261,11 @@ fn route(event: UiEvent, cx: &mut App) {
             theme,
             review_width,
             keep_awake,
+            limits,
         } => {
             cx.global_mut::<Berth>().review_width = review_width;
             cx.global_mut::<Berth>().keep_awake = keep_awake;
+            cx.global_mut::<Berth>().limits = limits;
             crate::theme::set_appearance(crate::theme::Appearance::parse(&theme), cx);
             for handle in cx.windows() {
                 let _ = handle.update(cx, |_, window, cx| crate::theme::apply(window, cx));
@@ -275,6 +280,7 @@ fn route(event: UiEvent, cx: &mut App) {
                             theme,
                             review_width,
                             keep_awake,
+                            limits,
                         },
                         cx,
                     );

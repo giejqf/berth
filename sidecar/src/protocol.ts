@@ -293,7 +293,18 @@ allowed_tools: Array<string>, connector_skills: Array<ConnectorSkill>, model?: s
  * The session's title in Claude Code's history (a new session's; a
  * resumed one keeps its own, see `sessions.rename`). ADR 0016.
  */
-title?: string, };
+title?: string, 
+/**
+ * Whether the agent may message other slots' agents (`message_slot`).
+ * Off in Settings, the tool and the system prompt's word on it are left
+ * out (ADR 0032).
+ */
+slot_messages: boolean, 
+/**
+ * The most subagents the agent runs at once; 0, none (Claude Code's
+ * `Agent` tool is left out); absent, Berth sets no limit (ADR 0032).
+ */
+max_subagents?: number, };
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -357,7 +368,18 @@ allowed_tools: Array<string>, connector_skills: Array<ConnectorSkill>, model?: s
  * The session's title in Claude Code's history (a new session's; a
  * resumed one keeps its own, see `sessions.rename`). ADR 0016.
  */
-title?: string, };
+title?: string, 
+/**
+ * Whether the agent may message other slots' agents (`message_slot`).
+ * Off in Settings, the tool and the system prompt's word on it are left
+ * out (ADR 0032).
+ */
+slot_messages: boolean, 
+/**
+ * The most subagents the agent runs at once; 0, none (Claude Code's
+ * `Agent` tool is left out); absent, Berth sets no limit (ADR 0032).
+ */
+max_subagents?: number, };
 
 export type SessionTurn = { text: string, 
 /**

@@ -79,8 +79,12 @@ pub(crate) struct Shared {
     /// The diffs computed last, by the objects they compare.
     diff_cache: Mutex<review::DiffCache>,
     /// Sessions to restart once their round ends: Claude Code signed in as
-    /// another account while they worked (ADR 0017).
+    /// another account while they worked (ADR 0017), or Settings changed
+    /// their limits (ADR 0032).
     restart_after_round: Mutex<HashSet<String>>,
+    /// What each live session's agent was given of Settings' limits when it
+    /// started (ADR 0032): a change restarts the ones it concerns.
+    session_limits: Mutex<HashMap<String, berth_core::AgentLimits>>,
     /// Workflows whose session runs a task: a subagent, a command (ADR 0022).
     tasks: Mutex<HashSet<String>>,
     /// Keeps the Mac awake while agents work.
@@ -129,6 +133,7 @@ pub fn start(rt: &tokio::runtime::Handle, ui: UnboundedSender<UiEvent>) -> Resul
         installer: agent_sdk::Installer::default(),
         diff_cache: Mutex::default(),
         restart_after_round: Mutex::default(),
+        session_limits: Mutex::default(),
         tasks: Mutex::default(),
         awake: awake::Awake::start(),
         proxy: tokio::sync::OnceCell::new(),
@@ -554,8 +559,10 @@ impl Shared {
             }
             Command::SetSetting { key, value } => {
                 self.core().store.set_setting(&key, value.trim())?;
-                if key == "keep_awake" {
-                    self.keep_awake();
+                match key.as_str() {
+                    "keep_awake" => self.keep_awake(),
+                    "slot_messages" | "max_subagents" => self.restart_for_limits(),
+                    _ => {}
                 }
                 Ok(())
             }

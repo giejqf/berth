@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use berth_core::messages::{self, Delivery};
-use berth_core::{Engine, Recipient, Sender, Slot, Workflow, WorkflowState};
+use berth_core::{Engine, MessagePolicy, Recipient, Sender, Slot, Workflow, WorkflowState};
 use berth_protocol::{AppToSidecar, SessionTurn, SlotMessageRequest, SlotMessageSent};
 
 use super::{Shared, lock};
@@ -42,6 +42,12 @@ impl Shared {
         from: &str,
         request: &SlotMessageRequest,
     ) -> Result<Result<String, String>> {
+        // A session that started before Settings turned messages off still
+        // has the tool (ADR 0032).
+        let policy = self.agent_limits().messages;
+        if !policy.allows() {
+            return Ok(Err(berth_core::policy::MESSAGES_OFF.to_owned()));
+        }
         let (sender, from_slot, slots) = {
             let core = self.core();
             let wf = core.store.workflow(from)?;
@@ -65,7 +71,7 @@ impl Shared {
         let from_name = messages::slot_name(&from_slot, Some(&sender));
         let hop = Engine::message_hop(&self.core().store, from)?;
         let live = lock(&self.sessions).contains_key(&to.id);
-        let mut delivery = messages::plan(to.state, to_slot.state, hop, live);
+        let mut delivery = messages::plan(to.state, to_slot.state, hop, live, policy);
         // Waking an idle agent may need its session started first; if it
         // can't start, the message waits for the user.
         if delivery == Delivery::Wake
@@ -117,7 +123,8 @@ impl Shared {
             (wf, slot)
         };
         let live = lock(&self.sessions).contains_key(workflow_id);
-        let delivery = messages::plan(wf.state, slot.state, 0, live);
+        // The user sends it: no guard to apply, whatever Settings says.
+        let delivery = messages::plan(wf.state, slot.state, 0, live, MessagePolicy::Always);
         if delivery == Delivery::Wake {
             self.ensure_session(workflow_id).await?;
         }
