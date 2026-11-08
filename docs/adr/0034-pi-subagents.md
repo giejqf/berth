@@ -67,7 +67,8 @@ Turning extensions on would not give Berth usable subagents:
    child.
 6. **What it doesn't do:**
    - Background subagents. Pi's tool calls hold its turn, and Background
-     still says Pi runs nothing in the background.
+     still says Pi runs nothing in the background. (Amended by ADR 0035:
+     subagents run in the background too.)
    - Progress summaries. A live row shows the subagent's current step.
    - Subagent types (`.claude/agents/`).
    - Subagents that start their own.

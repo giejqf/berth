@@ -4,7 +4,9 @@
 // (§5.4): the call opens a branch, the child's messages are that branch's
 // raw events, and the call's end collects it. Settings' Subagents at once
 // holds a call back past the limit (ADR 0032); Stop on a subagent aborts its
-// session alone (ADR 0022).
+// session alone (ADR 0022). One in the background (started so, or moved there
+// with Background) returns its call at once, collects when it finishes, and
+// reports to the main agent with a message (ADR 0035).
 
 import { randomUUID } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
@@ -20,7 +22,7 @@ import type { BranchStatus, JsonValue, SessionTask } from "./protocol.js";
 export { PI_AGENT_TOOL };
 
 export const AGENT_TOOL_DESCRIPTION =
-  "Hand a self-contained task to a subagent: a fresh agent with its own context window, working in this checkout with read, bash, edit and write. It sees none of this conversation, so the prompt must say everything it needs. It reports back with its final message, which is this tool's result. Several agent calls in one message run at the same time.";
+  "Hand a self-contained task to a subagent: a fresh agent with its own context window, working in this checkout with read, bash, edit and write. It sees none of this conversation, so the prompt must say everything it needs. It reports back with its final message, which is this tool's result. Several agent calls in one message run at the same time. With run_in_background, the call returns at once and the report comes to you as a message when the subagent finishes.";
 
 /** The `agent` tool's input, as JSON Schema (Pi validates it). */
 export const AGENT_TOOL_SCHEMA = {
@@ -31,6 +33,11 @@ export const AGENT_TOOL_SCHEMA = {
       type: "string",
       description: "The whole task: what to do, where, what to report back",
     },
+    run_in_background: {
+      type: "boolean",
+      description:
+        "Carry on while it works: this call returns at once, and its report comes to you as a message when it finishes",
+    },
   },
   required: ["description", "prompt"],
   additionalProperties: false,
@@ -39,11 +46,18 @@ export const AGENT_TOOL_SCHEMA = {
 export interface AgentInput {
   description: string;
   prompt: string;
+  run_in_background?: boolean;
 }
 
 /** What the main agent reads when the user stops a subagent. */
 export const STOPPED_TEXT = "The user stopped this subagent before it finished; carry on without its result.";
 const INTERRUPTED_TEXT = "Interrupted by the user.";
+const ENDED_TEXT = "The session ended.";
+/** The call's result for one that goes on in the background. */
+export const STARTED_TEXT =
+  "Started in the background. Its report will come to you as a message when it finishes: carry on with other work meanwhile, and don't wait or poll for it.";
+export const MOVED_TEXT =
+  "The user moved this subagent to the background. Its report will come to you as a message when it finishes: carry on with other work meanwhile.";
 /** How long a call waits for its branch to open from the stream. */
 const SPAWN_WAIT_MS = 2_000;
 /** How long a finished subagent's last events may trail its run: Pi hands
@@ -58,17 +72,37 @@ interface Running {
   description: string;
   startedAt: number;
   child?: AgentSession;
-  /** Why it ends early: the user stopped it, or interrupted the round. */
+  /** Why it ends early: the user stopped it, interrupted the round, or the
+   * session ended. */
   cancelled?: string;
   costUsd: number;
+  /** Its call returned: it collects when it finishes, and reports (ADR 0035). */
+  background: boolean;
+  /** Returns a foreground one's call now (Background). */
+  release?: () => void;
+  /** Stops following the main run's abort. */
+  detach?: () => void;
 }
 
-interface Outcome {
+/** How a subagent ended. */
+export interface End {
   status: BranchStatus;
   text: string;
+}
+
+interface Outcome extends End {
   costUsd: number;
   /** Held back by the limit: it never ran. */
   heldBack?: boolean;
+}
+
+/** A background subagent finished: what the main agent hears of it. */
+export interface Report extends End {
+  taskId: string;
+  toolCallId: string;
+  description: string;
+  /** The user stopped it: nothing to start a round for. */
+  stopped: boolean;
 }
 
 export interface PiSubagentsDeps {
@@ -82,6 +116,8 @@ export interface PiSubagentsDeps {
   raw(kind: string, json: { [key: string]: JsonValue }, branchId: string): void;
   /** A subagent's model calls cost this (the session's total counts it). */
   spent(usd: number): void;
+  /** A background subagent ended (its branch collected). */
+  finished(report: Report): void;
 }
 
 export class PiSubagents {
@@ -138,15 +174,17 @@ export class PiSubagents {
     });
   }
 
-  /** The `agent` tool: one subagent, from its call to its report. What it
-   * throws, the main agent reads as the tool's error. */
+  /** The `agent` tool: a subagent's call, until its report, or until it goes
+   * on in the background. What it throws, the main agent reads as the
+   * tool's error. */
   async run(
     toolCallId: string,
     input: AgentInput,
     signal: AbortSignal | undefined,
     openChild: (branchId: string) => Promise<AgentSession>,
   ): Promise<string> {
-    // Before any await: calls from one message start together.
+    // Before any await: calls from one message start together. One in the
+    // background counts until it finishes.
     if (this.max !== undefined && this.running.size >= this.max) {
       const why = subagentLimitText(this.max);
       this.outcomes.set(toolCallId, { status: "cancelled", text: why, costUsd: 0, heldBack: true });
@@ -158,19 +196,37 @@ export class PiSubagents {
       description: input.description,
       startedAt: this.deps.now(),
       costUsd: 0,
+      background: input.run_in_background === true,
     };
     this.running.set(toolCallId, r);
-    const abort = () => {
-      r.cancelled ??= INTERRUPTED_TEXT;
-      void r.child?.abort().catch(() => undefined);
-    };
-    signal?.addEventListener("abort", abort, { once: true });
+    // Interrupt ends the main run, and a subagent its call waits on; one in
+    // the background goes on until stopped.
+    if (!r.background && signal) {
+      const abort = () => this.cancel(r, INTERRUPTED_TEXT);
+      signal.addEventListener("abort", abort, { once: true });
+      r.detach = () => signal.removeEventListener("abort", abort);
+      if (signal.aborted) abort();
+    }
+    const life = this.live(r, input, openChild).then((end) => this.finish(r, end));
+    if (r.background) return STARTED_TEXT;
+    const moved = new Promise<"moved">((done) => (r.release = () => done("moved")));
+    const first = await Promise.race([life, moved]);
+    if (first === "moved") return MOVED_TEXT;
+    if (first.status !== "ok") throw new Error(first.text);
+    return first.text;
+  }
+
+  /** A subagent from its branch to its last message. Never throws. */
+  private async live(
+    r: Running,
+    input: AgentInput,
+    openChild: (branchId: string) => Promise<AgentSession>,
+  ): Promise<End> {
     try {
-      const branch = await this.branchOf(toolCallId, input);
+      const branch = await this.branchOf(r.toolCallId, input);
       r.branch = branch;
       this.emitTasks();
-      if (signal?.aborted) abort();
-      if (r.cancelled) return this.end(r, { status: "cancelled", text: r.cancelled });
+      if (r.cancelled) return { status: "cancelled", text: r.cancelled };
       const child = await openChild(branch.branchId);
       r.child = child;
       let settled!: () => void;
@@ -179,47 +235,68 @@ export class PiSubagents {
         this.onChildEvent(r, branch, e);
         if (e.type === "agent_end") settled();
       });
-      if (r.cancelled) return this.end(r, { status: "cancelled", text: r.cancelled });
+      if (r.cancelled) return { status: "cancelled", text: r.cancelled };
       try {
         await child.prompt(input.prompt);
         // Its last messages reach the app before its branch collects.
         await within(idle, SETTLE_WAIT_MS);
       } catch (e) {
-        if (!r.cancelled) return this.end(r, { status: "error", text: message(e) });
+        if (!r.cancelled) return { status: "error", text: message(e) };
       }
-      if (r.cancelled) return this.end(r, { status: "cancelled", text: r.cancelled });
+      if (r.cancelled) return { status: "cancelled", text: r.cancelled };
       const last = [...child.messages].reverse().find((m) => m.role === "assistant") as
         | Extract<PiMessage, { role: "assistant" }>
         | undefined;
       if (last?.stopReason === "error") {
-        return this.end(r, { status: "error", text: last.errorMessage ?? "The model's request failed." });
+        return { status: "error", text: last.errorMessage ?? "The model's request failed." };
       }
-      if (last?.stopReason === "aborted") return this.end(r, { status: "cancelled", text: INTERRUPTED_TEXT });
+      if (last?.stopReason === "aborted") return { status: "cancelled", text: INTERRUPTED_TEXT };
       const report = last ? lastText(last) : undefined;
-      return this.end(r, { status: "ok", text: report ?? "(The subagent finished without a report.)" });
-    } finally {
-      signal?.removeEventListener("abort", abort);
-      this.running.delete(toolCallId);
-      for (const [call, branchId] of this.calls) if (branchId === r.branch?.branchId) this.calls.delete(call);
-      r.child?.dispose();
-      this.emitTasks();
+      return { status: "ok", text: report ?? "(The subagent finished without a report.)" };
+    } catch (e) {
+      return { status: "error", text: message(e) };
     }
   }
 
-  /** Its outcome, for the branch to collect with; an error or a cancel
-   * throws, so the main agent reads it as one. */
-  private end(r: Running, o: { status: BranchStatus; text: string }): string {
-    this.outcomes.set(r.toolCallId, { ...o, costUsd: r.costUsd });
-    if (o.status !== "ok") throw new Error(o.text);
-    return o.text;
+  /** It ended. A foreground one's branch collects when its call ends
+   * ({@link ended}); one in the background collects now and reports. */
+  private finish(r: Running, end: End): End {
+    r.detach?.();
+    this.running.delete(r.toolCallId);
+    for (const [call, branchId] of this.calls) if (branchId === r.branch?.branchId) this.calls.delete(call);
+    r.child?.dispose();
+    this.emitTasks();
+    if (!r.background) {
+      this.outcomes.set(r.toolCallId, { ...end, costUsd: r.costUsd });
+      return end;
+    }
+    const branch = r.branch;
+    if (branch && !branch.collected) {
+      this.deps.emitter.emit({
+        type: "branch.collected",
+        ...this.branches.collect(branch, { resultText: end.text, status: end.status }),
+        ...(r.costUsd > 0 ? { cost_usd: r.costUsd } : {}),
+      });
+    }
+    if (r.cancelled !== ENDED_TEXT) {
+      this.deps.finished({
+        ...end,
+        taskId: r.taskId,
+        toolCallId: r.toolCallId,
+        description: r.description,
+        stopped: r.cancelled === STOPPED_TEXT,
+      });
+    }
+    return end;
   }
 
   /** The main session finished an `agent` call (Pi's `tool_execution_end`):
    * its branch collects, as soon as it ends rather than with the others
-   * started beside it. */
+   * started beside it; one that goes on in the background collects later. */
   ended(toolCallId: string, result: unknown, isError: boolean): void {
     const branch = this.branches.get(toolCallId);
     if (!branch || branch.collected) return;
+    if (this.running.get(toolCallId)?.background) return;
     const o = this.outcomes.get(toolCallId);
     this.outcomes.delete(toolCallId);
     const content = typeof result === "object" && result !== null ? (result as { content?: unknown }).content : "";
@@ -235,13 +312,38 @@ export class PiSubagents {
     });
   }
 
+  /** Background (`session.background`): subagents the main agent waits on go
+   * on in the background, their calls returned; `toolUseId`, that one only.
+   * How many moved. */
+  toBackground(toolUseId?: string): number {
+    let moved = 0;
+    for (const r of this.running.values()) {
+      if (r.background || !r.release || (toolUseId && r.toolCallId !== toolUseId)) continue;
+      r.background = true;
+      r.detach?.();
+      r.release();
+      moved += 1;
+    }
+    if (moved > 0) this.emitTasks();
+    return moved;
+  }
+
   /** Stop one subagent (`task.stop`); the round goes on without it. */
   stop(taskId: string): boolean {
     const r = [...this.running.values()].find((x) => x.taskId === taskId);
     if (!r) return false;
-    r.cancelled ??= STOPPED_TEXT;
-    void r.child?.abort().catch(() => undefined);
+    this.cancel(r, STOPPED_TEXT);
     return true;
+  }
+
+  /** The session ends: every subagent with it, none reporting. */
+  stopAll(): void {
+    for (const r of this.running.values()) this.cancel(r, ENDED_TEXT);
+  }
+
+  private cancel(r: Running, why: string): void {
+    r.cancelled ??= why;
+    void r.child?.abort().catch(() => undefined);
   }
 
   /** Whose lane a tool call is on: a subagent's, or undefined for the main agent's. */
@@ -289,7 +391,7 @@ export class PiSubagents {
                 task_id: r.taskId,
                 kind: "local_agent",
                 description: r.description,
-                background: false,
+                background: r.background,
                 started_at: r.startedAt,
                 tool_uses: r.branch.toolCalls,
                 tool_use_id: r.toolCallId,

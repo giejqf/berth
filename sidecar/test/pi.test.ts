@@ -10,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { silentLogger } from "../src/log.js";
 import { NUDGE_TEXT } from "../src/host.js";
 import { PiSession, thinkingLevel } from "../src/pi.js";
-import { STOPPED_TEXT } from "../src/pi-subagents.js";
+import { MOVED_TEXT, STARTED_TEXT, STOPPED_TEXT } from "../src/pi-subagents.js";
 import { subagentLimitText } from "../src/prompt.js";
 import type { SessionStart, SidecarToApp } from "../src/protocol.js";
 import { RecordingEmitter } from "./fakes.js";
@@ -473,6 +473,161 @@ describe("Pi's subagents (ADR 0034)", () => {
     await session.interrupt();
     expect(await ended(emitter)).toMatchObject({ terminal_kind: "interrupted" });
     expect(emitter.ofType("branch.collected")[0]).toMatchObject({ status: "cancelled", result_text: "Interrupted by the user." });
+    session.stop();
+    await session.done;
+  });
+});
+
+/** The main agent's requests, and whether a background report reached it. */
+const mains = () => requests.filter((r) => !isChild(r));
+const reported = (r: Request) => JSON.stringify(r.messages).includes("Its report:");
+const kindsOfEnds = (e: RecordingEmitter) => e.ofType("round.ended").map((r) => r.terminal_kind);
+
+describe("Pi's background subagents (ADR 0035)", () => {
+  it("runs one in the background; its report opens a round of its own", async () => {
+    requests.length = 0;
+    script = (r) => {
+      if (isChild(r)) return toolResults(r) > 0 ? { text: "Found 3 callers" } : { calls: [{ name: "bash", args: { command: "sleep 0.4" } }] };
+      if (reported(r)) return r.messages.at(-1)?.role === "tool" ? { text: "done" } : { calls: [{ name: "reply", args: { message: "It found 3" } }] };
+      const results = toolResults(r);
+      if (results === 0) {
+        return { calls: [{ name: "agent", args: { description: "Find callers", prompt: "Find the callers", run_in_background: true } }] };
+      }
+      return results === 1 ? { calls: [{ name: "reply", args: { message: "Looking in the background" } }] } : { text: "ok" };
+    };
+    const { emitter, session } = setup();
+    session.turn("Who calls it?");
+    expect(await ended(emitter)).toMatchObject({ terminal_kind: "reply" });
+    // The call returned at once; the subagent goes on.
+    expect(JSON.stringify(mains()[1]?.messages)).toContain(STARTED_TEXT);
+    expect(emitter.ofType("branch.collected")).toHaveLength(0);
+    expect(emitter.ofType("session.tasks").some((t) => t.tasks[0]?.background === true)).toBe(true);
+
+    expect(await ended(emitter, 2)).toMatchObject({ terminal_kind: "reply" });
+    expect(emitter.ofType("node.reply").map((r) => r.message)).toEqual(["Looking in the background", "It found 3"]);
+    expect(emitter.ofType("branch.collected")[0]).toMatchObject({ status: "ok", result_text: "Found 3 callers" });
+    expect(JSON.stringify(mains().find(reported)?.messages)).toContain("Found 3 callers");
+    const note = emitter.ofType("raw.event").find((e) => (e.json as { subtype?: string }).subtype === "task_notification");
+    expect(note?.json).toMatchObject({ status: "completed", summary: "Find callers: finished" });
+    // In order: the branch collects, Details says so, then the round its report opened.
+    const sent = emitter.sent.map((x) => x.body);
+    const collect = sent.findIndex((b) => b.type === "branch.collected");
+    const firstEnd = sent.findIndex((b) => b.type === "round.ended");
+    expect(firstEnd).toBeLessThan(collect);
+    expect(emitter.ofType("session.tasks").at(-1)?.tasks).toEqual([]);
+    session.stop();
+    await session.done;
+  });
+
+  it("moves a running subagent to the background on Background", async () => {
+    requests.length = 0;
+    script = (r) => {
+      if (isChild(r)) return toolResults(r) > 0 ? { text: "Waited" } : { calls: [{ name: "bash", args: { command: "sleep 0.5" } }] };
+      if (reported(r)) return r.messages.at(-1)?.role === "tool" ? { text: "done" } : { calls: [{ name: "reply", args: { message: "Got its report" } }] };
+      const results = toolResults(r);
+      if (results === 0) return { calls: [{ name: "agent", args: { description: "Wait", prompt: "Wait a while" } }] };
+      return results === 1 ? { calls: [{ name: "reply", args: { message: "Carrying on" } }] } : { text: "ok" };
+    };
+    const { emitter, session } = setup();
+    session.turn("Wait, or don't");
+    await until(() => emitter.ofType("session.tasks").find((t) => t.tasks[0]?.background === false));
+    await session.background();
+    expect(await ended(emitter)).toMatchObject({ terminal_kind: "reply" });
+    expect(JSON.stringify(mains()[1]?.messages)).toContain(MOVED_TEXT);
+    expect(emitter.ofType("session.tasks").some((t) => t.tasks[0]?.background === true)).toBe(true);
+    expect(await ended(emitter, 2)).toMatchObject({ terminal_kind: "reply" });
+    expect(emitter.ofType("branch.collected")[0]).toMatchObject({ status: "ok", result_text: "Waited" });
+    session.stop();
+    await session.done;
+  });
+
+  it("says so when Background has no subagent to move", async () => {
+    const { emitter, session } = setup();
+    await until(() => emitter.ofType("session.started")[0]);
+    await session.background();
+    expect(emitter.ofType("session.error")[0]?.message).toContain("Only a subagent can go to the background");
+    session.stop();
+    await session.done;
+  });
+
+  it("keeps a background subagent through an interrupt", async () => {
+    requests.length = 0;
+    script = (r) => {
+      if (isChild(r)) return toolResults(r) > 0 ? { text: "Still did it" } : { calls: [{ name: "bash", args: { command: "sleep 0.5" } }] };
+      if (reported(r)) return r.messages.at(-1)?.role === "tool" ? { text: "done" } : { calls: [{ name: "reply", args: { message: "Heard back" } }] };
+      if (toolResults(r) === 0) {
+        return {
+          calls: [
+            { name: "agent", args: { description: "Do it", prompt: "Do it", run_in_background: true } },
+            { name: "bash", args: { command: "sleep 5" } },
+          ],
+        };
+      }
+      return { text: "stopped" };
+    };
+    const { emitter, session } = setup();
+    session.turn("Do it, and wait");
+    await until(() => requests.find(isChild));
+    await session.interrupt();
+    expect(await ended(emitter)).toMatchObject({ terminal_kind: "interrupted" });
+    expect(await ended(emitter, 2)).toMatchObject({ terminal_kind: "reply" });
+    expect(emitter.ofType("branch.collected")[0]).toMatchObject({ status: "ok", result_text: "Still did it" });
+    session.stop();
+    await session.done;
+  });
+
+  it("starts no round for one the user stopped; the agent reads it next", async () => {
+    requests.length = 0;
+    script = (r) => {
+      if (isChild(r)) return toolResults(r) > 0 ? { text: "Waited" } : { calls: [{ name: "bash", args: { command: "sleep 5" } }] };
+      const results = toolResults(r);
+      if (results === 0) {
+        return { calls: [{ name: "agent", args: { description: "Wait", prompt: "Wait a while", run_in_background: true } }] };
+      }
+      if (r.messages.at(-1)?.role !== "tool") return { calls: [{ name: "reply", args: { message: "ok" } }] };
+      return results === 1 ? { calls: [{ name: "reply", args: { message: "Started" } }] } : { text: "done" };
+    };
+    const { emitter, session } = setup();
+    session.turn("Start it");
+    expect(await ended(emitter)).toMatchObject({ terminal_kind: "reply" });
+    const task = await until(() => emitter.ofType("session.tasks").at(-1)?.tasks[0]);
+    await session.stopTask(task.task_id);
+    await until(() => emitter.ofType("branch.collected")[0]);
+    expect(emitter.ofType("branch.collected")[0]).toMatchObject({ status: "cancelled", result_text: STOPPED_TEXT });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(emitter.ofType("round.ended")).toHaveLength(1);
+    session.turn("What now?");
+    await ended(emitter, 2);
+    expect(JSON.stringify(mains().at(-2)?.messages)).toContain('was stopped by the user');
+    session.stop();
+    await session.done;
+  });
+
+  it("opens a new round for a message Pi takes in after the round ended", async () => {
+    requests.length = 0;
+    script = (r) => {
+      const all = JSON.stringify(r.messages);
+      if (all.includes("one more thing")) {
+        return r.messages.at(-1)?.role === "tool" ? { text: "done" } : { calls: [{ name: "reply", args: { message: "And that too" } }] };
+      }
+      if (toolResults(r) === 0) {
+        return {
+          calls: [
+            { name: "write_summary", args: { done: ["The thing"], remaining: [] } },
+            { name: "bash", args: { command: "sleep 0.3" } },
+          ],
+        };
+      }
+      return { text: "done" };
+    };
+    const { emitter, session } = setup();
+    session.turn("Do the thing");
+    await until(() => (requests.length > 0 ? true : undefined));
+    session.turn("And one more thing");
+    await ended(emitter, 2);
+    expect(kindsOfEnds(emitter)).toEqual(["write_summary", "reply"]);
+    expect(emitter.ofType("node.reply")[0]).toMatchObject({ message: "And that too" });
+    expect(emitter.ofType("session.error")).toHaveLength(0);
     session.stop();
     await session.done;
   });

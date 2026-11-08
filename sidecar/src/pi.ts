@@ -30,6 +30,7 @@ import {
   PI_AGENT_TOOL,
   PiSubagents,
   type AgentInput,
+  type Report,
 } from "./pi-subagents.js";
 import { berthSystemPrompt, piSubagentPrompt, skillsPrompt } from "./prompt.js";
 import {
@@ -37,12 +38,13 @@ import {
   type Effort,
   type JsonValue,
   type PiProvider,
+  type RecordOutcomeInput,
   type SessionResume,
   type SessionStart,
   type ToolName,
   type TurnAttachment,
 } from "./protocol.js";
-import { callTool, offeredTools, shapes, type CallContext } from "./tools.js";
+import { callTool, offeredTools, shapes, type CallContext, type ToolOutcome } from "./tools.js";
 
 /** The provider's name in Pi's model registry. */
 const PROVIDER = "berth";
@@ -57,6 +59,17 @@ const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 /** `/compact [instructions]`: the one slash command Pi runs for Berth. */
 const COMPACT = /^\/compact(?:\s+([\s\S]*))?$/;
+/** A background subagent's report, as the message the main agent reads. */
+const REPORT_MESSAGE = "berth-subagent-report";
+
+/** What the main agent reads when a background subagent ends (ADR 0035). */
+export function reportText(r: Pick<Report, "description" | "status" | "text" | "stopped">): string {
+  const name = `Background subagent "${r.description}"`;
+  if (r.stopped) return `${name} was stopped by the user before it finished; carry on without its result.`;
+  if (r.status === "error") return `${name} failed: ${r.text}`;
+  if (r.status === "cancelled") return `${name} ended early: ${r.text}`;
+  return `${name} finished. Its report:\n\n${r.text}`;
+}
 
 /** Where Pi keeps its sessions when the app doesn't say: Berth's own. */
 export function defaultAgentDir(): string {
@@ -124,6 +137,11 @@ export class PiSession extends BerthHost {
   private failure?: string;
   /** Messages Pi holds to steer the run with. */
   private queued = 0;
+  /** Background subagents' reports for the main agent, not yet given;
+   * `start`: one that starts a round when the agent is idle. */
+  private readonly reports: Array<{ text: string; start: boolean }> = [];
+  /** The workflow's Outcome is in: no report starts another round. */
+  private closing = false;
 
   constructor(deps: PiSessionDeps) {
     super(deps.emitter, deps.log, deps.now ?? Date.now);
@@ -191,6 +209,7 @@ export class PiSession extends BerthHost {
         sessionId: () => this.session?.sessionId,
         raw: (kind, json, branchId) => this.raw(kind, json, branchId),
         spent: (usd) => (this.totalUsd += usd),
+        finished: (report) => this.onBackgroundEnd(report),
       },
       maxSubagents,
     );
@@ -350,7 +369,7 @@ export class PiSession extends BerthHost {
   }
 
   /** A subagent's own session (ADR 0034): this checkout, provider and
-   * model; Pi's tools and \`record_decision\`; kept in memory only. */
+   * model; Pi's tools and `record_decision`; kept in memory only. */
   private async openChild(branchId: string): Promise<AgentSession> {
     const { modules, auth, registry, session } = this;
     if (!modules || !auth || !registry || !session?.model) throw new Error("The session isn't running.");
@@ -384,6 +403,7 @@ export class PiSession extends BerthHost {
     const session = this.session;
     if (!session) return;
     const images = attachments.flatMap((a) => this.image(a));
+    this.closing = false;
     // Sent while the agent works, it joins the run (ADR 0018).
     if (this.running) {
       session.steer(text, images).catch((e: unknown) => this.error(`Could not pass it on: ${message(e)}`, false));
@@ -395,11 +415,12 @@ export class PiSession extends BerthHost {
     }
     const compact = COMPACT.exec(text.trim());
     if (compact) void this.compact(compact[1]);
-    else void this.run(text, images);
+    else void this.run(() => session.prompt(text, images.length > 0 ? { images } : undefined));
   }
 
-  /** One prompt to its end: Pi's run, with its retries and compaction. */
-  private async run(text: string, images: ReturnType<PiSession["image"]> = []): Promise<void> {
+  /** One run to its end: a prompt, or a report, with Pi's retries and
+   * compaction. */
+  private async run(start: () => Promise<void>): Promise<void> {
     const session = this.session;
     if (!session) return;
     this.running = true;
@@ -407,7 +428,7 @@ export class PiSession extends BerthHost {
     this.failure = undefined;
     const startedAt = this.now();
     try {
-      await session.prompt(text, images.length > 0 ? { images } : undefined);
+      await start();
     } catch (e) {
       this.failure = message(e);
     }
@@ -428,6 +449,7 @@ export class PiSession extends BerthHost {
     this.reportContext();
     if (this.stopped) return;
     this.settleRound(this.failure !== undefined, this.turns, this.queued);
+    this.giveReports();
   }
 
   /** `/compact`: Pi summarizes the conversation; the round is the command alone. */
@@ -442,11 +464,69 @@ export class PiSession extends BerthHost {
     }
     this.running = false;
     if (this.round) this.round.lastText = "Compacted the conversation.";
-    if (!this.stopped) this.settleRound(false, 0, 0);
+    if (this.stopped) return;
+    this.settleRound(false, 0, 0);
+    this.giveReports();
   }
 
   protected nudge(text: string): void {
-    void this.run(text);
+    const session = this.session;
+    if (session) void this.run(() => session.prompt(text));
+  }
+
+  // ---- background subagents (ADR 0035) ----
+
+  /** A background subagent ended: Details says so, and the main agent gets
+   * its report. */
+  private onBackgroundEnd(r: Report): void {
+    if (this.stopped) return;
+    this.raw("system", {
+      type: "system",
+      subtype: "task_notification",
+      task_id: r.taskId,
+      tool_use_id: r.toolCallId,
+      status: r.stopped ? "stopped" : r.status === "ok" ? "completed" : "failed",
+      summary: `${r.description}: ${r.stopped ? "stopped" : r.status === "ok" ? "finished" : "failed"}`,
+      ...(this.session ? { session_id: this.session.sessionId } : {}),
+    });
+    if (this.closing) return;
+    this.reports.push({ text: reportText(r), start: !r.stopped });
+    this.giveReports();
+  }
+
+  /** Reports go to the main agent: into its run when it works (a round it
+   * already ended gives way to a new one, `onMessage`), else as a turn of
+   * their own, an implicit round. One the user stopped starts nothing: the
+   * agent reads it with what comes next. */
+  private giveReports(): void {
+    const session = this.session;
+    if (!session || this.stopped || this.closing || this.reports.length === 0) return;
+    if (this.running) {
+      // Between runs, or compacting: when that ends.
+      if (!session.isStreaming) return;
+      for (const r of this.reports.splice(0)) {
+        session
+          .sendCustomMessage({ customType: REPORT_MESSAGE, content: r.text, display: true }, { deliverAs: "steer" })
+          .catch((e: unknown) => this.error(`Could not pass a subagent's report on: ${message(e)}`, false));
+      }
+      return;
+    }
+    const all = this.reports.splice(0);
+    const content = all.map((r) => r.text).join("\n\n");
+    if (!all.some((r) => r.start)) {
+      void session.sendCustomMessage({ customType: REPORT_MESSAGE, content, display: true }, { deliverAs: "nextTurn" });
+      return;
+    }
+    this.round ??= this.newRound();
+    void this.run(() =>
+      session.sendCustomMessage({ customType: REPORT_MESSAGE, content, display: true }, { triggerTurn: true }),
+    );
+  }
+
+  override async recordOutcome(input: RecordOutcomeInput, call: CallContext): Promise<ToolOutcome> {
+    const out = await super.recordOutcome(input, call);
+    if (out.ok) this.closing = true;
+    return out;
   }
 
   /** A subagent's `record_decision` is on its branch (ADR 0034). */
@@ -488,6 +568,7 @@ export class PiSession extends BerthHost {
     if (this.stopped) return;
     this.stopped = true;
     this.abandonPending("Session ended.", "The session ended before the app confirmed delivery.");
+    this.subagents?.stopAll();
     const session = this.session;
     if (!session) {
       if (!this.ready) this.finish();
@@ -503,9 +584,12 @@ export class PiSession extends BerthHost {
       });
   }
 
-  /** Pi runs nothing in the background (ADR 0033). */
-  async background(): Promise<void> {
-    this.error("Pi runs nothing in the background.", false);
+  /** Background: the subagents the round waits on go on without it (ADR
+   * 0035). Pi's own commands can't. */
+  async background(toolUseId?: string): Promise<void> {
+    if ((this.subagents?.toBackground(toolUseId) ?? 0) === 0) {
+      this.error("Only a subagent can go to the background with Pi, and none is running in the foreground.", false);
+    }
   }
 
   /** Its tasks are its subagents: one stops, the round goes on (ADR 0034). */
@@ -575,6 +659,14 @@ export class PiSession extends BerthHost {
   }
 
   private onMessage(m: PiMessage): void {
+    // A message Pi takes in mid-run (the user's, a subagent's report) after
+    // the round ended with its terminal call: that round is done, and the
+    // message opens the next, as with Claude Code (ADR 0018, ADR 0035).
+    const t = this.round?.terminal;
+    if (this.running && (m.role === "user" || m.role === "custom") && (t === "write_summary" || t === "reply" || t === "record_outcome")) {
+      this.endRound(t);
+      this.round = this.newRound();
+    }
     if (m.role === "assistant" && "content" in m) {
       this.turns += 1;
       const a = m as Extract<PiMessage, { role: "assistant" }>;

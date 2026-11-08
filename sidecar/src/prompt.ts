@@ -54,7 +54,7 @@ How to work:
   ].join("\n");
 }
 
-const PI_AGENT_PROMPT = `- For a self-contained part of the work that would fill your context (a broad search, an independent change, a review), you may start a subagent with the \`agent\` tool: a short description and a prompt that says everything it needs, since it sees none of this conversation. Several \`agent\` calls in one message run at the same time; each returns the subagent's report.`;
+const PI_AGENT_PROMPT = `- For a self-contained part of the work that would fill your context (a broad search, an independent change, a review), you may start a subagent with the \`agent\` tool: a short description and a prompt that says everything it needs, since it sees none of this conversation. Several \`agent\` calls in one message run at the same time; each returns the subagent's report. With \`run_in_background\`, you carry on while it works and its report comes to you as a message when it finishes: don't wait or poll for it.`;
 
 const MESSAGE_SLOT_PROMPT = `- Other slots in this repository may be building other parts of the same thing (the backend to your frontend). When their work needs to know something (a bug you found in their part, an interface you need from them or changed for them), tell them with \`message_slot\` rather than changing their code, then carry on with your own work. A turn that starts with "Message from slot" is another slot's agent writing to you: act on it as you would on the user's request, answer with \`message_slot\` when it needs an answer, and end the round as usual.`;
 

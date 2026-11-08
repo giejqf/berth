@@ -150,7 +150,8 @@ berth/
 │   ├── src/host.ts              what every session does: Berth's tools, round rules
 │   ├── src/session.ts           Claude Agent SDK session lifecycle, attribution, nudges
 │   ├── src/pi.ts, pi-events.ts  Pi's session (ADR 0033); its messages in the SDK's shape
-│   ├── src/pi-subagents.ts      Pi's subagents: the `agent` tool, a child session each (ADR 0034)
+│   ├── src/pi-subagents.ts      Pi's subagents: the `agent` tool, a child session each,
+│                                in the background too (ADR 0034, ADR 0035)
 │   ├── src/pi-load.ts           where Pi is loaded from; its key out of the environment
 │   ├── src/prompt.ts            Berth's part of the system prompt
 │   ├── src/tools.ts             the "berth" MCP server (app-owned tools)
@@ -320,7 +321,8 @@ A round must end with **exactly one** terminal tool call.
   ("Earlier you asked: … My answer: …") on a resumed session; review decisions too
   ("Earlier you presented code review findings. My decisions: …").
 - A turn Claude Code starts by itself (e.g. a background subagent finished) opens an
-  implicit round with the same rules. So does a message from another slot that wakes an
+  implicit round with the same rules, as does a Pi background subagent's report to an
+  idle agent (ADR 0035). So does a message from another slot that wakes an
   idle agent; one that arrives while the agent works joins its round, as a Prompt does.
   `rounds.hop` counts agent messages in a row without the user; the third is held for
   the user, not delivered (ADR 0021), unless Settings says Always allow (ADR 0032).
@@ -329,6 +331,8 @@ A round must end with **exactly one** terminal tool call.
   `result` without a terminal call while a message still waits (`queued_turn_count >
   0`) is no reason to nudge: the message carries the round on. A round that already
   ended with its terminal call is done; the waiting message opens an implicit round.
+  Pi takes such a message into the same run: the sidecar ends the round where Pi
+  takes it in, and opens the next (ADR 0035).
   A slash command sent while a round runs is refused (it would be a round of its own).
 - A slash command Claude Code runs without the model (`/compact`, `/context`; its
   `result` has `num_turns: 0`, and the turn was a `/name`) ends the round as
@@ -378,7 +382,15 @@ the main lane.
   after the main agent's message (Pi runs one message's calls at once, one parallel
   group) and collects when its call ends. The limit is the sidecar's count (Off
   leaves the tool out); each running one is a `session.tasks` task, so Stop aborts
-  that child alone. No background subagents, progress summaries or subagent types.
+  that child alone. **In the background** (ADR 0035): `run_in_background`, or
+  Background (⌘B) on one the round waits on, returns its call at once; the child
+  goes on through Interrupt, counts toward the limit, and collects when it finishes.
+  Its report then reaches the main agent as a message in its conversation (a Pi
+  custom message): into its run while it works, else as an implicit round, with a
+  `task_notification` raw event for Details. One the user stopped starts no round;
+  the agent reads it with what comes next. It dies with the sidecar (its branch
+  cancelled), and the conversation never hears of it. No progress summaries or
+  subagent types.
 - **Diffs.** Branch diffs (spawn snapshot → collect snapshot) are best-effort because
   concurrent branches share one checkout. `touched_files` is derived from the branch's
   own Edit/Write/MultiEdit tool events and is authoritative. The section diff remains
@@ -1094,8 +1106,8 @@ settles nothing (ADR 0013).
   are Claude Code's. A model reasons only when the slot sets an effort (`max` is Pi's
   `xhigh`). A rewind branches Pi's session tree at the entry before the message; a
   message mid-round steers; `/compact` is its one slash command. Its subagents are
-  Berth's `agent` tool (§5.4, ADR 0034), its only tasks. No Background, plan limits,
-  suggestions or Claude Code history for it.
+  Berth's `agent` tool (§5.4, ADR 0034), its only tasks, and the only thing Background
+  moves (ADR 0035). No plan limits, suggestions or Claude Code history for it.
 - **Keeping the Mac awake** (`backend/awake.rs`): while an agent works anywhere (a
   round in flight, a slot being created or torn down, something in a session's
   background; `Store::agents_working`), Berth holds a user-initiated `NSProcessInfo`
@@ -1363,7 +1375,8 @@ owns it? what node type does it produce?
 - Pushing review comments to Linear/PostHog (GitHub only).
 - Agent backends other than Claude Code and Pi; Pi outside an OpenAI-compatible API
   (its own providers and sign-ins), its extensions and prompt templates; Pi's
-  subagents in the background, of a type (`.claude/agents/`), or of their own.
+  subagents of a type (`.claude/agents/`) or of their own, and its commands in the
+  background.
 - `inside` slots' agents on the model provider (the proxy listens on the host's
   loopback, and Pi runs only on the host); model APIs other than OpenAI's Responses and Chat Completions (Gemini's
   own); passing reasoning items back to a provider across turns.
