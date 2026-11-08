@@ -846,6 +846,8 @@ fn dispatch(name: &str, cx: &mut App) {
         "MarkNeedsYou" => Box::new(keymap::MarkNeedsYou),
         "MarkReview" => Box::new(keymap::MarkReview),
         "MarkDone" => Box::new(keymap::MarkDone),
+        "MarkArchived" => Box::new(keymap::MarkArchived),
+        "ToggleArchived" => Box::new(keymap::ToggleArchived),
         "ClearStatus" => Box::new(keymap::ClearStatus),
         "ClaudeAccount" => Box::new(keymap::ClaudeAccount),
         "DestroySlot" => Box::new(keymap::DestroySlot),

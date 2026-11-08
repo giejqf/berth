@@ -1,9 +1,10 @@
 //! Left rail: the repo's slots grouped by what they need (Needs you, Working,
-//! Ready to review, Done), the command palette button, and a 56px collapsed strip
+//! Ready to review, TODO, Done, and Archived, folded until opened), the command
+//! palette button, and a 56px collapsed strip
 //! used when the review pane needs the room. Lines in the gutter link slots
 //! made from one another, or whose agents talked (`slot_links`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use berth_core::{ManualStatus, SlotState, WorkflowState};
@@ -20,8 +21,8 @@ use gpui_component::tooltip::Tooltip;
 
 use super::RepoState;
 use super::kit::{
-    Btn, Size, TypeExt as _, ago, caption, count_badge, dot, dur, now_ms, plural, slot_number,
-    spinner,
+    Btn, Size, TypeExt as _, ago, caption, count_badge, dot, dur, icon, now_ms, plural,
+    slot_number, spinner,
 };
 use super::motion;
 use super::repo_state::{RailGroup, manual_status, rail_group, state_group, status_locked};
@@ -29,9 +30,9 @@ use super::slot_links::{self, Tiles};
 use super::windows::{DragChip, Dragged, SlotDrag, WindowDrag};
 use crate::backend::SlotEntry;
 use crate::keymap::{
-    ClearStatus, CommandPalette, DestroySlot, MarkDone, MarkNeedsYou, MarkReview, MarkTodo,
-    MoveSlotToNewWindow, NewWorkflow, NewWorkflowHere, OpenHistory, RailNext, RailOpen, RailPrev,
-    RenameSlot, ToggleRail,
+    ClearStatus, CommandPalette, DestroySlot, MarkArchived, MarkDone, MarkNeedsYou, MarkReview,
+    MarkTodo, MoveSlotToNewWindow, NewWorkflow, NewWorkflowHere, OpenHistory, RailNext, RailOpen,
+    RailPrev, RenameSlot, ToggleRail,
 };
 use crate::theme::{Tokens, ty};
 
@@ -195,8 +196,8 @@ pub fn rail_lines(entry: &SlotEntry, state: &RepoState) -> (String, String) {
 }
 
 /// The conversation's status by hand (TODO, Needs you, Ready to review,
-/// Done), the one set checked, and Automatic: what its state says. All of
-/// it off while the slot's agent is busy.
+/// Done, Archived), the one set checked, and Automatic: what its state says.
+/// All of it off while the slot's agent is busy.
 pub fn status_menu(menu: PopupMenu, entry: &SlotEntry) -> PopupMenu {
     let locked = status_locked(entry).is_some();
     let manual = manual_status(entry);
@@ -209,6 +210,7 @@ pub fn status_menu(menu: PopupMenu, entry: &SlotEntry) -> PopupMenu {
         (ManualStatus::NeedsYou, Box::new(MarkNeedsYou)),
         (ManualStatus::Review, Box::new(MarkReview)),
         (ManualStatus::Done, Box::new(MarkDone)),
+        (ManualStatus::Archived, Box::new(MarkArchived)),
     ] {
         menu = menu.menu_with_check_and_disabled(
             status.label(),
@@ -235,6 +237,7 @@ fn status_color(t: &Tokens, entry: &SlotEntry) -> Hsla {
         RailGroup::Working | RailGroup::Review => t.accent,
         RailGroup::Todo => t.todo,
         RailGroup::Done => t.done,
+        RailGroup::Archived => t.text3,
     }
 }
 
@@ -271,6 +274,7 @@ fn status_dot(t: &Tokens, entry: &SlotEntry, size: f32) -> AnyElement {
         RailGroup::Review => dot(size, t.accent).into_any_element(),
         RailGroup::Todo => dot(size, t.todo).into_any_element(),
         RailGroup::Done => dot(size, t.done).into_any_element(),
+        RailGroup::Archived => dot(size, t.text3).into_any_element(),
     }
 }
 
@@ -340,17 +344,75 @@ fn footer(t: &Tokens, collapsed: bool) -> Div {
     )
 }
 
+/// The Archived group's header, at the foot of the rail: its count, and a
+/// click (or ⌘K's "Show or hide the archived slots") opens its slots upward
+/// above it, or folds them again. Folded at first; it never moves.
+fn archived_header(
+    t: &Tokens,
+    count: usize,
+    open: bool,
+    state: Entity<RepoState>,
+) -> impl IntoElement {
+    let (text3, text2) = (t.text3, t.text2);
+    div()
+        .id("rail-archived")
+        .group("rail-archived")
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(6.))
+        .px(px(8.))
+        .pt(px(8.))
+        .pb(px(8.))
+        .cursor_pointer()
+        .tooltip(move |w, cx| {
+            Tooltip::new(if open {
+                "Hide the archived slots"
+            } else {
+                "Show the archived slots"
+            })
+            .build(w, cx)
+        })
+        .on_click(move |_, _, cx| state.update(cx, RepoState::toggle_archived))
+        .child(caption("Archived", text3))
+        .child(
+            div()
+                .ty(ty::META)
+                .text_color(text3)
+                .group_hover("rail-archived", |s| s.text_color(text2))
+                .child(count.to_string()),
+        )
+        .child(
+            icon(if open { "chevron-down" } else { "chevron-up" }, 12., text3)
+                .group_hover("rail-archived", |s| s.text_color(text2)),
+        )
+}
+
 impl Render for SlotRail {
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let t = Tokens::get(cx);
         let state = self.state.read(cx);
         let selected = state.selected_slot.clone();
         let focused = self.focus.is_focused(window) && window.last_input_was_keyboard();
-        let order = state.rail_order();
+        // Every slot, for the groups and their counts; the rows shown (a
+        // folded Archived group's left out), for the rows and their links.
+        let all = state.rail_order();
+        let order = state.rail_shown();
+        let shown: HashSet<&str> = order.iter().map(|e| e.slot.id.as_str()).collect();
+        // Archived slots sit apart at the foot of the rail, without links.
+        let main: Vec<&SlotEntry> = order
+            .iter()
+            .copied()
+            .filter(|e| rail_group(e) != RailGroup::Archived)
+            .collect();
+        let archived = all
+            .iter()
+            .filter(|e| rail_group(e) == RailGroup::Archived)
+            .count();
         let tiles = Tiles::default();
         // The row under the pointer first: lines that don't all fit go to it.
         let focus: Vec<String> = self.hovered.iter().chain(&selected).cloned().collect();
-        let links = slot_links::links(&order, &focus);
+        let links = slot_links::links(&main, &focus);
         let window_drag = WindowDrag {
             repo_id: state.repo_id().to_owned(),
             from: state.window_id.clone(),
@@ -368,7 +430,7 @@ impl Render for SlotRail {
             .px(px(8.))
             .gap(px(2.))
             .overflow_y_scrollbar();
-        if order.is_empty() {
+        if all.is_empty() {
             list = list.child(
                 div()
                     .flex()
@@ -381,12 +443,24 @@ impl Render for SlotRail {
                     .child(div().text_color(t.text3).child("Slots that need you float to the top of this list.")),
             );
         }
+        // The Archived group's rows, opened upward above its header.
+        // As tall as its rows, shrinking (and scrolling) at half the rail.
+        // GPUI's own scrolling: the scrollbar wrapper takes no height from
+        // its content.
+        let mut drawer = div()
+            .id("rail-archived-rows")
+            .flex()
+            .flex_col()
+            .min_h_0()
+            .gap(px(2.))
+            .overflow_y_scroll();
         let mut last_group: Option<RailGroup> = None;
-        for entry in &order {
+        for entry in &all {
             let group = rail_group(entry);
-            if last_group != Some(group) {
+            let in_drawer = group == RailGroup::Archived;
+            if last_group != Some(group) && !in_drawer {
                 let first = last_group.is_none();
-                let count = order.iter().filter(|e| rail_group(e) == group).count();
+                let count = all.iter().filter(|e| rail_group(e) == group).count();
                 list = list.child(
                     div()
                         .flex()
@@ -410,10 +484,13 @@ impl Render for SlotRail {
                 );
                 last_group = Some(group);
             }
+            if !shown.contains(entry.slot.id.as_str()) {
+                continue;
+            }
             let id = entry.slot.id.clone();
             let is_selected = selected.as_deref() == Some(id.as_str());
             let (title, sub) = rail_lines(entry, state);
-            let done = group == RailGroup::Done;
+            let done = matches!(group, RailGroup::Done | RailGroup::Archived);
             let weight = match (group, is_selected) {
                 (RailGroup::NeedsYou, _) => FontWeight::SEMIBOLD,
                 (_, true) => FontWeight::MEDIUM,
@@ -431,7 +508,7 @@ impl Render for SlotRail {
                     RailGroup::Review => t.accent_soft,
                     RailGroup::Todo => t.todo_soft,
                     RailGroup::Done => t.done_soft,
-                    RailGroup::Working => return None,
+                    RailGroup::Working | RailGroup::Archived => return None,
                 };
                 Some(color.opacity(1. - p * p))
             });
@@ -559,7 +636,7 @@ impl Render for SlotRail {
                 None => row,
             };
             let for_menu = SlotEntry::clone(entry);
-            list = list.child(row.context_menu(
+            let row = row.context_menu(
                 move |menu: PopupMenu, window: &mut Window, cx: &mut Context<'_, PopupMenu>| {
                     let entry = for_menu.clone();
                     menu.menu("New workflow here…", Box::new(NewWorkflowHere))
@@ -573,12 +650,33 @@ impl Render for SlotRail {
                         .menu("Rename…", Box::new(RenameSlot))
                         .menu("Destroy slot…", Box::new(DestroySlot))
                 },
-            ));
+            );
+            if in_drawer {
+                drawer = drawer.child(row);
+            } else {
+                list = list.child(row);
+            }
         }
         if !links.is_empty() {
-            let ids = order.iter().map(|e| e.slot.id.clone()).collect();
+            let ids = main.iter().map(|e| e.slot.id.clone()).collect();
             list = list.child(slot_links::overlay(links, ids, tiles, focus, &t));
         }
+        // Up to half the rail; its rows scroll beyond that.
+        let archived_section = (archived > 0).then(|| {
+            div()
+                .flex()
+                .flex_col()
+                .flex_none()
+                .max_h(gpui::relative(0.5))
+                .px(px(8.))
+                .child(drawer)
+                .child(archived_header(
+                    &t,
+                    archived,
+                    state.show_archived,
+                    self.state.clone(),
+                ))
+        });
 
         div()
             .id("slot-rail")
@@ -654,8 +752,53 @@ impl Render for SlotRail {
                     ),
             )
             .child(list)
+            .children(archived_section)
             .child(footer(&t, false))
     }
+}
+
+/// The strip's Archived group, at its foot: the archive glyph and how many,
+/// which shows them above it or hides them, as the rail's header does.
+fn strip_archived(
+    t: &Tokens,
+    count: usize,
+    open: bool,
+    state: Entity<RepoState>,
+) -> impl IntoElement {
+    let (text3, text2, hover) = (t.text3, t.text2, t.card);
+    let tip = SharedString::from(format!(
+        "{} · {}",
+        plural(count, "archived slot", "archived slots"),
+        match (open, count) {
+            (true, 1) => "Hide it",
+            (true, _) => "Hide them",
+            (false, 1) => "Show it",
+            (false, _) => "Show them",
+        }
+    ));
+    div()
+        .id("strip-archived")
+        .group("strip-archived")
+        .mb(px(6.))
+        .h(px(28.))
+        .px(px(6.))
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(4.))
+        .rounded(px(6.))
+        .cursor_pointer()
+        .hover(move |s| s.bg(hover))
+        .tooltip(move |w, cx| Tooltip::new(tip.clone()).build(w, cx))
+        .on_click(move |_, _, cx| state.update(cx, RepoState::toggle_archived))
+        .child(icon("archive", 14., text3).group_hover("strip-archived", |s| s.text_color(text2)))
+        .child(
+            div()
+                .ty(ty::META)
+                .text_color(text3)
+                .group_hover("strip-archived", |s| s.text_color(text2))
+                .child(count.to_string()),
+        )
 }
 
 /// The 56px strip: each slot's number and state (review pane open on a
@@ -694,9 +837,29 @@ pub fn collapsed(state: &Entity<RepoState>, t: &Tokens, cx: &App) -> Div {
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(NewWorkflow), cx)),
             ),
         );
-    let order = s.rail_order();
+    let order = s.rail_shown();
     let tiles = Tiles::default();
+    // As in the rail: archived slots at the foot, above their count, which
+    // opens them upward; the rest joined by their links.
+    let main: Vec<&SlotEntry> = order
+        .iter()
+        .copied()
+        .filter(|e| rail_group(e) != RailGroup::Archived)
+        .collect();
+    let archived = s
+        .rail_order()
+        .iter()
+        .filter(|e| rail_group(e) == RailGroup::Archived)
+        .count();
+    let mut foot = div()
+        .mt_auto()
+        .w_full()
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap(px(4.));
     for &entry in &order {
+        let in_foot = rail_group(entry) == RailGroup::Archived;
         let id = entry.slot.id.clone();
         let is_selected = selected.as_deref() == Some(id.as_str());
         let (title, sub) = rail_lines(entry, s);
@@ -709,50 +872,56 @@ pub fn collapsed(state: &Entity<RepoState>, t: &Tokens, cx: &App) -> Div {
         let st = state.clone();
         let hover = t.card;
         let drag = slot_drag(entry, &title, s, t);
-        col = col.child(
-            div()
-                .id(SharedString::from(format!("slot-dot-{id}")))
-                .on_drag(drag, |d, _, _, cx| drag_chip(d, cx))
-                .size(px(36.))
-                .flex_none()
-                .rounded(px(6.))
-                .flex()
-                .items_center()
-                .justify_center()
-                // As the rail's rows: the arrow while dragged.
-                .cursor_default()
-                .when(is_selected, |d| d.bg(t.raised))
-                .hover(move |s| {
-                    let s = s.cursor_pointer();
-                    if is_selected { s } else { s.bg(hover) }
-                })
-                .tooltip(move |w, cx| Tooltip::new(tip.clone()).build(w, cx))
-                .on_click(move |_, _, cx| {
-                    let id = id.clone();
-                    st.update(cx, |s, cx| s.select_slot(id, cx));
-                })
-                .group(SharedString::from(format!("slot-dot-{}", entry.slot.id)))
-                .child(slot_mark(
-                    t,
-                    entry,
-                    (26., 10.),
-                    is_selected,
-                    if is_selected { t.raised } else { t.rail },
-                    (!is_selected).then(|| {
-                        (
-                            SharedString::from(format!("slot-dot-{}", entry.slot.id)),
-                            hover,
-                        )
-                    }),
-                    &tiles,
-                )),
-        );
+        let tile = div()
+            .id(SharedString::from(format!("slot-dot-{id}")))
+            .on_drag(drag, |d, _, _, cx| drag_chip(d, cx))
+            .size(px(36.))
+            .flex_none()
+            .rounded(px(6.))
+            .flex()
+            .items_center()
+            .justify_center()
+            // As the rail's rows: the arrow while dragged.
+            .cursor_default()
+            .when(is_selected, |d| d.bg(t.raised))
+            .hover(move |s| {
+                let s = s.cursor_pointer();
+                if is_selected { s } else { s.bg(hover) }
+            })
+            .tooltip(move |w, cx| Tooltip::new(tip.clone()).build(w, cx))
+            .on_click(move |_, _, cx| {
+                let id = id.clone();
+                st.update(cx, |s, cx| s.select_slot(id, cx));
+            })
+            .group(SharedString::from(format!("slot-dot-{}", entry.slot.id)))
+            .child(slot_mark(
+                t,
+                entry,
+                (26., 10.),
+                is_selected,
+                if is_selected { t.raised } else { t.rail },
+                (!is_selected).then(|| {
+                    (
+                        SharedString::from(format!("slot-dot-{}", entry.slot.id)),
+                        hover,
+                    )
+                }),
+                &tiles,
+            ));
+        if in_foot {
+            foot = foot.child(tile);
+        } else {
+            col = col.child(tile);
+        }
+    }
+    if archived > 0 {
+        foot = foot.child(strip_archived(t, archived, s.show_archived, state.clone()));
     }
     let focus: Vec<String> = selected.into_iter().collect();
-    let links = slot_links::links(&order, &focus);
+    let links = slot_links::links(&main, &focus);
     if !links.is_empty() {
-        let ids = order.iter().map(|e| e.slot.id.clone()).collect();
+        let ids = main.iter().map(|e| e.slot.id.clone()).collect();
         col = col.child(slot_links::overlay(links, ids, tiles, focus, t));
     }
-    col.child(footer(t, true))
+    col.child(foot.child(footer(t, true)))
 }

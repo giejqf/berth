@@ -48,7 +48,9 @@ use crate::keymap::{
     ShowFile, ShowFiles, ShowFindings, ShowReview, ShowTasks, ToggleDiffMode, ToggleRail,
     ToggleReview, ToggleReviewSize,
 };
-use crate::keymap::{ClearStatus, MarkDone, MarkNeedsYou, MarkReview, MarkTodo};
+use crate::keymap::{
+    ClearStatus, MarkArchived, MarkDone, MarkNeedsYou, MarkReview, MarkTodo, ToggleArchived,
+};
 use crate::keymap::{
     CloseTerminal, HideTerminal, KillTerminal, NewTerminal, NextTerminal, PrevTerminal,
     ToggleTerminal, ToggleTerminalSize,
@@ -1148,6 +1150,12 @@ impl Render for RepoWindow {
             }))
             .on_action(cx.listener(|this, _: &MarkDone, _, cx| {
                 this.set_status(Some(berth_core::ManualStatus::Done), cx);
+            }))
+            .on_action(cx.listener(|this, _: &MarkArchived, _, cx| {
+                this.set_status(Some(berth_core::ManualStatus::Archived), cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleArchived, _, cx| {
+                this.state.update(cx, RepoState::toggle_archived);
             }))
             .on_action(cx.listener(|this, _: &ClearStatus, _, cx| this.set_status(None, cx)))
             .on_action(cx.listener(|this, a: &ShowFile, window, cx| {

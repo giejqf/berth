@@ -46,7 +46,10 @@ actions!(
         MarkNeedsYou,
         MarkReview,
         MarkDone,
+        MarkArchived,
         ClearStatus,
+        // the rail's folded Archived group, shown or folded again
+        ToggleArchived,
         // event flow
         NextNode,
         PrevNode,
@@ -594,6 +597,7 @@ pub fn palette_actions() -> Vec<(&'static str, &'static str, Box<dyn Action>)> {
         ("Status: Needs you", "", Box::new(MarkNeedsYou)),
         ("Status: Ready to review", "", Box::new(MarkReview)),
         ("Status: Done", "D", Box::new(MarkDone)),
+        ("Status: Archived", "E", Box::new(MarkArchived)),
         (
             "Status: automatic, as the conversation stands",
             "",
@@ -607,6 +611,11 @@ pub fn palette_actions() -> Vec<(&'static str, &'static str, Box<dyn Action>)> {
             Box::new(JumpToNeeding),
         ),
         ("Collapse or expand the rail", "⌘⇧L", Box::new(ToggleRail)),
+        (
+            "Show or hide the archived slots",
+            "",
+            Box::new(ToggleArchived),
+        ),
         (
             "Show or collapse the terminal",
             "⌃`",
@@ -680,6 +689,7 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("backspace", DestroySlot, Some("SlotRail")),
         KeyBinding::new("t", MarkTodo, Some("SlotRail")),
         KeyBinding::new("d", MarkDone, Some("SlotRail")),
+        KeyBinding::new("e", MarkArchived, Some("SlotRail")),
         KeyBinding::new("a", FocusAnswer, Some("SlotRail")),
         // event flow
         KeyBinding::new("j", NextNode, Some("EventFlow")),

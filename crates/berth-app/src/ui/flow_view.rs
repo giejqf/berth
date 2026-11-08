@@ -598,6 +598,9 @@ fn manual_chip(t: &Tokens, status: Option<ManualStatus>) -> gpui::Div {
         Some(ManualStatus::Done) | None => chip(t, Tone::Done, "Done")
             .child(icon("check-bold", 12., t.on_done))
             .flex_row_reverse(),
+        Some(ManualStatus::Archived) => chip(t, Tone::Neutral, "Archived")
+            .child(icon("archive", 12., t.text2))
+            .flex_row_reverse(),
     }
 }
 

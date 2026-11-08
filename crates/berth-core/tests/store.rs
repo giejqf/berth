@@ -326,6 +326,10 @@ fn a_status_set_by_hand_holds_until_anything_newer_happens() {
         .set_workflow_status(&wf.id, Some(ManualStatus::Done))
         .unwrap();
     assert_eq!(status(&store), Some(ManualStatus::Done));
+    store
+        .set_workflow_status(&wf.id, Some(ManualStatus::Archived))
+        .unwrap();
+    assert_eq!(status(&store), Some(ManualStatus::Archived));
 
     // The agent works again: what its state says counts once more.
     store.insert_round(&wf.id, 1, now_ms() + 1_000).unwrap();

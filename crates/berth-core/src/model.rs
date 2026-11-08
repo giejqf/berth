@@ -454,6 +454,8 @@ pub enum ManualStatus {
     NeedsYou,
     Review,
     Done,
+    /// Put away: the rail keeps it in a group of its own, folded.
+    Archived,
 }
 
 text_enum!(ManualStatus {
@@ -461,10 +463,17 @@ text_enum!(ManualStatus {
     NeedsYou => "needs_you",
     Review => "review",
     Done => "done",
+    Archived => "archived",
 });
 
 impl ManualStatus {
-    pub const ALL: [Self; 4] = [Self::Todo, Self::NeedsYou, Self::Review, Self::Done];
+    pub const ALL: [Self; 5] = [
+        Self::Todo,
+        Self::NeedsYou,
+        Self::Review,
+        Self::Done,
+        Self::Archived,
+    ];
 
     #[must_use]
     pub fn label(self) -> &'static str {
@@ -473,6 +482,7 @@ impl ManualStatus {
             Self::NeedsYou => "Needs you",
             Self::Review => "Ready to review",
             Self::Done => "Done",
+            Self::Archived => "Archived",
         }
     }
 

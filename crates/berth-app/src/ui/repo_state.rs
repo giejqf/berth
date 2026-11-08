@@ -111,6 +111,8 @@ pub struct RepoState {
     pub theme_setting: Option<String>,
     /// Whether the window shows the review pane (mirrored from the window).
     pub review_open: bool,
+    /// Whether the rail shows the Archived group's slots; folded at first.
+    pub show_archived: bool,
     /// Each slot's terminals, kept while the app runs (§11).
     pub terminals: HashMap<String, SlotTerminals>,
     /// Slots with a terminal on its way.
@@ -139,7 +141,7 @@ impl SlotTerminals {
 }
 
 /// Where a slot sits in the rail (design: grouped by state), in the rail's
-/// order. TODO is only ever set by hand.
+/// order. TODO and Archived are only ever set by hand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RailGroup {
     NeedsYou,
@@ -147,6 +149,7 @@ pub enum RailGroup {
     Review,
     Todo,
     Done,
+    Archived,
 }
 
 impl RailGroup {
@@ -157,6 +160,7 @@ impl RailGroup {
             Self::Review => "Ready to review",
             Self::Todo => "TODO",
             Self::Done => "Done",
+            Self::Archived => "Archived",
         }
     }
 }
@@ -168,6 +172,7 @@ impl From<ManualStatus> for RailGroup {
             ManualStatus::NeedsYou => Self::NeedsYou,
             ManualStatus::Review => Self::Review,
             ManualStatus::Done => Self::Done,
+            ManualStatus::Archived => Self::Archived,
         }
     }
 }
@@ -243,15 +248,16 @@ impl RepoState {
         let repo_slots = snapshot.slots.clone();
         let slots = in_window(&repo_slots, &window_id);
         let connectors = snapshot.connectors.clone();
-        // Start where the user is needed, else the newest open workflow.
+        // Start where the user is needed, else the newest open workflow
+        // that isn't archived (its group starts folded).
         let selected_slot = slots
             .iter()
             .find(|s| rail_group(s) == RailGroup::NeedsYou)
             .or_else(|| {
-                slots
-                    .iter()
-                    .rev()
-                    .find(|s| s.workflow.as_ref().is_some_and(|w| w.state.is_open()))
+                slots.iter().rev().find(|s| {
+                    rail_group(s) != RailGroup::Archived
+                        && s.workflow.as_ref().is_some_and(|w| w.state.is_open())
+                })
             })
             .or(slots.last())
             .map(|s| s.slot.id.clone());
@@ -290,6 +296,7 @@ impl RepoState {
             terminal_pending: HashSet::new(),
             history: None,
             review_open: false,
+            show_archived: false,
         };
         if let Some(wf) = this.selected_workflow_id() {
             this.backend.send(Command::LoadWorkflow { workflow_id: wf });
@@ -346,16 +353,37 @@ impl RepoState {
         cx.notify();
     }
 
-    /// Slots in the order the rail shows them: grouped by state, then by number.
+    /// Every slot in the rail's order, grouped by state, then by number;
+    /// folded ones too (see [`Self::rail_shown`]).
     pub fn rail_order(&self) -> Vec<&SlotEntry> {
         let mut v: Vec<&SlotEntry> = self.slots.iter().collect();
         v.sort_by_key(|e| (rail_group(e), e.slot.number, e.slot.created_at));
         v
     }
 
-    /// The slot `delta` rows down the rail from the selected one (wrapping).
+    /// The rows the rail shows, in its order: while the Archived group is
+    /// folded, its slots are left out but the selected one.
+    pub fn rail_shown(&self) -> Vec<&SlotEntry> {
+        let mut v = self.rail_order();
+        if !self.show_archived {
+            v.retain(|e| {
+                rail_group(e) != RailGroup::Archived
+                    || self.selected_slot.as_deref() == Some(e.slot.id.as_str())
+            });
+        }
+        v
+    }
+
+    /// Fold or unfold the rail's Archived group.
+    pub fn toggle_archived(&mut self, cx: &mut Context<'_, Self>) {
+        self.show_archived = !self.show_archived;
+        cx.notify();
+    }
+
+    /// The slot `delta` rows down the rail from the selected one (wrapping),
+    /// among the rows it shows.
     pub fn relative(&self, delta: isize) -> Option<&SlotEntry> {
-        let order = self.rail_order();
+        let order = self.rail_shown();
         if order.is_empty() {
             return None;
         }

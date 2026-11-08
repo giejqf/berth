@@ -839,13 +839,22 @@ settles nothing (ADR 0013).
   in it is one text (`kit::keyed`), not a row of pieces.
 - The rail groups slots by what they need: **Needs you** (a question, an idle workflow
   awaiting its next prompt, a message held for the user, a failed slot), **Working**, **Ready to review** (idle after
-  a summary), **TODO**, **Done**; by number within a group. The user may set a
+  a summary), **TODO**, **Done**, **Archived**; by number within a group. The user may set a
   conversation's status by hand (ADR 0024): TODO (parked for later; only ever set by
-  hand), Needs you, Ready to review, Done, or back to Automatic, from the header's state
-  chip, the rail's context menu (Status), ⌘K, or T / D with the rail focused. Never while
+  hand), Needs you, Ready to review, Done, Archived (put away; only ever set by hand,
+  ADR 0031), or back to Automatic, from the header's state chip, the rail's context menu
+  (Status), ⌘K, or T / D / E with the rail focused. Never while
   its agent is busy (a round in flight, the slot being made or torn down) or its slot
   failed; it holds until anything newer happens in the conversation (a node, a round
-  starting or ending), and closes nothing. Each slot's mark is its number on a
+  starting or ending), and closes nothing. The Archived group sits at the rail's foot,
+  its header fixed above the Command palette, and starts folded in every window: the
+  header counts its slots, and a click on it (or ⌘K's Show or hide the archived slots)
+  opens them upward above it, in number order, until the app quits; past half the
+  rail they scroll. Folded, its slots are left out of the rail, the strip, next /
+  previous slot and swiping (`RepoState::rail_shown`), but for the selected one,
+  which stays above the header; ⌘1–9 still go to them. No links are drawn to archived
+  slots. The collapsed strip has the same at its foot: the archive glyph and a count,
+  their tiles above it. Each slot's mark is its number on a
   tile (`kit::slot_number`), with a dot in its group's color at the tile's corner; a busy
   slot's (its agent working, or the slot being created or destroyed) is the working
   spinner, in the rail and its collapsed strip alike. The same tile leads the flow
