@@ -30,9 +30,11 @@ pub enum Command {
         /// Local files to attach (dragged, picked, or pasted).
         attachments: Vec<PathBuf>,
     },
-    /// Preview a file read-only in Quick Look.
+    /// Open a file the app doesn't draw itself: in Quick Look (read-only), or
+    /// a video in the Mac's player.
     OpenFile {
         path: PathBuf,
+        opener: berth_core::files::Opener,
     },
     Answer {
         workflow_id: String,

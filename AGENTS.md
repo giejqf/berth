@@ -974,9 +974,10 @@ settles nothing (ADR 0013).
   image at full size, in memory and on the GPU, for as long as the app runs (~60 MB
   a Retina screenshot). Only the image the Files tab shows is kept at full size; the
   one it showed before is let go. Clicking an
-  image (PNG, JPEG, GIF, WebP) shows it in the review pane's Files tab; anything
-  else opens in Quick Look (`qlmanage -p`). Both are
-  read-only; never an editor (§1.1). See `ui/composer.rs`, `ui/files.rs`,
+  image (PNG, JPEG, GIF, WebP) shows it in the review pane's Files tab; a video
+  plays in the Mac's default app for it (`open`: the user's player, ADR 0002);
+  anything else opens in Quick Look (`qlmanage -p`), read-only for every type, so
+  never an editor (§1.1). See `ui/composer.rs`, `ui/files.rs`,
   `backend/files.rs`.
 - The review pane has two tabs, three once the agent presented a review: **Changes**
   (the diff, §7), **Files**
@@ -984,8 +985,9 @@ settles nothing (ADR 0013).
   attached, one at a time above a strip of thumbnails (newest unless one is picked).
   Images fit the pane, never past their actual size (one image pixel per screen
   pixel), or show at actual size and scroll (Z, or a click); GIFs animate. ← → step
-  through the files, Space opens Quick Look. Other files show their thumbnail and
-  open in Quick Look. Asking for a diff switches back to Changes.
+  through the files. Other files show their thumbnail; Space or a click opens them
+  as the flow does (Play for a video, else Quick Look). Asking for a diff switches
+  back to Changes.
 - **Findings** (`ui/review_pane/findings.rs`, ADR 0008): a code review the agent
   presented, one row per finding: its level and title, and Fix | Dismiss | Decide
   starting on the agent's suggestion (marked with a dot). Hovering a row, after a

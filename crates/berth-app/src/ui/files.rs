@@ -1,12 +1,15 @@
 //! Files in the event flow: a Prompt's attachments and the agent's artifacts.
-//! Clicking an image shows it in the review pane's Files tab; anything else
-//! opens in Quick Look (both read-only, §1.1). Right-click copies a file or
-//! shows it in Finder, here and in the review pane.
+//! Clicking an image shows it in the review pane's Files tab, a video plays in
+//! the Mac's player, anything else opens in Quick Look (read-only, §1.1).
+//! Right-click copies a file or shows it in Finder, here and in the review
+//! pane.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use berth_core::files::{human_size, is_inline_image, is_video, mime_for, wants_thumbnail};
+use berth_core::files::{
+    Opener, human_size, is_inline_image, is_video, mime_for, opener, wants_thumbnail,
+};
 use berth_protocol::{Artifact, FileRef};
 use gpui::{
     AnyElement, App, Asset, ClipboardItem, Image, ImageCacheError, ImageFormat, ImageSource,
@@ -180,7 +183,7 @@ fn file_icon(mime: &str) -> &'static str {
     }
 }
 
-/// Images show in the review pane; other files in Quick Look.
+/// Images show in the review pane; other files open as [`opener`] says.
 fn shows_in_pane(file: &FileRef) -> bool {
     is_inline_image(&file.mime) && file.stored.is_some()
 }
@@ -189,7 +192,10 @@ fn open_tooltip(file: &FileRef) -> &'static str {
     if shows_in_pane(file) {
         "View in the review pane"
     } else {
-        "Preview (Quick Look)"
+        match opener(&file.mime) {
+            Opener::DefaultApp => "Play in your video player",
+            Opener::QuickLook => "Preview (Quick Look)",
+        }
     }
 }
 
@@ -200,12 +206,16 @@ fn open_handler(
     let in_pane = shows_in_pane(file);
     let id = file.id.clone();
     let path = file.stored.clone().map(PathBuf::from);
+    let opener = opener(&file.mime);
     let backend = backend.clone();
     move |_, window, cx| {
         if in_pane {
             window.dispatch_action(Box::new(ShowFile(id.clone())), cx);
         } else if let Some(path) = &path {
-            backend.send(Command::OpenFile { path: path.clone() });
+            backend.send(Command::OpenFile {
+                path: path.clone(),
+                opener,
+            });
         }
     }
 }

@@ -79,6 +79,11 @@ description cost nothing to ask for.
   WebP) shows it in the review pane's Files tab, fitted or at actual size, with
   the workflow's other files beside it (AGENTS.md §11). Other types still open in
   Quick Look.
+- Amended in 0.4.4: a video (`video/*`: `.mp4`, `.m4v`, `.mov`, `.webm`) opens in
+  the Mac's default app for it (`open`), so it plays in the user's player with its
+  controls, not in Quick Look's preview. The tile says "Play in your video
+  player"; the Files tab's button is Play, as is Space there
+  (`berth_core::files::opener`). Everything else still opens in Quick Look.
 
 ### 4. Drag-over feedback is tracked by the composer
 

@@ -1,13 +1,14 @@
 //! The review pane's Files tab: the workflow's files, the ones the agent
 //! presented and the ones the user attached, one at a time. Images (GIFs
 //! animate) show in place, fitted or at their actual size; anything else gets
-//! its thumbnail and opens in Quick Look (read-only, §1.1).
+//! its thumbnail, and a video plays in the Mac's player while the rest opens
+//! in Quick Look (read-only, §1.1).
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use berth_core::WorkflowView;
-use berth_core::files::{human_size, is_inline_image, is_video};
+use berth_core::files::{Opener, human_size, is_inline_image, is_video, opener};
 use berth_protocol::{FileRef, NodePayload};
 use gpui::{
     AnyElement, App, Context, ImgResourceLoader, InteractiveElement as _, IntoElement, ObjectFit,
@@ -154,16 +155,26 @@ impl ReviewPane {
         }
     }
 
-    pub(super) fn quick_look(&mut self, cx: &mut Context<'_, Self>) {
+    /// Open the file shown: a video in the Mac's player, anything else in
+    /// Quick Look (an image is already shown).
+    pub(super) fn open_file(&mut self, cx: &mut Context<'_, Self>) {
         let files = self.files(cx);
-        let stored = self
-            .file_index(&files)
-            .and_then(|ix| files[ix].file.stored.clone());
-        if let Some(path) = stored {
+        let Some(f) = self.file_index(&files).map(|ix| &files[ix].file) else {
+            return;
+        };
+        if let Some(path) = &f.stored {
             self.state.read(cx).backend.send(Command::OpenFile {
                 path: PathBuf::from(path),
+                opener: opener(&f.mime),
             });
         }
+    }
+
+    /// Where the file shown opens ([`Self::open_file`]).
+    pub(super) fn shown_opener(&self, cx: &Context<'_, Self>) -> Opener {
+        let files = self.files(cx);
+        self.file_index(&files)
+            .map_or(Opener::QuickLook, |ix| opener(&files[ix].file.mime))
     }
 
     /// The Files tab under the pane's header.
@@ -266,7 +277,7 @@ impl ReviewPane {
                     .into_any_element(),
             }
         } else {
-            // Not an image: its thumbnail (or icon); Quick Look shows the rest.
+            // Not an image: its thumbnail (or icon); a click opens it.
             let preview: AnyElement = match picture(f) {
                 Some(thumb) => img(thumb)
                     .size_full()
@@ -297,7 +308,7 @@ impl ReviewPane {
                 .size_full()
                 .p(px(16.))
                 .cursor_pointer()
-                .on_click(cx.listener(|this, _, _, cx| this.quick_look(cx)))
+                .on_click(cx.listener(|this, _, _, cx| this.open_file(cx)))
                 .child(preview)
                 .into_any_element()
         };
@@ -386,12 +397,19 @@ impl ReviewPane {
                         )
                     })
                     .child(
-                        Btn::new("file-quick-look")
-                            .size(Size::S26)
-                            .icon("external-link", 12.)
-                            .label("Quick Look")
-                            .disabled(f.stored.is_none())
-                            .on_click(cx.listener(|this, _, _, cx| this.quick_look(cx))),
+                        match opener(&f.mime) {
+                            Opener::DefaultApp => Btn::new("file-open")
+                                .size(Size::S26)
+                                .icon("play", 12.)
+                                .label("Play")
+                                .tooltip("Play in your video player"),
+                            Opener::QuickLook => Btn::new("file-open")
+                                .size(Size::S26)
+                                .icon("external-link", 12.)
+                                .label("Quick Look"),
+                        }
+                        .disabled(f.stored.is_none())
+                        .on_click(cx.listener(|this, _, _, cx| this.open_file(cx))),
                     ),
             )
             .when_some(current.description.clone(), |d, text| {
@@ -515,8 +533,9 @@ fn centered(content: impl IntoElement) -> AnyElement {
         .into_any_element()
 }
 
-/// The Files footer's key hints, one paragraph (it wraps in a narrow pane).
-pub(super) fn hints(t: &Tokens) -> gpui::Div {
+/// The Files footer's key hints, one paragraph (it wraps in a narrow pane);
+/// Space opens the file shown as `opener` says.
+pub(super) fn hints(t: &Tokens, opener: Opener) -> gpui::Div {
     div().child(crate::ui::kit::keyed(
         &[
             "",
@@ -525,7 +544,10 @@ pub(super) fn hints(t: &Tokens) -> gpui::Div {
             "Z",
             " fit or actual size · ",
             "Space",
-            " Quick Look · ",
+            match opener {
+                Opener::DefaultApp => " play · ",
+                Opener::QuickLook => " Quick Look · ",
+            },
             "⌘C",
             " copy",
         ],

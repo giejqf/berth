@@ -88,7 +88,7 @@ actions!(
         NextFile,
         PrevFile,
         ToggleZoom,
-        QuickLookFile,
+        OpenShownFile,
         CopyShownFile,
         // review pane: findings
         ShowFindings,
@@ -453,7 +453,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     },
     Shortcut {
         keys: "Space",
-        label: "Open the file in Quick Look (Files)",
+        label: "Open the file: Quick Look, a video in your player (Files)",
         group: "Review pane",
     },
     Shortcut {
@@ -728,7 +728,7 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("right", NextFile, Some("ReviewFiles")),
         KeyBinding::new("left", PrevFile, Some("ReviewFiles")),
         KeyBinding::new("z", ToggleZoom, Some("ReviewFiles")),
-        KeyBinding::new("space", QuickLookFile, Some("ReviewFiles")),
+        KeyBinding::new("space", OpenShownFile, Some("ReviewFiles")),
         KeyBinding::new("cmd-c", CopyShownFile, Some("ReviewFiles")),
         KeyBinding::new("down", NextFinding, Some("ReviewFindings")),
         KeyBinding::new("up", PrevFinding, Some("ReviewFindings")),

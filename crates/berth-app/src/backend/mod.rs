@@ -24,6 +24,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::{Context as _, Result, anyhow};
 use berth_connectors::{Connector, KeychainStore, MemoryStore, SecretStore};
+use berth_core::files::Opener;
 use berth_core::{Engine, Repo, Slot, Store, paths};
 use berth_slot::SlotType;
 use futures::channel::mpsc::UnboundedSender;
@@ -301,7 +302,10 @@ impl Shared {
                 text,
                 attachments,
             } => self.send_prompt(&workflow_id, &text, &attachments).await,
-            Command::OpenFile { path } => files::quick_look(&path),
+            Command::OpenFile { path, opener } => match opener {
+                Opener::QuickLook => files::quick_look(&path),
+                Opener::DefaultApp => files::open_in_default_app(&path).await,
+            },
             Command::Answer {
                 workflow_id,
                 question_id,

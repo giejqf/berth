@@ -47,6 +47,28 @@ pub fn is_video(mime: &str) -> bool {
     mime.starts_with("video/")
 }
 
+/// Where a file opens when clicked, for a file the app doesn't draw itself
+/// (it shows images in the review pane).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Opener {
+    /// Quick Look: read-only for every type, so nothing opens in an editor
+    /// (§1.1).
+    QuickLook,
+    /// The Mac's own app for it: a video plays in the user's player
+    /// (QuickTime Player, or whichever they chose), with its controls.
+    DefaultApp,
+}
+
+/// A video plays in the user's player; anything else opens in Quick Look.
+#[must_use]
+pub fn opener(mime: &str) -> Opener {
+    if is_video(mime) {
+        Opener::DefaultApp
+    } else {
+        Opener::QuickLook
+    }
+}
+
 /// Files worth a Quick Look thumbnail: a recording's first frame, a PDF's or
 /// page's first page, images the app cannot draw itself. Plain text is not
 /// (its thumbnail is unreadable at tile size); it gets an icon.
@@ -99,6 +121,22 @@ pub fn human_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn videos_open_in_the_users_player_the_rest_in_quick_look() {
+        for name in ["demo.mp4", "Demo.M4V", "screen.mov", "clip.webm"] {
+            assert_eq!(opener(mime_for(name)), Opener::DefaultApp, "{name}");
+        }
+        for name in [
+            "report.pdf",
+            "page.html",
+            "notes.md",
+            "photo.heic",
+            "data.bin",
+        ] {
+            assert_eq!(opener(mime_for(name)), Opener::QuickLook, "{name}");
+        }
+    }
 
     #[test]
     fn mime_types_by_extension() {

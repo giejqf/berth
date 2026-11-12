@@ -26,9 +26,9 @@ use super::kit::{Btn, Size, TypeExt as _, caption, dot, icon, input_frame, spinn
 use super::nodes::diff_stats;
 use crate::backend::{Command, DiffResult};
 use crate::keymap::{
-    AskAboutHunk, CopyShownFile, FilterFiles, NextChange, NextFile, NextSection, PostToPr,
-    PrevChange, PrevFile, PrevSection, QuickLookFile, ToggleFileList, ToggleReview,
-    ToggleReviewSize, ToggleZoom,
+    AskAboutHunk, CopyShownFile, FilterFiles, NextChange, NextFile, NextSection, OpenShownFile,
+    PostToPr, PrevChange, PrevFile, PrevSection, ToggleFileList, ToggleReview, ToggleReviewSize,
+    ToggleZoom,
 };
 use crate::theme::{MONO, Tokens, ty};
 
@@ -934,7 +934,7 @@ impl Render for ReviewPane {
 
         // ---- footer ----
         let left = if on_files {
-            files::hints(&t)
+            files::hints(&t, self.shown_opener(cx))
         } else if all_comments.is_empty() {
             div().child(super::kit::keyed(
                 &[
@@ -1005,7 +1005,7 @@ impl Render for ReviewPane {
             .on_action(cx.listener(|this, _: &NextFile, _, cx| this.step_file(1, cx)))
             .on_action(cx.listener(|this, _: &PrevFile, _, cx| this.step_file(-1, cx)))
             .on_action(cx.listener(|this, _: &ToggleZoom, _, cx| this.toggle_zoom(cx)))
-            .on_action(cx.listener(|this, _: &QuickLookFile, _, cx| this.quick_look(cx)))
+            .on_action(cx.listener(|this, _: &OpenShownFile, _, cx| this.open_file(cx)))
             .on_action(cx.listener(|this, _: &CopyShownFile, window, cx| {
                 this.copy_shown(window, cx);
             }))

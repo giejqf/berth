@@ -240,3 +240,40 @@ pub(super) fn quick_look(path: &Path) -> Result<()> {
         .map(|_| ())
         .with_context(|| format!("could not preview {}", path.display()))
 }
+
+/// Open a file in the Mac's own app for it (`open`): a video plays in the
+/// user's player. Fails with what `open` said (no app for it, a file gone).
+pub(super) async fn open_in_default_app(path: &Path) -> Result<()> {
+    let out = tokio::process::Command::new("/usr/bin/open")
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .with_context(|| format!("could not open {}", path.display()))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let said = String::from_utf8_lossy(&out.stderr);
+    let name = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    Err(anyhow!("Could not open {name}: {}", said.trim()))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    // Only the failure is tried: a file that opens would start an app.
+    #[tokio::test]
+    async fn a_file_that_does_not_open_says_why() {
+        let dir = std::env::temp_dir().join(format!("berth-open-{}", std::process::id()));
+        let missing = dir.join("gone.mp4");
+        let err = open_in_default_app(&missing).await.unwrap_err().to_string();
+        assert!(err.starts_with("Could not open gone.mp4: "), "{err}");
+        assert!(err.contains("does not exist"), "{err}");
+    }
+}
