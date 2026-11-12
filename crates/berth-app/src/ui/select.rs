@@ -8,11 +8,14 @@
 
 use std::cell::Cell;
 use std::ops::Range;
+use std::rc::Rc;
 
 use gpui::{
     App, BorderStyle, Bounds, Corners, CursorStyle, Edges, Element, ElementId, GlobalElementId,
-    Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, PaintQuad, Pixels,
-    Point, SharedString, StyledText, TextRun, Window, transparent_black,
+    Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ScrollDelta,
+    ScrollWheelEvent, SharedString, Styled as _, StyledText, TextRun, Window, canvas,
+    transparent_black,
 };
 use gpui_base::{TextSelection, TextSelectionHandle, TextSelectionRegistration, TextSelectionRun};
 
@@ -50,6 +53,73 @@ pub fn styled(text: String, runs: Vec<TextRun>, t: &Tokens) -> Selectable {
         order,
         selection: t.accent.opacity(0.3),
     }
+}
+
+/// Keeps a list of selectable text where it is while a selection is dragged
+/// inside it.
+///
+/// gpui-base scrolls while a selection is dragged near the edge of the
+/// text's clip: from 16px inside the list's top and bottom, or past the edge
+/// of a card that clips its text. It does that by sending the list wheel
+/// events of its own, which go on while the pointer rests. So dragging over
+/// the first or last line in view, or below a card, scrolled the list under
+/// the pointer, and a long block's selection ran away with it. macOS scrolls
+/// only once the pointer leaves the view, and so does this: laid over the
+/// list ([`HoldScroll::element`]), it drops those wheel events while the
+/// held pointer is still within the list's height.
+#[derive(Clone, Default)]
+pub struct HoldScroll {
+    /// Where the pointer is while the left button is held down.
+    held: Rc<Cell<Option<Point<Pixels>>>>,
+}
+
+impl HoldScroll {
+    /// Absolute, the list's size; put it after the list in the same parent.
+    pub fn element(&self) -> impl IntoElement {
+        let held = self.held.clone();
+        canvas(
+            |_, _, _| {},
+            move |bounds, (), window, _| {
+                let h = held.clone();
+                window.on_mouse_event(move |e: &MouseDownEvent, phase, _, _| {
+                    if phase.capture() && e.button == MouseButton::Left {
+                        h.set(Some(e.position));
+                    }
+                });
+                let h = held.clone();
+                window.on_mouse_event(move |e: &MouseMoveEvent, phase, _, _| {
+                    if phase.capture() {
+                        h.set((e.pressed_button == Some(MouseButton::Left)).then_some(e.position));
+                    }
+                });
+                let h = held.clone();
+                window.on_mouse_event(move |e: &MouseUpEvent, phase, _, _| {
+                    if phase.capture() && e.button == MouseButton::Left {
+                        h.set(None);
+                    }
+                });
+                window.on_mouse_event(move |e: &ScrollWheelEvent, phase, window, cx| {
+                    // A mouse wheel's lines are the user's own: they scroll.
+                    if phase.capture()
+                        && matches!(e.delta, ScrollDelta::Pixels(_))
+                        && held.get().is_some_and(|p| within_height(bounds, p))
+                        && TextSelection::has_selection(window, cx)
+                    {
+                        cx.stop_propagation();
+                    }
+                });
+            },
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+    }
+}
+
+/// `p` is level with some part of `bounds` (above and below are out).
+fn within_height(bounds: Bounds<Pixels>, p: Point<Pixels>) -> bool {
+    p.y >= bounds.top() && p.y < bounds.bottom()
 }
 
 pub struct Selectable {
@@ -215,4 +285,25 @@ fn quads(
         Point::new(end.x, end.y + line_height),
     ));
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{point, px, size};
+
+    use super::*;
+
+    #[test]
+    fn only_a_pointer_above_or_below_the_list_lets_it_scroll() {
+        let list = Bounds::new(point(px(250.), px(120.)), size(px(800.), px(360.)));
+        // In the list, its first and last lines too, and beside it.
+        for y in [120., 130., 300., 470., 479.] {
+            assert!(within_height(list, point(px(600.), px(y))), "{y}");
+        }
+        assert!(within_height(list, point(px(100.), px(300.))));
+        // Over the header, or over the composer.
+        for y in [119., 60., 480., 520.] {
+            assert!(!within_height(list, point(px(600.), px(y))), "{y}");
+        }
+    }
 }

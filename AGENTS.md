@@ -1209,11 +1209,14 @@ settles nothing (ADR 0013).
   (§5.4), section-end markers. Its text selects with the mouse, across nodes, and ⌘C
   copies it (`ui/select.rs`: styled runs in gpui-base's window text selection, which
   the root's ⌘C copies); each paragraph is one run, inline code mono on a tint, in
-  reading order by row. Layout is computed in `berth-core` (`flow::layout`),
-  views only draw it.
+  reading order by row. A selection dragged above or below the flow scrolls it; one
+  dragged inside it never does (`select::HoldScroll`, in the details sheet too:
+  gpui-base would scroll from 16px inside the edge, and past a card that clips its
+  text). Layout is computed in `berth-core` (`flow::layout`), views only draw it.
 - Performance budget: 60 fps while streaming; event flow must virtualize; diff view
   must handle 10k-line diffs without jank. The flow is a GPUI `list` that splices only
-  changed rows; raw events never touch the view (only nodes and the distilled round
+  changed rows, and measures its last two again in place (`remeasure_items`: a splice
+  would take a view scrolled inside a long one to its top); raw events never touch the view (only nodes and the distilled round
   activity, `berth_core::activity`). A list that can run long builds only the rows in
   view: Open from history and the details sheet (`list`: rows differ in height; History
   measures again only rows whose note line came or went), New workflow's origins, the

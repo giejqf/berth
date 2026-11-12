@@ -47,6 +47,8 @@ pub struct FlowView {
     live_key: Option<(usize, usize, Option<String>)>,
     /// The header's tasks count and its panel (ADR 0022).
     tasks: Entity<super::tasks::TasksMenu>,
+    /// The list stays put while a selection is dragged inside it.
+    hold: super::select::HoldScroll,
 }
 
 impl FlowView {
@@ -70,6 +72,7 @@ impl FlowView {
             cursor: None,
             live_key: None,
             tasks,
+            hold: super::select::HoldScroll::default(),
         };
         this.sync(window, cx);
         this
@@ -231,11 +234,17 @@ impl FlowView {
         if keep {
             let first = first_difference(&self.rows, self.view.as_deref(), &rows);
             let old = self.rows.len();
-            // The tail always re-measures: live cards and answered questions
-            // change height without changing identity.
-            let first = first.min(old.saturating_sub(2));
             self.list
                 .splice(first..old, rows.len().saturating_sub(first));
+            // The tail measures again too: live cards and answered questions
+            // change height without changing identity. A splice would take
+            // the view to the top of such a row when it is scrolled inside
+            // one (a long one), on every step of the live card; this keeps
+            // it where it is.
+            let tail = old.saturating_sub(2).min(first);
+            if tail < first {
+                self.list.remeasure_items(tail..first);
+            }
         } else {
             self.list.reset(rows.len());
         }
@@ -776,7 +785,14 @@ impl Render for FlowView {
             .flex_col()
             .bg(t.win)
             .child(header)
-            .child(div().flex_1().min_h_0().child(rows))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    .child(rows)
+                    .child(self.hold.element()),
+            )
             .into_any_element()
     }
 }

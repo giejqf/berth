@@ -56,6 +56,8 @@ pub struct Transcript {
     /// Outputs shown in full.
     full: HashSet<usize>,
     list: ListState,
+    /// The list stays put while a selection is dragged inside it.
+    hold: select::HoldScroll,
 }
 
 impl Transcript {
@@ -69,6 +71,7 @@ impl Transcript {
         let shown: Vec<usize> = (0..entries.len()).collect();
         Self {
             list: ListState::new(shown.len(), ListAlignment::Top, px(800.)),
+            hold: select::HoldScroll::default(),
             shown,
             entries: Arc::new(entries),
             filter: Filter::All,
@@ -211,18 +214,24 @@ impl Render for Transcript {
             })
             .when(!empty, |d| {
                 d.child(
-                    list(self.list.clone(), move |pos, _, _| {
-                        let last = pos + 1 == rows.shown.len();
-                        match rows.shown.get(pos) {
-                            Some(&ix) => {
-                                select::begin_row(pos);
-                                row(&rows, ix, pos == 0, last)
-                            }
-                            None => div().into_any_element(),
-                        }
-                    })
-                    .flex_1()
-                    .min_h_0(),
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .relative()
+                        .child(
+                            list(self.list.clone(), move |pos, _, _| {
+                                let last = pos + 1 == rows.shown.len();
+                                match rows.shown.get(pos) {
+                                    Some(&ix) => {
+                                        select::begin_row(pos);
+                                        row(&rows, ix, pos == 0, last)
+                                    }
+                                    None => div().into_any_element(),
+                                }
+                            })
+                            .size_full(),
+                        )
+                        .child(self.hold.element()),
                 )
             })
             .into_any_element()
