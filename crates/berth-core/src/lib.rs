@@ -20,6 +20,7 @@ pub mod prompt;
 pub mod provider;
 pub mod store;
 pub mod transcript;
+pub mod update;
 pub mod usage;
 
 pub use engine::{AnswerDelivery, Effect, Engine, Posted, Recipient, Rewound, Sender, Submission};

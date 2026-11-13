@@ -17,6 +17,7 @@ mod slots;
 mod terminal;
 mod trust;
 pub mod types;
+mod update;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -102,6 +103,8 @@ pub(crate) struct Shared {
     provider_edit: Mutex<()>,
     /// Workflows whose session's requests go through the proxy.
     via_proxy: Mutex<HashSet<String>>,
+    /// Update reminders (ADR 0036).
+    updater: update::Updater,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -145,11 +148,13 @@ pub fn start(rt: &tokio::runtime::Handle, ui: UnboundedSender<UiEvent>) -> Resul
         provider_check: Mutex::default(),
         provider_edit: Mutex::default(),
         via_proxy: Mutex::default(),
+        updater: update::Updater::default(),
     });
     shared.reload_connectors();
     {
         let _rt = rt.enter();
         shared.install_agent();
+        shared.start_update_checks();
     }
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Command>();
@@ -258,7 +263,11 @@ impl Shared {
             | Command::ClaudeSignIn
             | Command::EditProvider(_)
             | Command::CheckProvider
-            | Command::RevealConnectors => return None,
+            | Command::RevealConnectors
+            | Command::CheckForUpdates { .. }
+            | Command::SkipUpdate { .. }
+            | Command::DownloadUpdate
+            | Command::CancelUpdate => return None,
         };
         self.repo_of_workflow(&wf).ok()
     }
@@ -558,6 +567,7 @@ impl Shared {
             }
             Command::LoadSettings => {
                 self.emit_provider();
+                self.emit_update_checks();
                 self.emit_settings()
             }
             Command::EditProvider(edit) => self.edit_provider(edit).await,
@@ -570,6 +580,7 @@ impl Shared {
                 match key.as_str() {
                     "keep_awake" => self.keep_awake(),
                     "slot_messages" | "max_subagents" => self.restart_for_limits(),
+                    "update_check" => self.emit_update_checks(),
                     _ => {}
                 }
                 Ok(())
@@ -597,6 +608,13 @@ impl Shared {
                 Ok(())
             }
             Command::LoadRoundDetails { workflow_id } => self.load_round_details(&workflow_id),
+            Command::CheckForUpdates { asked } => self.check_for_updates(asked).await,
+            Command::SkipUpdate { version } => self.skip_update(&version),
+            Command::DownloadUpdate => self.download_update().await,
+            Command::CancelUpdate => {
+                self.cancel_update();
+                Ok(())
+            }
             Command::TerminalSpec { repo_id, slot_id } => {
                 let result = self.terminal_spec(&slot_id).map_err(|e| format!("{e:#}"));
                 self.emit(UiEvent::TerminalSpec {

@@ -31,6 +31,7 @@ mod slot_swipe;
 mod syntax;
 mod tasks;
 mod terminal;
+mod update;
 mod usage;
 mod welcome;
 pub mod windows;
@@ -41,8 +42,8 @@ use std::collections::HashMap;
 use futures::StreamExt as _;
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{
-    App, AppContext as _, Bounds, DisplayId, Entity, Global, PathPromptOptions, Pixels, Size,
-    WeakEntity, WindowBounds, WindowHandle, WindowOptions, point, px, size,
+    App, AppContext as _, Bounds, DisplayId, Entity, Focusable as _, Global, PathPromptOptions,
+    Pixels, Size, WeakEntity, WindowBounds, WindowHandle, WindowOptions, point, px, size,
 };
 use gpui_component::{Root, TitleBar};
 
@@ -98,6 +99,10 @@ pub struct Berth {
     /// What agents on this Mac run on: Claude Code's account or an
     /// OpenAI-compatible API (ADR 0023).
     pub provider: crate::backend::ProviderInfo,
+    /// The update reminder's window, while it is open (ADR 0036).
+    update: Option<(WindowHandle<Root>, WeakEntity<update::UpdateWindow>)>,
+    /// Berth looks for updates by itself (`settings.update_check`).
+    pub update_checks: bool,
 }
 
 impl Global for Berth {}
@@ -121,6 +126,8 @@ pub fn init(backend: BackendHandle, events: UnboundedReceiver<UiEvent>, cx: &mut
         keep_awake: true,
         limits: berth_core::AgentLimits::default(),
         provider: crate::backend::ProviderInfo::default(),
+        update: None,
+        update_checks: true,
     });
     cx.spawn(async move |cx| {
         let mut events = events;
@@ -202,6 +209,16 @@ pub fn state_of(window: &gpui::Window, cx: &App) -> Option<Entity<RepoState>> {
         .flatten()
         .find(|w| gpui::AnyWindowHandle::from(w.handle) == handle)
         .and_then(|w| w.state.upgrade())
+}
+
+/// The update reminder's window, while open (devtools).
+#[allow(dead_code)]
+pub fn update_window(cx: &App) -> Option<WindowHandle<Root>> {
+    cx.global::<Berth>()
+        .update
+        .as_ref()
+        .filter(|(_, view)| view.upgrade().is_some())
+        .map(|(handle, _)| *handle)
 }
 
 #[allow(dead_code)]
@@ -288,6 +305,11 @@ fn route(event: UiEvent, cx: &mut App) {
             }
         }
         UiEvent::ShowWelcome { recent, error } => show_welcome(recent, error, cx),
+        UiEvent::Update(view) => show_update(*view, cx),
+        UiEvent::UpdateChecks { automatic } => {
+            cx.global_mut::<Berth>().update_checks = automatic;
+            cx.refresh_windows();
+        }
         UiEvent::RepoOpened(snapshot) => {
             let repo_id = snapshot.repo.id.clone();
             // Open already: its windows take the fresh snapshot, the front one
@@ -524,6 +546,63 @@ fn show_welcome(recent: Vec<RecentRepo>, error: Option<String>, cx: &mut App) {
     match handle {
         Ok(h) => cx.global_mut::<Berth>().welcome = Some(h),
         Err(e) => tracing::error!(error = %e, "open welcome window"),
+    }
+}
+
+/// The update reminder (ADR 0036): its window shows `view`, opening if it
+/// is a reminder's start. A download's later steps only reach one that is
+/// open: closing it stopped the download, and a step on its way doesn't
+/// bring it back.
+fn show_update(view: crate::backend::UpdateView, cx: &mut App) {
+    use crate::backend::{UpdateStep, UpdateView};
+    let open = cx
+        .global::<Berth>()
+        .update
+        .as_ref()
+        .and_then(|(handle, view)| Some((*handle, view.upgrade()?)));
+    // Asked for (Check for Updates), it comes forward; a reminder of
+    // Berth's own doesn't take the keys from what the user is doing.
+    let asked = !matches!(view, UpdateView::Available { .. });
+    if let Some((handle, entity)) = open {
+        let offered = entity.read(cx).offers();
+        let resize = (offered != matches!(view, UpdateView::Available { .. }))
+            .then(|| update::window_size(&view));
+        entity.update(cx, |w, cx| w.set(view, cx));
+        let _ = handle.update(cx, |_, window, _| {
+            if let Some(size) = resize {
+                window.resize(size);
+            }
+            if asked {
+                window.activate_window();
+            }
+        });
+        return;
+    }
+    let starts = match &view {
+        UpdateView::Available { step, .. } => *step == UpdateStep::Ready,
+        _ => true,
+    };
+    if !starts {
+        return;
+    }
+    let mut options = window_options(update::window_size(&view), size(px(440.), px(220.)), cx);
+    options.focus = asked;
+    let mut made = None;
+    let handle = cx.open_window(options, |window, cx| {
+        crate::theme::apply(window, cx);
+        window.set_window_title("Software Update");
+        let entity = cx.new(|cx| update::UpdateWindow::new(view, cx));
+        let focus = entity.read(cx).focus_handle(cx);
+        if asked {
+            focus.focus(window, cx);
+        }
+        made = Some(entity.downgrade());
+        cx.new(|cx| Root::new(entity, window, cx))
+    });
+    match (handle, made) {
+        (Ok(h), Some(entity)) => cx.global_mut::<Berth>().update = Some((h, entity)),
+        (Err(e), _) => tracing::error!(error = %e, "open the update window"),
+        (Ok(_), None) => {}
     }
 }
 

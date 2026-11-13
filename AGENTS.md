@@ -194,8 +194,8 @@ berth/
 | Model provider | Claude Code's account, or an OpenAI-compatible API through `berth-proxy` (hyper server, reqwest client with rustls and the Mac's certificates and proxy settings), in its Responses API or Chat Completions | The proxy listens on `127.0.0.1` with a per-launch token; the API key stays in the Keychain and the app (ADR 0023, ADR 0025). |
 | Secrets | macOS Keychain via `security-framework` | Never written to SQLite or disk. |
 | Sidecar runtime | Node 22+, pnpm, `tsx` in dev, bundled with `esbuild` for release | Bundle shipped inside the app at `Contents/Resources/sidecar/` without the SDK, run from its copy in `~/Library/Application Support/Berth/sidecar/` (`BERTH_SIDECAR_BUNDLE`), where the app installs the SDK beside it and Claude Code in `claude-code/<version>/`: that exact version from npm, checked against the lockfile's SHA-512, at launch and before any sidecar runs (`backend/agent_sdk.rs`; Settings and Welcome show the download; ADR 0029). Claude binary: `$BERTH_CLAUDE_PATH` (host sidecars get the installed one), else the SDK's own (dev). Node: `node` on the login shell's `PATH` (`shell_env.rs`: read at launch, 3 s at most, while the main thread sets the font default; a shell that takes longer is stopped with what it started, and Berth goes on with the `PATH` it was given), else where Homebrew, MacPorts, Volta, mise, asdf, nodenv, n, nvm or fnm put it (`backend/launch.rs`; nvm's setup in `~/.zshrc` never reaches a login shell), looked up for each sidecar; without it, or older than 22, host agents don't start and the UI says so. TypeScript 6 (typescript-eslint does not support 7 yet), zod 4. |
-| Dev overrides | `BERTH_HOME` (app data), `BERTH_CONFIG_DIR` (slots/connectors), `BERTH_LOG_DIR`, `BERTH_SECRETS=memory`, `BERTH_SIDECAR` (command line), `BERTH_THEME=light\|dark`, `BERTH_DEV_SEED=<scenario>` (devtools) | Never needed in normal use. |
-| Logging | `tracing` (Rust), `pino` (TS); both to `~/Library/Logs/Berth/` | No telemetry. None. |
+| Dev overrides | `BERTH_HOME` (app data), `BERTH_CONFIG_DIR` (slots/connectors), `BERTH_LOG_DIR`, `BERTH_SECRETS=memory`, `BERTH_SIDECAR` (command line), `BERTH_THEME=light\|dark`, `BERTH_UPDATE_URL` (the releases list update reminders read, ADR 0036), `BERTH_DEV_SEED=<scenario>` (devtools) | Never needed in normal use. |
+| Logging | `tracing` (Rust), `pino` (TS); both to `~/Library/Logs/Berth/` | No telemetry. None. (Update reminders ask GitHub for its release list, sending nothing of the user's; Settings turns them off, ADR 0036.) |
 
 ---
 
@@ -757,7 +757,8 @@ settings         key, value          # last_repo, recent_repos, model, models, q
                                      # openai_base_url, openai_api, openai_models, openai_model,
                                      # openai_fast_model, openai_contexts, openai_catalog
                                      # (ADR 0023, ADR 0025), trusted_slot_types (ADR 0028),
-                                     # slot_messages, max_subagents (ADR 0032), openai_agent (ADR 0033)
+                                     # slot_messages, max_subagents (ADR 0032), openai_agent (ADR 0033),
+                                     # update_check, update_skipped, update_checked_at (ADR 0036)
 ```
 
 Timestamps are unix epoch milliseconds. `nodes.raw_first/raw_last` are `raw_events.id`
@@ -1110,6 +1111,21 @@ settles nothing (ADR 0013).
   message mid-round steers; `/compact` is its one slash command. Its subagents are
   Berth's `agent` tool (§5.4, ADR 0034), its only tasks, and the only thing Background
   moves (ADR 0035). No plan limits, suggestions or Claude Code history for it.
+- **Update reminders** (ADR 0036; `backend/update.rs`, `ui/update.rs`,
+  `berth_core::update`): a built app asks GitHub's releases API for Berth's releases
+  10 s after launch and every 12 hours since its last look (Settings › Updates: Remind
+  me | Off, `settings.update_check`); Check for Updates (the Berth menu, ⌘K,
+  Settings' Check now) asks at once. A newer release opens the reminder, a window of
+  its own (without taking the keys when Berth found it): the newest version and the
+  running one, every newer release's notes (Markdown, links as text, without the
+  Claude Code attribution), Release page, **Skip This Version**
+  (`settings.update_skipped`; Check for Updates still shows it), **Later** (esc) and
+  **Update** (↩): the disk image for this CPU downloads to `~/Downloads` (progress,
+  Cancel; closing stops it, a stopped download leaves nothing), is checked against
+  GitHub's SHA-256 and by `spctl` as notarized (and the running app's Team ID, when
+  signed), and opens; the reminder says to quit Berth and drag the new one to
+  Applications (Quit Berth, Show in Finder). Asked, it also says Berth is up to
+  date, or why it couldn't look. Berth never replaces itself (§13).
 - **Keeping the Mac awake** (`backend/awake.rs`): while an agent works anywhere (a
   round in flight, a slot being created or torn down, something in a session's
   background; `Store::agents_working`), Berth holds a user-initiated `NSProcessInfo`
@@ -1240,7 +1256,8 @@ settles nothing (ADR 0013).
   lost. When a sequence looks wrong, log the state before suspecting the app.
   `resize <w> <h>` resizes the window and `review_width <w>` sets the review pane's
   width as a drag would, to check layouts at their narrowest.
-  `window <n>` points later commands at another repo window, `windows` logs them
+  `window <n>` points later commands at another repo window (`window update`: the
+  update reminder's), `windows` logs them
   all, and `mouse_down`/`mouse_move`/`mouse_up <x> <y>` drive real drags (positions
   may leave the window, as a drag between windows does); `hover <x> <y>` moves with
   no button down, and a trailing `cmd` on any of them holds ⌘. `provider <base url>
@@ -1373,7 +1390,8 @@ owns it? what node type does it produce?
 
 ## 13. Deferred / not in v1
 
-- Auto-update.
+- Auto-update: installing in place. Berth reminds of a newer release and downloads,
+  checks and opens its disk image; the user drags it to Applications (ADR 0036).
 - Multiple workflows per slot concurrently.
 - Non-git slots.
 - Any OS other than macOS.

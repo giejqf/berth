@@ -42,9 +42,14 @@ impl Welcome {
         Self {
             recent,
             error,
-            logo: Arc::new(Image::from_bytes(ImageFormat::Png, LOGO.to_vec())),
+            logo: logo(),
         }
     }
+}
+
+/// Berth's mark, as Welcome and the update reminder show it.
+pub(super) fn logo() -> Arc<Image> {
+    Arc::new(Image::from_bytes(ImageFormat::Png, LOGO.to_vec()))
 }
 
 /// "today", "yesterday", "3 days ago", "Oct 2".

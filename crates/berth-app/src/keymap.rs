@@ -17,6 +17,7 @@ actions!(
         OpenHistory,
         ChooseModel,
         OpenSettings,
+        CheckForUpdates,
         ClaudeAccount,
         CommandPalette,
         ToggleReview,
@@ -561,6 +562,7 @@ pub fn palette_actions() -> Vec<(&'static str, &'static str, Box<dyn Action>)> {
         ),
         ("Open repository…", "⌘O", Box::new(OpenRepository)),
         ("Settings", "⌘,", Box::new(OpenSettings)),
+        ("Check for updates…", "", Box::new(CheckForUpdates)),
         (
             "Sign in to Claude Code or switch account…",
             "",

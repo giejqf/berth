@@ -214,6 +214,20 @@ pub enum Command {
     LoadRoundDetails {
         workflow_id: String,
     },
+    /// Look for a newer Berth on GitHub (ADR 0036). `asked`: Check for
+    /// Updates, which also says when there is none, or the check failed, and
+    /// shows a version the user skipped.
+    CheckForUpdates {
+        asked: bool,
+    },
+    /// Don't remind of `version` again (Skip This Version).
+    SkipUpdate {
+        version: String,
+    },
+    /// Download the newest release's disk image, check it, and open it.
+    DownloadUpdate,
+    /// Stop the download under way (the reminder closed).
+    CancelUpdate,
 }
 
 impl Command {
@@ -800,4 +814,44 @@ pub enum UiEvent {
         level: ToastLevel,
         message: String,
     },
+    /// What the update reminder shows (ADR 0036).
+    Update(Box<UpdateView>),
+    /// Berth looks for updates by itself (`settings.update_check` isn't "off").
+    UpdateChecks {
+        automatic: bool,
+    },
+}
+
+/// The update reminder's content (ADR 0036).
+#[derive(Debug, Clone)]
+pub enum UpdateView {
+    /// Check for Updates is asking GitHub.
+    Looking,
+    /// Check for Updates found nothing newer than `current`.
+    UpToDate { current: String },
+    /// Check for Updates couldn't find out.
+    LookFailed(String),
+    /// A newer Berth, and how far Update has got with it.
+    Available {
+        offer: berth_core::update::Offer,
+        step: UpdateStep,
+    },
+}
+
+/// Where Update is with the newest release's disk image.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateStep {
+    /// Not started.
+    Ready,
+    Downloading {
+        done: u64,
+        total: Option<u64>,
+    },
+    /// Checking its digest and Apple's notarization.
+    Checking,
+    /// Checked and opened: the user drags the new Berth to Applications.
+    Opened {
+        path: PathBuf,
+    },
+    Failed(String),
 }

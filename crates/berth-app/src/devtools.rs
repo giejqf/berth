@@ -20,6 +20,7 @@
 //! fake_node Title             # append a just-recorded decision to the flow (view only)
 //! fake_artifact /a.png | Title # append an artifact, the file used in place (view only)
 //! window 1                    # later commands act on the 2nd repo window (in opening order)
+//! window update               # … on the update reminder's window (ADR 0036)
 //! windows                     # log every repo window: bounds and slots
 //! resize 1020 700             # resize the window (points; not below its minimum)
 //! review_width 700            # the review pane's width, as if dragged
@@ -476,7 +477,11 @@ pub fn start(cx: &mut App) {
                     });
                 }),
                 "window" => {
-                    TARGET.store(arg.trim().parse().unwrap_or(0), Ordering::Relaxed);
+                    let n = match arg.trim() {
+                        "update" => UPDATE_WINDOW,
+                        n => n.parse().unwrap_or(0),
+                    };
+                    TARGET.store(n, Ordering::Relaxed);
                 }
                 "windows" => cx.update(log_windows),
                 // The review pane's width as if dragged there (clamped as a drag is).
@@ -763,8 +768,14 @@ fn push_fake_node(payload: berth_protocol::NodePayload, cx: &mut App) {
 /// The repo window commands act on (`window <n>`).
 static TARGET: AtomicUsize = AtomicUsize::new(0);
 
+/// `window update`: the update reminder's window.
+const UPDATE_WINDOW: usize = usize::MAX;
+
 fn target_window(cx: &App) -> Option<gpui::WindowHandle<gpui_component::Root>> {
-    ui::repo_window_at(TARGET.load(Ordering::Relaxed), cx).or_else(|| ui::first_repo_window(cx))
+    match TARGET.load(Ordering::Relaxed) {
+        UPDATE_WINDOW => ui::update_window(cx),
+        n => ui::repo_window_at(n, cx).or_else(|| ui::first_repo_window(cx)),
+    }
 }
 
 fn log_windows(cx: &mut App) {
@@ -866,6 +877,7 @@ fn dispatch(name: &str, cx: &mut App) {
         "DestroySlot" => Box::new(keymap::DestroySlot),
         "RenameSlot" => Box::new(keymap::RenameSlot),
         "ShowFiles" => Box::new(keymap::ShowFiles),
+        "CheckForUpdates" => Box::new(keymap::CheckForUpdates),
         "ShowFindings" => Box::new(keymap::ShowFindings),
         "OpenHistory" => Box::new(keymap::OpenHistory),
         "MoveSlotToNewWindow" => Box::new(keymap::MoveSlotToNewWindow),

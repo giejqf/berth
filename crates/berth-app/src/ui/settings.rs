@@ -304,6 +304,14 @@ impl SettingsForm {
         backend.send(Command::LoadSettings);
     }
 
+    /// Whether Berth looks for updates by itself (ADR 0036).
+    fn set_update_checks(&mut self, on: bool, cx: &mut Context<'_, Self>) {
+        self.state.read(cx).backend.send(Command::SetSetting {
+            key: "update_check".into(),
+            value: if on { "on" } else { "off" }.into(),
+        });
+    }
+
     fn set_keep_awake(&mut self, on: bool, cx: &mut Context<'_, Self>) {
         let backend = self.state.read(cx).backend.clone();
         backend.send(Command::SetSetting {
@@ -1380,6 +1388,12 @@ impl Render for SettingsForm {
                 segment(&t, id, label, theme == a)
                     .on_click(cx.listener(move |this, _, _, cx| this.set_theme(a, cx)))
             };
+        let update_checks = cx.global::<super::Berth>().update_checks;
+        let updates_seg =
+            |id: &'static str, label: &'static str, on: bool, cx: &mut Context<'_, Self>| {
+                segment(&t, id, label, update_checks == on)
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_update_checks(on, cx)))
+            };
         let keep_awake = cx.global::<super::Berth>().keep_awake;
         let awake_seg =
             |id: &'static str, label: &'static str, on: bool, cx: &mut Context<'_, Self>| {
@@ -1531,6 +1545,40 @@ impl Render for SettingsForm {
                                             .child(awake_seg("awake-off", "Let it sleep", false, cx)),
                                     )
                                     .child(div().min_w_0().ty(ty::META).text_color(t.text3).child("The display still sleeps and the screen still locks. A closed laptop lid still sleeps the Mac.")),
+                            ),
+                    )
+                    // Update reminders (ADR 0036).
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.))
+                            .child(caption("Updates", t.text3))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .child(
+                                        segments(&t)
+                                            .child(updates_seg("updates-on", "Remind me", true, cx))
+                                            .child(updates_seg("updates-off", "Off", false, cx)),
+                                    )
+                                    .child(
+                                        Btn::new("check-updates")
+                                            .size(Size::S26)
+                                            .label("Check now")
+                                            .on_click(|_, _, cx| {
+                                                super::Berth::backend(cx)
+                                                    .send(Command::CheckForUpdates { asked: true });
+                                            }),
+                                    )
+                                    .child(div().min_w_0().ty(ty::META).text_color(t.text3).child(concat!(
+                                        "Berth ",
+                                        env!("CARGO_PKG_VERSION"),
+                                        ". It asks GitHub for its releases twice a day, and shows what a newer one changed."
+                                    ))),
                             ),
                     ),
             )
