@@ -50,6 +50,8 @@ Download the disk image for your Mac from
 `x86_64` for Intel), open it, and drag Berth into Applications. Berth is signed
 and notarized by Apple. On first launch it downloads the Claude Agent SDK and
 Claude Code (about 120 MB) from npm: they are Anthropic's, and not part of Berth.
+From 0.4.4 on, Berth tells you when a newer release is out, shows what it changed,
+and downloads its disk image for you (Settings › Updates turns the reminder off).
 
 You need:
 
