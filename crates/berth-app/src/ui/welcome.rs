@@ -47,7 +47,7 @@ impl Welcome {
     }
 }
 
-/// Berth's mark, as Welcome and the update reminder show it.
+/// Berth's mark, as Welcome, About and the update reminder show it.
 pub(super) fn logo() -> Arc<Image> {
     Arc::new(Image::from_bytes(ImageFormat::Png, LOGO.to_vec()))
 }

@@ -78,6 +78,11 @@ impl Install {
         self.claude_dir().join("claude")
     }
 
+    /// The Claude Agent SDK's version, as the sidecar was built with it.
+    pub fn sdk_version(&self) -> &str {
+        &self.manifest.version
+    }
+
     pub fn claude_ready(&self) -> bool {
         self.claude_package()
             .is_some_and(|p| installed(&self.claude_dir(), p))

@@ -1126,6 +1126,14 @@ settles nothing (ADR 0013).
   signed), and opens; the reminder says to quit Berth and drag the new one to
   Applications (Quit Berth, Show in Finder). Asked, it also says Berth is up to
   date, or why it couldn't look. Berth never replaces itself (§13).
+- **About Berth** (`ui/about.rs`; the Berth menu, ⌘K): a window of its own, as a Mac
+  app's About is: the mark, the tagline, the version, the CPU and the build (the
+  commit CI built it from, `GITHUB_SHA`; else "development build"); Check for
+  Updates… and What's New (this version's release page); **Runs with**: macOS, the
+  Claude Agent SDK and Pi as built with (Pi's download noted), and Claude Code, Node.js
+  and the GitHub CLI as they answer `--version` (`Command::LoadAbout`), with Copy (for
+  a bug report); links to GitHub, Report an Issue (a new issue with those versions
+  filled in), License and Third-party Notices (the app's copies, in Quick Look).
 - **Keeping the Mac awake** (`backend/awake.rs`): while an agent works anywhere (a
   round in flight, a slot being created or torn down, something in a session's
   background; `Store::agents_working`), Berth holds a user-initiated `NSProcessInfo`

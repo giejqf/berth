@@ -267,7 +267,8 @@ impl Shared {
             | Command::CheckForUpdates { .. }
             | Command::SkipUpdate { .. }
             | Command::DownloadUpdate
-            | Command::CancelUpdate => return None,
+            | Command::CancelUpdate
+            | Command::LoadAbout => return None,
         };
         self.repo_of_workflow(&wf).ok()
     }
@@ -613,6 +614,11 @@ impl Shared {
             Command::DownloadUpdate => self.download_update().await,
             Command::CancelUpdate => {
                 self.cancel_update();
+                Ok(())
+            }
+            Command::LoadAbout => {
+                let about = self.about().await;
+                self.emit(UiEvent::About(Box::new(about)));
                 Ok(())
             }
             Command::TerminalSpec { repo_id, slot_id } => {

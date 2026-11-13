@@ -21,6 +21,7 @@
 //! fake_artifact /a.png | Title # append an artifact, the file used in place (view only)
 //! window 1                    # later commands act on the 2nd repo window (in opening order)
 //! window update               # … on the update reminder's window (ADR 0036)
+//! window about                # … on About Berth's
 //! windows                     # log every repo window: bounds and slots
 //! resize 1020 700             # resize the window (points; not below its minimum)
 //! review_width 700            # the review pane's width, as if dragged
@@ -479,6 +480,7 @@ pub fn start(cx: &mut App) {
                 "window" => {
                     let n = match arg.trim() {
                         "update" => UPDATE_WINDOW,
+                        "about" => ABOUT_WINDOW,
                         n => n.parse().unwrap_or(0),
                     };
                     TARGET.store(n, Ordering::Relaxed);
@@ -768,12 +770,14 @@ fn push_fake_node(payload: berth_protocol::NodePayload, cx: &mut App) {
 /// The repo window commands act on (`window <n>`).
 static TARGET: AtomicUsize = AtomicUsize::new(0);
 
-/// `window update`: the update reminder's window.
+/// `window update`: the update reminder's window; `window about`, About's.
 const UPDATE_WINDOW: usize = usize::MAX;
+const ABOUT_WINDOW: usize = usize::MAX - 1;
 
 fn target_window(cx: &App) -> Option<gpui::WindowHandle<gpui_component::Root>> {
     match TARGET.load(Ordering::Relaxed) {
         UPDATE_WINDOW => ui::update_window(cx),
+        ABOUT_WINDOW => ui::about_window(cx),
         n => ui::repo_window_at(n, cx).or_else(|| ui::first_repo_window(cx)),
     }
 }
@@ -878,6 +882,7 @@ fn dispatch(name: &str, cx: &mut App) {
         "RenameSlot" => Box::new(keymap::RenameSlot),
         "ShowFiles" => Box::new(keymap::ShowFiles),
         "CheckForUpdates" => Box::new(keymap::CheckForUpdates),
+        "About" => Box::new(keymap::About),
         "ShowFindings" => Box::new(keymap::ShowFindings),
         "OpenHistory" => Box::new(keymap::OpenHistory),
         "MoveSlotToNewWindow" => Box::new(keymap::MoveSlotToNewWindow),

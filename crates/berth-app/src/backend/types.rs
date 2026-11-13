@@ -228,6 +228,9 @@ pub enum Command {
     DownloadUpdate,
     /// Stop the download under way (the reminder closed).
     CancelUpdate,
+    /// What About Berth lists of what Berth runs with; answered with
+    /// [`UiEvent::About`].
+    LoadAbout,
 }
 
 impl Command {
@@ -820,6 +823,24 @@ pub enum UiEvent {
     UpdateChecks {
         automatic: bool,
     },
+    /// What Berth runs with, for About Berth.
+    About(Box<AboutInfo>),
+}
+
+/// What Berth runs with, as About Berth lists it: each version, or `None`
+/// when it isn't on this Mac (or didn't say).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AboutInfo {
+    pub macos: Option<String>,
+    /// The Claude Agent SDK the sidecar was built with (ADR 0029).
+    pub sdk: Option<String>,
+    /// The Claude Code agents on this Mac run (`claude --version`).
+    pub claude_code: Option<String>,
+    /// Pi as this Berth was built with it, and whether it is downloaded
+    /// (ADR 0033).
+    pub pi: Option<(String, bool)>,
+    pub node: Option<String>,
+    pub gh: Option<String>,
 }
 
 /// The update reminder's content (ADR 0036).

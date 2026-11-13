@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 
 use super::launch::{NODE_MIN_MAJOR, NODE_MISSING, SidecarLaunch, find_node, version, which};
-use super::types::{AgentFix, EnvStatus, ToolState, ToolStatus, UiEvent};
+use super::types::{AboutInfo, AgentFix, EnvStatus, ToolState, ToolStatus, UiEvent};
 use super::{Shared, lock};
 
 const CHECK_TIMEOUT: Duration = Duration::from_secs(8);
@@ -150,6 +150,58 @@ const REFRESH_AFTER: Duration = Duration::from_secs(5);
 struct AuthSeen {
     /// The method, provider, account and organization; empty when signed out.
     identity: String,
+}
+
+impl Shared {
+    /// What About Berth lists: the versions of what Berth runs with, the
+    /// tools asked at once.
+    pub(super) async fn about(&self) -> AboutInfo {
+        let launch = &self.launch;
+        let sdk = launch.install.as_ref().map_or_else(
+            || manifest_version(&launch.bundle_dir.join("claude-agent-sdk.json")),
+            |i| Some(i.sdk_version().to_owned()),
+        );
+        let pi = match &launch.pi {
+            Some(p) => Some((p.version().to_owned(), p.ready())),
+            // Run from the workspace, with the sidecar's own Pi.
+            None => manifest_version(&launch.bundle_dir.join("pi.json")).map(|v| (v, true)),
+        };
+        // "26.1", "2.1.30 (Claude Code)", "v22.11.0",
+        // "gh version 2.83.0 (2025-11-04)".
+        let (macos, claude_code, node, gh) = tokio::join!(
+            said(
+                Some(PathBuf::from("/usr/bin/sw_vers")),
+                "-productVersion",
+                0
+            ),
+            said(claude_binary(launch), "--version", 0),
+            said(find_node(), "--version", 0),
+            said(which("gh"), "--version", 2),
+        );
+        AboutInfo {
+            macos,
+            sdk,
+            claude_code,
+            pi,
+            node,
+            gh,
+        }
+    }
+}
+
+/// The `version` a manifest `sidecar/build.mjs` wrote names.
+fn manifest_version(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&text).ok()?;
+    json.get("version")?.as_str().map(str::to_owned)
+}
+
+/// Word `nth` of the first line `bin arg` prints.
+async fn said(bin: Option<PathBuf>, arg: &str, nth: usize) -> Option<String> {
+    let (ok, out, _) = run(&bin?, &[arg]).await?;
+    let line = out.lines().next()?;
+    ok.then(|| line.split_whitespace().nth(nth).map(str::to_owned))
+        .flatten()
 }
 
 /// The `claude` the sidecar would use: `$BERTH_CLAUDE_PATH`, the one

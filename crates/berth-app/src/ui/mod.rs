@@ -1,6 +1,7 @@
 //! GPUI side: a repo's windows (one or more, each a group of its slots; ADR
 //! 0011), fed by backend events.
 
+mod about;
 mod agent_dialog;
 mod answer_card;
 mod composer;
@@ -103,6 +104,8 @@ pub struct Berth {
     update: Option<(WindowHandle<Root>, WeakEntity<update::UpdateWindow>)>,
     /// Berth looks for updates by itself (`settings.update_check`).
     pub update_checks: bool,
+    /// About Berth's window, while it is open.
+    about: Option<(WindowHandle<Root>, WeakEntity<about::AboutWindow>)>,
 }
 
 impl Global for Berth {}
@@ -128,6 +131,7 @@ pub fn init(backend: BackendHandle, events: UnboundedReceiver<UiEvent>, cx: &mut
         provider: crate::backend::ProviderInfo::default(),
         update: None,
         update_checks: true,
+        about: None,
     });
     cx.spawn(async move |cx| {
         let mut events = events;
@@ -306,6 +310,16 @@ fn route(event: UiEvent, cx: &mut App) {
         }
         UiEvent::ShowWelcome { recent, error } => show_welcome(recent, error, cx),
         UiEvent::Update(view) => show_update(*view, cx),
+        UiEvent::About(info) => {
+            if let Some(view) = cx
+                .global::<Berth>()
+                .about
+                .as_ref()
+                .and_then(|(_, v)| v.upgrade())
+            {
+                view.update(cx, |w, cx| w.set(*info, cx));
+            }
+        }
         UiEvent::UpdateChecks { automatic } => {
             cx.global_mut::<Berth>().update_checks = automatic;
             cx.refresh_windows();
@@ -547,6 +561,46 @@ fn show_welcome(recent: Vec<RecentRepo>, error: Option<String>, cx: &mut App) {
         Ok(h) => cx.global_mut::<Berth>().welcome = Some(h),
         Err(e) => tracing::error!(error = %e, "open welcome window"),
     }
+}
+
+/// About Berth: its window comes forward, or opens, and asks what Berth
+/// runs with.
+pub fn show_about(cx: &mut App) {
+    let open = cx
+        .global::<Berth>()
+        .about
+        .as_ref()
+        .and_then(|(handle, view)| view.upgrade().map(|_| *handle));
+    if let Some(handle) = open {
+        let _ = handle.update(cx, |_, window, _| window.activate_window());
+        return;
+    }
+    Berth::backend(cx).send(Command::LoadAbout);
+    let options = window_options(size(px(460.), px(600.)), size(px(400.), px(480.)), cx);
+    let mut made = None;
+    let handle = cx.open_window(options, |window, cx| {
+        crate::theme::apply(window, cx);
+        window.set_window_title("About Berth");
+        let entity = cx.new(about::AboutWindow::new);
+        entity.read(cx).focus_handle(cx).focus(window, cx);
+        made = Some(entity.downgrade());
+        cx.new(|cx| Root::new(entity, window, cx))
+    });
+    match (handle, made) {
+        (Ok(h), Some(entity)) => cx.global_mut::<Berth>().about = Some((h, entity)),
+        (Err(e), _) => tracing::error!(error = %e, "open About Berth"),
+        (Ok(_), None) => {}
+    }
+}
+
+/// About Berth's window, while open (devtools).
+#[allow(dead_code)]
+pub fn about_window(cx: &App) -> Option<WindowHandle<Root>> {
+    cx.global::<Berth>()
+        .about
+        .as_ref()
+        .filter(|(_, view)| view.upgrade().is_some())
+        .map(|(handle, _)| *handle)
 }
 
 /// The update reminder (ADR 0036): its window shows `view`, opening if it

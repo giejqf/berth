@@ -70,6 +70,8 @@ fn main() {
             register_actions(cx);
             cx.set_menus([
                 Menu::new("Berth").items([
+                    MenuItem::action("About Berth", keymap::About),
+                    MenuItem::separator(),
                     MenuItem::action("Settings…", keymap::OpenSettings),
                     MenuItem::action("Check for Updates…", keymap::CheckForUpdates),
                     MenuItem::separator(),
@@ -192,6 +194,7 @@ fn disable_font_smoothing() {
 fn register_actions(cx: &mut App) {
     cx.on_action(|_: &keymap::Quit, cx| cx.quit());
     cx.on_action(|_: &keymap::OpenRepository, cx| ui::prompt_open_repository(cx));
+    cx.on_action(|_: &keymap::About, cx| ui::show_about(cx));
     cx.on_action(|_: &keymap::CheckForUpdates, cx| {
         ui::Berth::backend(cx).send(backend::Command::CheckForUpdates { asked: true });
     });
