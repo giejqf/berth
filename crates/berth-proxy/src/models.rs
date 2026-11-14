@@ -35,14 +35,14 @@ pub async fn list_models(upstream: &Upstream) -> Result<Vec<CatalogModel>, Proxy
             host: host.clone(),
             detail: e.to_string(),
         })?;
-    let mut req = client.get(upstream.endpoint("/models"));
-    if let Some(key) = upstream.api_key.as_deref().filter(|k| !k.is_empty()) {
-        req = req.bearer_auth(key);
-    }
-    let resp = req.send().await.map_err(|e| ProxyError::Unreachable {
-        host: host.clone(),
-        detail: crate::server::describe(&e),
-    })?;
+    let resp = upstream
+        .authorize(client.get(upstream.endpoint("/models")))
+        .send()
+        .await
+        .map_err(|e| ProxyError::Unreachable {
+            host: host.clone(),
+            detail: crate::server::describe(&e),
+        })?;
     let status = resp.status().as_u16();
     let body = resp.text().await.map_err(|e| ProxyError::Unreachable {
         host: host.clone(),

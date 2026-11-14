@@ -1,17 +1,22 @@
 //! A Messages API request as the provider's API takes it: Chat Completions
 //! or the Responses API ([`Api`]).
 //!
-//! What the provider can't take is left out: thinking (its signatures are
-//! Anthropic's), server tools (web search runs on Anthropic's side), cache
-//! markers. A tool's result becomes a tool message (a `function_call_output`
-//! item); images it returned follow in a user message, since tool results
-//! carry text only.
+//! What the provider can't take is left out: Claude's thinking (its
+//! signatures are Anthropic's), server tools (web search runs on Anthropic's
+//! side), cache markers. The model's own reasoning, kept as thinking Berth
+//! signed ([`crate::reasoning`]), goes back to it within a tool loop. A
+//! tool's result becomes a tool message (a `function_call_output` item);
+//! images it returned follow in a user message, since tool results carry
+//! text only. A system message mid-conversation (Claude Code's reminders)
+//! joins the user turn it follows, as Claude Code's own reminders do.
 
 use std::collections::HashMap;
 
 use serde_json::{Map, Value, json};
 
 use crate::Api;
+use crate::reasoning::Kept;
+use crate::shape::Shape;
 
 /// Tool names as they go upstream, and back. OpenAI's are at most 64 of
 /// `[A-Za-z0-9_-]`; Claude Code's MCP tools can be longer.
@@ -68,6 +73,29 @@ fn fnv(s: &str) -> u32 {
     })
 }
 
+fn fnv64(s: &str) -> u64 {
+    s.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+/// A tool call's id as OpenAI takes one: at most 40 of `[A-Za-z0-9_-]`
+/// (Chat Completions refuses longer). Another server's longer id (vLLM's
+/// `chatcmpl-tool-…`) is hashed to one, the same each time, so a call and
+/// its result still meet.
+fn wire_id(id: &str) -> String {
+    let fits = !id.is_empty()
+        && id.len() <= 40
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if fits {
+        id.to_owned()
+    } else {
+        format!("call_{:016x}{:08x}", fnv64(id), fnv(id))
+    }
+}
+
 /// The request as it goes upstream, before the model's own shape applies
 /// ([`crate::shape::Shape`]).
 #[derive(Debug, Clone)]
@@ -79,27 +107,61 @@ pub(crate) struct Outgoing {
     pub max_tokens: Option<u64>,
     /// Input tokens, estimated, until the provider counts them.
     pub estimate: u64,
+    /// Claude Code asks the model to think: the slot's effort applies.
+    pub thinking: bool,
 }
 
-pub(crate) fn translate(req: &Value, model: &str, api: Api) -> Outgoing {
+/// How a request goes to this model: what it reads, and what of its
+/// reasoning goes back to it.
+#[derive(Debug, Clone, Copy)]
+struct Reads {
+    api: Api,
+    images: bool,
+    reasoning_back: bool,
+}
+
+pub(crate) fn translate(req: &Value, model: &str, api: Api, shape: &Shape) -> Outgoing {
+    let reads = Reads {
+        api,
+        images: !shape.no_images,
+        reasoning_back: !shape.no_reasoning_back,
+    };
     let mut names = Names::default();
     let mut items = Vec::new();
-    let system = system_text(req.get("system"));
+    let (tools, cut) = tools(req, &mut names, api, shape.description_max);
+    let system = match (system_text(req.get("system")), cut) {
+        (s, None) => s,
+        (None, Some(cut)) => Some(cut),
+        (Some(s), Some(cut)) => Some(format!("{s}\n\n{cut}")),
+    };
     if api == Api::ChatCompletions
         && let Some(system) = &system
     {
         items.push(json!({ "role": "system", "content": system }));
     }
-    for m in req
+    let messages: &[Value] = req
         .get("messages")
         .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
+        .map_or(&[], Vec::as_slice);
+    // The tool loop under way: what follows the last prompt (a user turn
+    // that isn't tool results). Reasoning goes back to the model only here.
+    let prompt_at = messages
+        .iter()
+        .rposition(|m| {
+            m.get("role").and_then(Value::as_str) == Some("user")
+                && !blocks(m.get("content").unwrap_or(&Value::Null))
+                    .iter()
+                    .any(|b| matches!(b, Block::Other(v) if kind(v) == "tool_result"))
+        })
+        .unwrap_or(0);
+    for (i, m) in messages.iter().enumerate() {
         let content = m.get("content").unwrap_or(&Value::Null);
         match m.get("role").and_then(Value::as_str) {
-            Some("assistant") => assistant(content, &mut items, &mut names, api),
-            _ => user(content, &mut items, api),
+            Some("assistant") => {
+                assistant(content, &mut items, &mut names, reads, i > prompt_at);
+            }
+            Some("system") => reminder(content, &mut items, api),
+            _ => user(content, &mut items, reads),
         }
     }
 
@@ -119,7 +181,6 @@ pub(crate) fn translate(req: &Value, model: &str, api: Api) -> Outgoing {
             body.insert("store".into(), false.into());
         }
     }
-    let tools = tools(req, &mut names, api);
     if !tools.is_empty() {
         body.insert("tools".into(), tools.into());
         if let Some(choice) = req.get("tool_choice") {
@@ -150,12 +211,19 @@ pub(crate) fn translate(req: &Value, model: &str, api: Api) -> Outgoing {
             body.insert("stream_options".into(), json!({ "include_usage": true }));
         }
     }
+    let thinking = req
+        .get("thinking")
+        .and_then(|t| t.get("type"))
+        .and_then(Value::as_str)
+        .is_some_and(|t| t != "disabled")
+        || req.pointer("/output_config/effort").is_some();
     Outgoing {
         body,
         names,
         stream,
         max_tokens: req.get("max_tokens").and_then(Value::as_u64),
         estimate: estimate_request(req),
+        thinking,
     }
 }
 
@@ -217,6 +285,20 @@ impl Part {
     }
 }
 
+/// What a model without vision reads where an image was.
+const NO_IMAGE: &str = "[An image was here; this model reads no images.]";
+
+impl Part {
+    /// An image as this model reads it: itself, or a note.
+    fn image(url: String, reads: Reads) -> Self {
+        if reads.images {
+            Self::Image(url)
+        } else {
+            Self::Text(NO_IMAGE.to_owned())
+        }
+    }
+}
+
 fn image_url(b: &Value) -> Option<String> {
     let source = b.get("source")?;
     Some(match source.get("type").and_then(Value::as_str) {
@@ -251,7 +333,8 @@ fn document_text(b: &Value) -> String {
 /// A user turn: each tool result as a tool message (`function_call_output`
 /// in the Responses API), then a user message with the images tools
 /// returned and the user's own parts.
-fn user(content: &Value, out: &mut Vec<Value>, api: Api) {
+fn user(content: &Value, out: &mut Vec<Value>, reads: Reads) {
+    let api = reads.api;
     let mut returned = Vec::new();
     let mut parts = Vec::new();
     for b in blocks(content) {
@@ -262,10 +345,10 @@ fn user(content: &Value, out: &mut Vec<Value>, api: Api) {
                 }
             }
             Block::Other(v) => match kind(v) {
-                "image" => parts.extend(image_url(v).map(Part::Image)),
+                "image" => parts.extend(image_url(v).map(|u| Part::image(u, reads))),
                 "document" => parts.push(Part::Text(document_text(v))),
                 "tool_result" => {
-                    let id = v.get("tool_use_id").and_then(Value::as_str).unwrap_or("");
+                    let id = wire_id(v.get("tool_use_id").and_then(Value::as_str).unwrap_or(""));
                     let (text, images) = tool_result(v);
                     out.push(match api {
                         Api::ChatCompletions => {
@@ -277,7 +360,7 @@ fn user(content: &Value, out: &mut Vec<Value>, api: Api) {
                     });
                     if !images.is_empty() {
                         returned.push(Part::Text(format!("The images tool call {id} returned:")));
-                        returned.extend(images.into_iter().map(Part::Image));
+                        returned.extend(images.into_iter().map(|u| Part::image(u, reads)));
                     }
                 }
                 _ => {}
@@ -332,18 +415,61 @@ fn tool_result(b: &Value) -> (String, Vec<String>) {
     (text, images)
 }
 
+/// A system message in the conversation (Claude Code's reminders: the
+/// model, the tokens left): a reminder in the user turn it follows, or a
+/// user turn of its own. Not every server takes a system message after the
+/// first, and the model reads it there as it reads Claude Code's others.
+fn reminder(content: &Value, out: &mut Vec<Value>, api: Api) {
+    let text: Vec<&str> = blocks(content)
+        .into_iter()
+        .filter_map(|b| match b {
+            Block::Text(t) if !t.trim().is_empty() => Some(t),
+            _ => None,
+        })
+        .collect();
+    if text.is_empty() {
+        return;
+    }
+    let note = format!(
+        "<system-reminder>\n{}\n</system-reminder>",
+        text.join("\n\n")
+    );
+    let last_user = out.last_mut().filter(|m| {
+        m.get("role").and_then(Value::as_str) == Some("user") && m.get("type").is_none()
+    });
+    match last_user.and_then(|m| m.get_mut("content")) {
+        Some(Value::String(s)) => {
+            s.push_str("\n\n");
+            s.push_str(&note);
+        }
+        Some(Value::Array(parts)) => parts.push(Part::Text(note).wire(api)),
+        _ => out.push(json!({ "role": "user", "content": note })),
+    }
+}
+
 /// An assistant turn: its text and its tool calls. One message with
 /// `tool_calls` in Chat Completions; a message, then a `function_call` item
-/// for each call, in the Responses API.
-fn assistant(content: &Value, out: &mut Vec<Value>, names: &mut Names, api: Api) {
+/// for each call, in the Responses API. In the tool loop under way
+/// (`in_loop`), the model's reasoning goes first: its reasoning items, or
+/// its `reasoning_content`.
+fn assistant(
+    content: &Value,
+    out: &mut Vec<Value>,
+    names: &mut Names,
+    reads: Reads,
+    in_loop: bool,
+) {
+    let api = reads.api;
     let mut text = String::new();
     let mut calls = Vec::new();
+    let mut items = Vec::new();
+    let mut reasoning = String::new();
     for b in blocks(content) {
         match b {
             Block::Text(t) => text.push_str(t),
             Block::Other(v) if kind(v) == "tool_use" => {
                 let name = names.wire(v.get("name").and_then(Value::as_str).unwrap_or(""));
-                let id = v.get("id").and_then(Value::as_str).unwrap_or("");
+                let id = wire_id(v.get("id").and_then(Value::as_str).unwrap_or(""));
                 let args = v
                     .get("input")
                     .cloned()
@@ -363,20 +489,44 @@ fn assistant(content: &Value, out: &mut Vec<Value>, names: &mut Names, api: Api)
                     }),
                 });
             }
-            // Thinking and server tools: the provider can't take them back.
+            Block::Other(v) if kind(v) == "thinking" && in_loop && reads.reasoning_back => {
+                let signature = v.get("signature").and_then(Value::as_str).unwrap_or("");
+                let thought = v.get("thinking").and_then(Value::as_str).unwrap_or("");
+                match (Kept::read(signature), api) {
+                    (Some(Kept::Item { id, encrypted }), Api::Responses) => {
+                        let summary: Vec<Value> = (!thought.is_empty()
+                            && thought != crate::reasoning::UNSUMMARIZED)
+                            .then(|| json!({ "type": "summary_text", "text": thought }))
+                            .into_iter()
+                            .collect();
+                        items.push(json!({
+                            "type": "reasoning",
+                            "id": id,
+                            "summary": summary,
+                            "encrypted_content": encrypted,
+                        }));
+                    }
+                    (Some(Kept::Content), Api::ChatCompletions) => reasoning.push_str(thought),
+                    _ => {}
+                }
+            }
+            // Claude's thinking and server tools: the provider can't take them.
             Block::Other(_) => {}
         }
     }
-    if text.is_empty() && calls.is_empty() {
+    if text.trim().is_empty() && calls.is_empty() {
         return;
     }
+    // Reasoning goes back only before a call it led to: a reasoning item
+    // must be followed by what it produced.
+    let reasoning_back = !calls.is_empty();
     match api {
         Api::ChatCompletions => {
             let mut m = Map::new();
             m.insert("role".into(), "assistant".into());
             m.insert(
                 "content".into(),
-                if text.is_empty() {
+                if text.trim().is_empty() {
                     Value::Null
                 } else {
                     text.into()
@@ -385,10 +535,16 @@ fn assistant(content: &Value, out: &mut Vec<Value>, names: &mut Names, api: Api)
             if !calls.is_empty() {
                 m.insert("tool_calls".into(), calls.into());
             }
+            if reasoning_back && !reasoning.is_empty() {
+                m.insert("reasoning_content".into(), reasoning.into());
+            }
             out.push(Value::Object(m));
         }
         Api::Responses => {
-            if !text.is_empty() {
+            if reasoning_back {
+                out.extend(items);
+            }
+            if !text.trim().is_empty() {
                 out.push(json!({ "role": "assistant", "content": text }));
             }
             out.extend(calls);
@@ -399,19 +555,41 @@ fn assistant(content: &Value, out: &mut Vec<Value>, names: &mut Names, api: Api)
 /// Claude Code's tools as functions. Server tools (web search, code
 /// execution) run on Anthropic's side and have no schema here: left out.
 /// The Responses API's functions are flat, and strict unless told not to
-/// be (Claude Code's schemas aren't written for strict mode).
-fn tools(req: &Value, names: &mut Names, api: Api) -> Vec<Value> {
-    req.get("tools")
+/// be (Claude Code's schemas aren't written for strict mode). A model that
+/// takes descriptions only up to `max` gets them cut there, and the whole of
+/// each one cut in a note for the system prompt.
+fn tools(
+    req: &Value,
+    names: &mut Names,
+    api: Api,
+    max: Option<usize>,
+) -> (Vec<Value>, Option<String>) {
+    let mut cut = Vec::new();
+    let tools = req
+        .get("tools")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(|t| {
             let mut schema = t.get("input_schema")?.clone();
-            let name = names.wire(t.get("name")?.as_str()?);
+            let original = t.get("name")?.as_str()?;
+            let name = names.wire(original);
             if let Some(o) = schema.as_object_mut() {
                 o.remove("$schema");
             }
-            let description = t.get("description").and_then(Value::as_str).unwrap_or("");
+            let full = t.get("description").and_then(Value::as_str).unwrap_or("");
+            let description = match max {
+                Some(max) if full.chars().count() > max => {
+                    cut.push(format!("## {name}\n\n{full}"));
+                    const MORE: &str = "… (The whole description is in the system prompt.)";
+                    let head: String = full
+                        .chars()
+                        .take(max.saturating_sub(MORE.chars().count()))
+                        .collect();
+                    format!("{head}{MORE}")
+                }
+                _ => full.to_owned(),
+            };
             Some(match api {
                 Api::ChatCompletions => json!({
                     "type": "function",
@@ -426,7 +604,14 @@ fn tools(req: &Value, names: &mut Names, api: Api) -> Vec<Value> {
                 }),
             })
         })
-        .collect()
+        .collect();
+    let note = (!cut.is_empty()).then(|| {
+        format!(
+            "# Tool descriptions\n\nThese tools' descriptions were too long for this API, so they are here in full.\n\n{}",
+            cut.join("\n\n")
+        )
+    });
+    (tools, note)
 }
 
 fn tool_choice(choice: &Value, names: &mut Names, api: Api) -> Option<Value> {
@@ -514,7 +699,12 @@ mod tests {
 
     #[test]
     fn a_conversation_becomes_chat_messages() {
-        let out = translate(&conversation(), "deepseek-chat", Api::ChatCompletions);
+        let out = translate(
+            &conversation(),
+            "deepseek-chat",
+            Api::ChatCompletions,
+            &Shape::default(),
+        );
         let body = Value::Object(out.body);
         assert_eq!(body["model"], "deepseek-chat");
         let m = body["messages"].as_array().cloned().unwrap_or_default();
@@ -549,7 +739,12 @@ mod tests {
 
     #[test]
     fn a_conversation_becomes_responses_api_input() {
-        let out = translate(&conversation(), "gpt-5-codex", Api::Responses);
+        let out = translate(
+            &conversation(),
+            "gpt-5-codex",
+            Api::Responses,
+            &Shape::default(),
+        );
         let body = Value::Object(out.body);
         assert_eq!(body["instructions"], "You are Claude Code.\n\nBe brief.");
         assert_eq!(body["store"], false);
@@ -592,7 +787,12 @@ mod tests {
 
     #[test]
     fn tools_lose_server_tools_and_long_names_fit() {
-        let out = translate(&conversation(), "m", Api::ChatCompletions);
+        let out = translate(
+            &conversation(),
+            "m",
+            Api::ChatCompletions,
+            &Shape::default(),
+        );
         let tools = out.body["tools"].as_array().cloned().unwrap_or_default();
         assert_eq!(tools.len(), 2);
         assert!(tools[0]["function"]["parameters"].get("$schema").is_none());
@@ -633,6 +833,141 @@ mod tests {
             tool_choice(&json!({ "type": "any" }), &mut names, Api::ChatCompletions),
             Some("required".into())
         );
+    }
+
+    #[test]
+    fn system_messages_join_the_user_turn_as_reminders() {
+        let req = json!({ "messages": [
+            { "role": "user", "content": "Fix it" },
+            { "role": "system", "content": "You are powered by the model gpt-5." },
+            { "role": "assistant", "content": [{ "type": "text", "text": "Done." }] },
+            { "role": "system", "content": [{ "type": "text", "text": "<total_tokens>9 left</total_tokens>" }] },
+        ]});
+        let out = translate(&req, "m", Api::ChatCompletions, &Shape::default());
+        let m = out.body["messages"].as_array().cloned().unwrap_or_default();
+        assert_eq!(m.len(), 3);
+        assert_eq!(
+            m[0]["content"],
+            "Fix it\n\n<system-reminder>\nYou are powered by the model gpt-5.\n</system-reminder>"
+        );
+        assert_eq!(m[2]["role"], "user");
+        assert!(
+            m[2]["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("total_tokens"))
+        );
+    }
+
+    #[test]
+    fn reasoning_goes_back_within_the_tool_loop() {
+        let item = Kept::Item {
+            id: "rs_9".into(),
+            encrypted: "gAAAA".into(),
+        };
+        let req = json!({ "messages": [
+            { "role": "user", "content": "Earlier" },
+            { "role": "assistant", "content": [
+                { "type": "thinking", "thinking": "old", "signature": item.signature() },
+                { "type": "tool_use", "id": "call_1", "name": "Bash", "input": {} }
+            ]},
+            { "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "call_1", "content": "ok" }] },
+            { "role": "assistant", "content": [{ "type": "text", "text": "Done." }] },
+            { "role": "user", "content": "Now" },
+            { "role": "assistant", "content": [
+                { "type": "thinking", "thinking": "Plan", "signature": item.signature() },
+                { "type": "thinking", "thinking": "Claude's", "signature": "EqQB" },
+                { "type": "tool_use", "id": "call_2", "name": "Bash", "input": {} }
+            ]},
+            { "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "call_2", "content": "ok" }] },
+        ]});
+        let out = translate(&req, "gpt-5", Api::Responses, &Shape::default());
+        let input = out.body["input"].as_array().cloned().unwrap_or_default();
+        let reasoning: Vec<&Value> = input.iter().filter(|i| i["type"] == "reasoning").collect();
+        // Only the loop under way's, before its call.
+        assert_eq!(reasoning.len(), 1);
+        assert_eq!(
+            *reasoning[0],
+            json!({ "type": "reasoning", "id": "rs_9", "summary": [{ "type": "summary_text", "text": "Plan" }], "encrypted_content": "gAAAA" })
+        );
+        let at = input.iter().position(|i| i["type"] == "reasoning");
+        assert_eq!(at.map(|a| &input[a + 1]["call_id"]), Some(&json!("call_2")));
+        // Once refused, none goes back.
+        let shape = Shape {
+            no_reasoning_back: true,
+            ..Shape::default()
+        };
+        let out = translate(&req, "gpt-5", Api::Responses, &shape);
+        assert!(!out.body["input"].to_string().contains("reasoning"));
+        // Chat Completions: the reasoning text, as `reasoning_content`.
+        let chat = json!({ "messages": [
+            { "role": "user", "content": "Now" },
+            { "role": "assistant", "content": [
+                { "type": "thinking", "thinking": "Let me run it", "signature": Kept::Content.signature() },
+                { "type": "tool_use", "id": "call_3", "name": "Bash", "input": {} }
+            ]},
+            { "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "call_3", "content": "ok" }] },
+        ]});
+        let out = translate(
+            &chat,
+            "deepseek-reasoner",
+            Api::ChatCompletions,
+            &Shape::default(),
+        );
+        assert_eq!(
+            out.body["messages"][1]["reasoning_content"],
+            "Let me run it"
+        );
+    }
+
+    #[test]
+    fn long_call_ids_are_shortened_alike_on_both_sides() {
+        let long = "chatcmpl-tool-0123456789abcdef0123456789abcdef";
+        let req = json!({ "messages": [
+            { "role": "user", "content": "Go" },
+            { "role": "assistant", "content": [{ "type": "tool_use", "id": long, "name": "Bash", "input": {} }] },
+            { "role": "user", "content": [{ "type": "tool_result", "tool_use_id": long, "content": "ok" }] },
+        ]});
+        let out = translate(&req, "m", Api::ChatCompletions, &Shape::default());
+        let m = out.body["messages"].as_array().cloned().unwrap_or_default();
+        let id = m[1]["tool_calls"][0]["id"]
+            .as_str()
+            .unwrap_or("")
+            .to_owned();
+        assert!(id.len() <= 40 && id.starts_with("call_"));
+        assert_eq!(m[2]["tool_call_id"], json!(id));
+        assert_eq!(wire_id("toolu_01ABC"), "toolu_01ABC");
+    }
+
+    #[test]
+    fn descriptions_too_long_for_the_model_go_whole_in_the_system_prompt() {
+        let long = "Run a command. ".repeat(200);
+        let req = json!({
+            "system": "You are Claude Code.",
+            "tools": [{ "name": "Bash", "description": long, "input_schema": { "type": "object" } }],
+            "messages": [{ "role": "user", "content": "hi" }],
+        });
+        let shape = Shape {
+            description_max: Some(1024),
+            ..Shape::default()
+        };
+        let out = translate(&req, "m", Api::ChatCompletions, &shape);
+        let d = out.body["tools"][0]["function"]["description"]
+            .as_str()
+            .unwrap_or("");
+        assert!(d.chars().count() <= 1024, "{}", d.len());
+        let system = out.body["messages"][0]["content"].as_str().unwrap_or("");
+        assert!(system.starts_with("You are Claude Code.") && system.contains(&long));
+    }
+
+    #[test]
+    fn a_model_without_vision_reads_a_note_for_each_image() {
+        let shape = Shape {
+            no_images: true,
+            ..Shape::default()
+        };
+        let out = translate(&conversation(), "m", Api::ChatCompletions, &shape);
+        let text = out.body["messages"].to_string();
+        assert!(!text.contains("image_url") && text.contains("reads no images"));
     }
 
     #[test]

@@ -1,17 +1,24 @@
-//! A streamed Chat Completions answer as Messages API events.
+//! A streamed Chat Completions or Responses API answer as Messages API
+//! events.
 //!
-//! Text streams as it comes. Tool calls are held until the answer ends and
+//! Text streams as it comes, and so does the model's reasoning, as a
+//! thinking block that closes with its signature once the model moves on
+//! ([`crate::reasoning`]). Tool calls are held until the answer ends and
 //! then sent whole, each its own block: providers split them differently
 //! (the name late, several interleaved, all in one chunk), and Claude Code
 //! runs a tool only once its call is complete anyway.
+
+use std::collections::HashSet;
 
 use serde_json::{Value, json};
 
 use crate::Api;
 use crate::errors::ApiError;
+use crate::reasoning::Kept;
 use crate::request::Names;
 use crate::response::{
-    arguments, content_text, message_id, responses_finish, stop_reason, tool_id, usage,
+    FILTERED, Piece, ThinkTags, arguments, chat_reasoning, content_text, message_id,
+    reasoning_item, responses_finish, shows_thinking, stop_reason, tool_id, usage,
 };
 
 /// One server-sent event for Claude Code.
@@ -73,6 +80,15 @@ struct Call {
     args: String,
 }
 
+/// What an open thinking block's signature will say.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Pending {
+    /// A Responses API reasoning item: its signature comes when it's done.
+    Item,
+    Content,
+    Shown,
+}
+
 /// The answer so far, and the events it has made.
 #[derive(Debug)]
 pub(crate) struct Translator {
@@ -81,9 +97,20 @@ pub(crate) struct Translator {
     model: String,
     names: Names,
     estimate: u64,
+    /// Reasoning goes to Claude Code as thinking ([`shows_thinking`]).
+    thinking_shown: bool,
     /// The open text block's index.
     text: Option<usize>,
+    /// The open thinking block's index, and what it will be signed as.
+    thinking: Option<(usize, Pending)>,
     next: usize,
+    /// The answer's own text has begun: whitespace before it is dropped.
+    spoke: bool,
+    tags: ThinkTags,
+    /// Responses API output indices whose text has come.
+    texts: HashSet<u64>,
+    /// The summary part a reasoning item's text is on.
+    summary_part: Option<(u64, u64)>,
     calls: Vec<Call>,
     finish: Option<String>,
     usage: Option<Value>,
@@ -92,6 +119,7 @@ pub(crate) struct Translator {
 }
 
 impl Translator {
+    /// Answers labeled `model`: what Claude Code asked for.
     pub(crate) fn new(api: Api, model: &str, names: Names, estimate: u64) -> Self {
         Self {
             api,
@@ -99,8 +127,14 @@ impl Translator {
             model: model.to_owned(),
             names,
             estimate,
+            thinking_shown: shows_thinking(model),
             text: None,
+            thinking: None,
             next: 0,
+            spoke: false,
+            tags: ThinkTags::default(),
+            texts: HashSet::new(),
+            summary_part: None,
             calls: Vec::new(),
             finish: None,
             usage: None,
@@ -163,14 +197,19 @@ impl Translator {
             self.usage = Some(u.clone());
         }
         let mut out = Vec::new();
+        // Azure's first chunk has no choices: its prompt's filter results.
         let Some(choice) = chunk.pointer("/choices/0") else {
             return Ok(out);
         };
         let delta = choice.get("delta").or_else(|| choice.get("message"));
         if let Some(delta) = delta {
+            let reasoning = chat_reasoning(delta);
+            if !reasoning.is_empty() {
+                out.extend(self.thinking_delta(&reasoning, Pending::Content));
+            }
             let text = content_text(delta.get("content"));
             if !text.is_empty() {
-                out.extend(self.text_delta(&text));
+                out.extend(self.answer_text(&text));
             }
             if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
                 for c in calls {
@@ -184,37 +223,75 @@ impl Translator {
         Ok(out)
     }
 
-    /// One Responses API event: text deltas stream, function calls gather
-    /// by their output index, and `response.completed` (or `.incomplete`)
-    /// ends the answer with its counts.
+    /// One Responses API event: text and reasoning summaries stream,
+    /// function calls gather by their output index, and `response.completed`
+    /// (or `.incomplete`) ends the answer with its counts. Text a server
+    /// sends only whole (in `.done` events, or the completed response) still
+    /// comes through, once.
     fn responses_event(&mut self, ev: &Value) -> Result<Vec<Event>, ApiError> {
         let field = |k: &str| ev.get(k).and_then(Value::as_str);
         let index = ev.get("output_index").and_then(Value::as_u64);
+        let mut out = Vec::new();
         match field("type").unwrap_or("") {
             "response.output_text.delta" | "response.refusal.delta" => {
                 let delta = field("delta").unwrap_or("");
                 if !delta.is_empty() {
-                    return Ok(self.text_delta(delta));
+                    self.texts.extend(index);
+                    out.extend(self.answer_text(delta));
                 }
+            }
+            "response.output_text.done" => {
+                if let Some(text) = field("text")
+                    && index.is_none_or(|i| !self.texts.contains(&i))
+                {
+                    self.texts.extend(index);
+                    out.extend(self.answer_text(text));
+                }
+            }
+            "response.reasoning_summary_text.delta" => {
+                let part = ev.get("summary_index").and_then(Value::as_u64).unwrap_or(0);
+                let at = (index.unwrap_or(0), part);
+                let mut delta = field("delta").unwrap_or("").to_owned();
+                if self.summary_part.is_some_and(|p| p != at) {
+                    delta.insert_str(0, "\n\n");
+                }
+                self.summary_part = Some(at);
+                out.extend(self.thinking_delta(&delta, Pending::Item));
             }
             kind @ ("response.output_item.added" | "response.output_item.done") => {
                 let item = ev.get("item").unwrap_or(&Value::Null);
                 let item_field = |k: &str| item.get(k).and_then(Value::as_str);
-                if item_field("type") == Some("function_call") {
-                    let next = self.calls.len() as u64;
-                    let call = self.call_at(index.unwrap_or(next));
-                    if call.id.is_none() {
-                        call.id = item_field("call_id").map(str::to_owned);
+                match item_field("type") {
+                    Some("function_call") => {
+                        let next = self.calls.len() as u64;
+                        let call = self.call_at(index.unwrap_or(next));
+                        if call.id.is_none() {
+                            call.id = item_field("call_id").map(str::to_owned);
+                        }
+                        if call.name.is_empty() {
+                            call.name = item_field("name").unwrap_or("").to_owned();
+                        }
+                        // The finished item holds the whole arguments.
+                        if let Some(args) = item_field("arguments").filter(|a| !a.is_empty())
+                            && kind == "response.output_item.done"
+                        {
+                            call.args = args.to_owned();
+                        }
                     }
-                    if call.name.is_empty() {
-                        call.name = item_field("name").unwrap_or("").to_owned();
+                    Some("reasoning") if kind == "response.output_item.done" => {
+                        out.extend(self.reasoning_done(item));
                     }
-                    // The finished item holds the whole arguments.
-                    if let Some(args) = item_field("arguments").filter(|a| !a.is_empty())
-                        && kind == "response.output_item.done"
+                    Some("message")
+                        if kind == "response.output_item.done"
+                            && index.is_none_or(|i| !self.texts.contains(&i)) =>
                     {
-                        call.args = args.to_owned();
+                        self.texts.extend(index);
+                        let text = content_text(item.get("content"));
+                        if !text.is_empty() {
+                            out.extend(self.answer_text(&text));
+                        }
                     }
+                    _ => {}
                 }
             }
             "response.function_call_arguments.delta" => {
@@ -234,6 +311,10 @@ impl Translator {
                 if let Some(u) = resp.get("usage").filter(|u| u.is_object()) {
                     self.usage = Some(u.clone());
                 }
+                // A server that sent nothing on the way: the whole output.
+                if self.next == 0 && self.calls.is_empty() && self.thinking.is_none() {
+                    out.extend(self.whole_output(resp));
+                }
                 self.finish = Some(responses_finish(resp).unwrap_or("stop").to_owned());
                 self.done = true;
             }
@@ -244,7 +325,54 @@ impl Translator {
             "error" => return Err(ApiError::in_stream(ev)),
             _ => {}
         }
-        Ok(Vec::new())
+        Ok(out)
+    }
+
+    /// A completed response's output, for a server that streamed none of it.
+    fn whole_output(&mut self, resp: &Value) -> Vec<Event> {
+        let mut out = Vec::new();
+        for (i, item) in resp
+            .get("output")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            match item.get("type").and_then(Value::as_str) {
+                Some("reasoning") => out.extend(self.reasoning_done(item)),
+                Some("message") => {
+                    let text = content_text(item.get("content"));
+                    if !text.is_empty() {
+                        out.extend(self.answer_text(&text));
+                    }
+                }
+                Some("function_call") => {
+                    let field = |k: &str| item.get(k).and_then(Value::as_str);
+                    let call = self.call_at(i as u64);
+                    call.id = field("call_id").or_else(|| field("id")).map(str::to_owned);
+                    call.name = field("name").unwrap_or("").to_owned();
+                    call.args = field("arguments").unwrap_or("").to_owned();
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// A Responses API reasoning item is done: the thinking block its
+    /// summary streamed into closes with its signature, or, when no summary
+    /// came, one opens and closes for it.
+    fn reasoning_done(&mut self, item: &Value) -> Vec<Event> {
+        self.summary_part = None;
+        let Some((summary, kept)) = reasoning_item(item) else {
+            return self.close_thinking(None);
+        };
+        let mut out = Vec::new();
+        if !matches!(self.thinking, Some((_, Pending::Item))) {
+            out.extend(self.thinking_delta(&summary, Pending::Item));
+        }
+        out.extend(self.close_thinking(Some(kept)));
+        out
     }
 
     /// The call at output `index`, new if it isn't there yet.
@@ -262,8 +390,27 @@ impl Translator {
         &mut self.calls[at]
     }
 
-    fn text_delta(&mut self, text: &str) -> Vec<Event> {
+    /// The answer's text as it comes: `<think>` reasoning split off, the
+    /// whitespace before the first words dropped.
+    fn answer_text(&mut self, text: &str) -> Vec<Event> {
+        let pieces = self.tags.push(text);
         let mut out = Vec::new();
+        for p in pieces {
+            match p {
+                Piece::Thinking(t) => out.extend(self.thinking_delta(&t, Pending::Shown)),
+                Piece::Text(t) => out.extend(self.text_delta(&t)),
+            }
+        }
+        out
+    }
+
+    fn text_delta(&mut self, text: &str) -> Vec<Event> {
+        let text = if self.spoke { text } else { text.trim_start() };
+        if text.is_empty() {
+            return Vec::new();
+        }
+        self.spoke = true;
+        let mut out = self.close_thinking(None);
         let index = match self.text {
             Some(i) => i,
             None => {
@@ -285,6 +432,64 @@ impl Translator {
                     "delta": { "type": "text_delta", "text": text } }),
         ));
         out
+    }
+
+    /// Reasoning as it comes, into the open thinking block (one opens after
+    /// whatever was open).
+    fn thinking_delta(&mut self, text: &str, pending: Pending) -> Vec<Event> {
+        let opens = self.thinking.as_ref().is_none_or(|(_, p)| *p != pending);
+        let text = if opens { text.trim_start() } else { text };
+        if !self.thinking_shown || text.is_empty() {
+            return Vec::new();
+        }
+        self.output_chars += text.len();
+        let mut out = Vec::new();
+        if self.thinking.as_ref().is_some_and(|(_, p)| *p != pending) {
+            out.extend(self.close_thinking(None));
+        }
+        if let Some(i) = self.text.take() {
+            out.push(stop(i));
+        }
+        let index = match &self.thinking {
+            Some((i, _)) => *i,
+            None => {
+                let i = self.next;
+                self.next += 1;
+                self.thinking = Some((i, pending));
+                out.push(Event(
+                    "content_block_start",
+                    json!({ "type": "content_block_start", "index": i,
+                            "content_block": { "type": "thinking", "thinking": "", "signature": "" } }),
+                ));
+                i
+            }
+        };
+        out.push(Event(
+            "content_block_delta",
+            json!({ "type": "content_block_delta", "index": index,
+                    "delta": { "type": "thinking_delta", "thinking": text } }),
+        ));
+        out
+    }
+
+    /// Close the open thinking block, signed as `kept` says (a reasoning
+    /// item's), else as what it holds.
+    fn close_thinking(&mut self, kept: Option<Kept>) -> Vec<Event> {
+        let Some((i, pending)) = self.thinking.take() else {
+            return Vec::new();
+        };
+        let kept = kept.unwrap_or(match pending {
+            Pending::Content => Kept::Content,
+            Pending::Item | Pending::Shown => Kept::Shown,
+        });
+        vec![
+            Event(
+                "content_block_delta",
+                json!({ "type": "content_block_delta", "index": i,
+                        "delta": { "type": "signature_delta", "signature": kept.signature() } }),
+            ),
+            stop(i),
+        ]
     }
 
     fn call_delta(&mut self, c: &Value) {
@@ -322,10 +527,24 @@ impl Translator {
         self.output_chars += c.to_string().len() / 2;
     }
 
-    /// The end: the open text block closes, the tool calls go out, then the
-    /// stop reason and the provider's counts.
+    /// The end: what `<think>` still held, the open blocks close, the tool
+    /// calls go out, then the stop reason and the provider's counts.
     pub(crate) fn finish(&mut self) -> Vec<Event> {
         let mut out = Vec::new();
+        match self.tags.finish() {
+            Some(Piece::Text(t)) => out.extend(self.text_delta(&t)),
+            Some(Piece::Thinking(t)) => out.extend(self.thinking_delta(&t, Pending::Shown)),
+            None => {}
+        }
+        if self.finish.as_deref() == Some("content_filter") {
+            let note = if self.spoke {
+                format!("\n\n{FILTERED}")
+            } else {
+                FILTERED.to_owned()
+            };
+            out.extend(self.text_delta(&note));
+        }
+        out.extend(self.close_thinking(None));
         if let Some(i) = self.text.take() {
             out.push(stop(i));
         }
@@ -334,6 +553,7 @@ impl Translator {
             .filter(|c| !c.name.is_empty())
             .collect();
         let called = !calls.is_empty();
+        let mut used = HashSet::new();
         for c in calls {
             let i = self.next;
             self.next += 1;
@@ -341,7 +561,7 @@ impl Translator {
                 "content_block_start",
                 json!({ "type": "content_block_start", "index": i, "content_block": {
                     "type": "tool_use",
-                    "id": tool_id(c.id.as_deref()),
+                    "id": tool_id(c.id.as_deref(), &mut used),
                     "name": self.names.original(&c.name),
                     "input": {},
                 }}),
@@ -405,6 +625,22 @@ pub(crate) fn events_for(message: &Value) -> Vec<Event> {
                 json!({ "type": "content_block_delta", "index": i,
                         "delta": { "type": "input_json_delta", "partial_json": block["input"].to_string() } }),
             ));
+        } else if block["type"] == "thinking" {
+            out.push(Event(
+                "content_block_start",
+                json!({ "type": "content_block_start", "index": i,
+                        "content_block": { "type": "thinking", "thinking": "", "signature": "" } }),
+            ));
+            out.push(Event(
+                "content_block_delta",
+                json!({ "type": "content_block_delta", "index": i,
+                        "delta": { "type": "thinking_delta", "thinking": block["thinking"] } }),
+            ));
+            out.push(Event(
+                "content_block_delta",
+                json!({ "type": "content_block_delta", "index": i,
+                        "delta": { "type": "signature_delta", "signature": block["signature"] } }),
+            ));
         } else {
             out.push(Event(
                 "content_block_start",
@@ -434,6 +670,7 @@ pub(crate) fn events_for(message: &Value) -> Vec<Event> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reasoning::Kept;
 
     fn names(events: &[Event]) -> Vec<&'static str> {
         events.iter().map(|e| e.0).collect()
@@ -570,8 +807,8 @@ mod tests {
         feed(
             &mut t,
             &[
-                r#"{"choices":[{"delta":{"tool_calls":[{"id":"a","function":{"name":"Bash","arguments":{"command":"ls"}}}]}}]}"#,
-                r#"{"choices":[{"delta":{"tool_calls":[{"id":"b","function":{"name":"Read","arguments":"{}"}}]},"finish_reason":"stop"}]}"#,
+                r#"{"choices":[{"delta":{"tool_calls":[{"id":"call_a1","function":{"name":"Bash","arguments":{"command":"ls"}}}]}}]}"#,
+                r#"{"choices":[{"delta":{"tool_calls":[{"id":"call_b2","function":{"name":"Read","arguments":"{}"}}]},"finish_reason":"stop"}]}"#,
             ],
         );
         let events = t.finish();
@@ -580,10 +817,158 @@ mod tests {
             .filter(|e| e.0 == "content_block_start")
             .map(|e| &e.1["content_block"]["id"])
             .collect();
-        assert_eq!(starts, [&json!("a"), &json!("b")]);
+        assert_eq!(starts, [&json!("call_a1"), &json!("call_b2")]);
         assert_eq!(events[1].1["delta"]["partial_json"], r#"{"command":"ls"}"#);
         // `stop` after tool calls is still a tool use.
         assert_eq!(events[6].1["delta"]["stop_reason"], "tool_use");
+    }
+
+    #[test]
+    fn ids_a_server_repeats_or_numbers_are_made_unique() {
+        let mut t = Translator::new(Api::ChatCompletions, "m", Names::default(), 0);
+        feed(
+            &mut t,
+            &[
+                r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"0","function":{"name":"Bash","arguments":"{}"}},{"index":1,"id":"call_same","function":{"name":"Read","arguments":"{}"}},{"index":2,"id":"call_same","function":{"name":"Grep","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}"#,
+            ],
+        );
+        let ids: Vec<String> = t
+            .finish()
+            .iter()
+            .filter(|e| e.0 == "content_block_start")
+            .filter_map(|e| e.1["content_block"]["id"].as_str().map(str::to_owned))
+            .collect();
+        assert_eq!(ids.len(), 3);
+        assert!(ids[0].starts_with("toolu_"));
+        assert_eq!(ids[1], "call_same");
+        assert!(ids[2].starts_with("toolu_"));
+    }
+
+    /// The events' blocks, as Claude Code assembles them: (type, text or
+    /// thinking, signature).
+    fn blocks(events: &[Event]) -> Vec<(String, String, String)> {
+        let mut out: Vec<(String, String, String)> = Vec::new();
+        for e in events {
+            match e.0 {
+                "content_block_start" => out.push((
+                    e.1["content_block"]["type"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_owned(),
+                    String::new(),
+                    String::new(),
+                )),
+                "content_block_delta" => {
+                    let d = &e.1["delta"];
+                    if let Some(last) = out.last_mut() {
+                        for k in ["text", "thinking", "partial_json"] {
+                            last.1.push_str(d[k].as_str().unwrap_or(""));
+                        }
+                        last.2.push_str(d["signature"].as_str().unwrap_or(""));
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn reasoning_streams_as_thinking_signed_for_going_back() {
+        let mut t = Translator::new(Api::Responses, "gpt-5", Names::default(), 0);
+        let mut events = feed(
+            &mut t,
+            &[
+                r#"{"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_1","summary":[]}}"#,
+                r#"{"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":"**Plan**"}"#,
+                r#"{"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":1,"delta":"Then run."}"#,
+                r#"{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"**Plan**"},{"type":"summary_text","text":"Then run."}],"encrypted_content":"gAAA"}}"#,
+                r#"{"type":"response.output_item.added","output_index":1,"item":{"type":"message","content":[]}}"#,
+                r#"{"type":"response.output_text.delta","output_index":1,"delta":"\n\nRunning it."}"#,
+                r#"{"type":"response.output_text.done","output_index":1,"text":"\n\nRunning it."}"#,
+                r#"{"type":"response.output_item.done","output_index":1,"item":{"type":"message","content":[{"type":"output_text","text":"\n\nRunning it."}]}}"#,
+                r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":5,"output_tokens":5}}}"#,
+            ],
+        );
+        events.extend(t.finish());
+        let b = blocks(&events);
+        assert_eq!(b.len(), 2);
+        assert_eq!(b[0].0, "thinking");
+        assert_eq!(b[0].1, "**Plan**\n\nThen run.");
+        assert_eq!(
+            Kept::read(&b[0].2),
+            Some(Kept::Item {
+                id: "rs_1".into(),
+                encrypted: "gAAA".into()
+            })
+        );
+        // The text once, without the blank lines it began with.
+        assert_eq!(b[1], ("text".into(), "Running it.".into(), String::new()));
+
+        // Under one of Claude's names, no thinking at all.
+        let mut t = Translator::new(Api::Responses, "claude-opus-5-5", Names::default(), 0);
+        let events = feed(
+            &mut t,
+            &[r#"{"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"x"}"#],
+        );
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn think_tags_and_reasoning_content_become_thinking() {
+        let mut t = Translator::new(Api::ChatCompletions, "DeepSeek-R1", Names::default(), 0);
+        let mut events = feed(
+            &mut t,
+            &[
+                r#"{"choices":[],"prompt_filter_results":[{"prompt_index":0}]}"#,
+                r#"{"choices":[{"delta":{"content":"<thi"}}]}"#,
+                r#"{"choices":[{"delta":{"content":"nk>\nHmm, ls.</th"}}]}"#,
+                r#"{"choices":[{"delta":{"content":"ink>\n\nOn it."}}]}"#,
+                r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+                "[DONE]",
+            ],
+        );
+        events.extend(t.finish());
+        let b = blocks(&events);
+        assert_eq!(b[0].0, "thinking");
+        assert_eq!(b[0].1, "Hmm, ls.");
+        assert_eq!(Kept::read(&b[0].2), Some(Kept::Shown));
+        assert_eq!(b[1], ("text".into(), "On it.".into(), String::new()));
+
+        let mut t = Translator::new(
+            Api::ChatCompletions,
+            "deepseek-reasoner",
+            Names::default(),
+            0,
+        );
+        let mut events = feed(
+            &mut t,
+            &[
+                r#"{"choices":[{"delta":{"reasoning_content":"Look first."}}]}"#,
+                r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_x1","function":{"name":"Bash","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}"#,
+                "[DONE]",
+            ],
+        );
+        events.extend(t.finish());
+        let b = blocks(&events);
+        assert_eq!(b[0].1, "Look first.");
+        assert_eq!(Kept::read(&b[0].2), Some(Kept::Content));
+        assert_eq!(b[1].0, "tool_use");
+    }
+
+    #[test]
+    fn a_server_that_streams_nothing_but_the_end_still_answers() {
+        let mut t = Translator::new(Api::Responses, "m", Names::default(), 0);
+        let mut events = feed(
+            &mut t,
+            &[
+                r#"{"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Hi."}]},{"type":"function_call","call_id":"call_z9","name":"Bash","arguments":"{}"}]}}"#,
+            ],
+        );
+        events.extend(t.finish());
+        let b = blocks(&events);
+        assert_eq!(b[0], ("text".into(), "Hi.".into(), String::new()));
+        assert_eq!(b[1].0, "tool_use");
     }
 
     #[test]

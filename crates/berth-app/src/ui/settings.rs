@@ -583,6 +583,20 @@ impl SettingsForm {
                 .items_center()
                 .child(super::kit::bare_input(input))
         };
+        // An Azure OpenAI resource: its v1 API, and models by deployment.
+        let upstream = berth_proxy::Upstream {
+            base_url: p.base_url.clone(),
+            ..berth_proxy::Upstream::default()
+        };
+        let url_note: SharedString = if upstream.is_azure() {
+            format!(
+                "Azure: Berth speaks its v1 API, {}. Add each model by its deployment's name.",
+                upstream.endpoint("")
+            )
+            .into()
+        } else {
+            "Its API's root, as https://api.openai.com/v1, http://localhost:11434/v1, or an Azure OpenAI resource's URL".into()
+        };
         let url = field_row(t, "Base URL", false).child(
             div()
                 .flex()
@@ -591,9 +605,7 @@ impl SettingsForm {
                 .min_w_0()
                 .gap(px(4.))
                 .child(div().flex().child(field(&self.provider_url, cx)))
-                .child(div().ty(ty::META).text_color(t.text3).child(
-                    "Its API's root, as https://api.openai.com/v1 or http://localhost:11434/v1",
-                )),
+                .child(div().ty(ty::META).text_color(t.text3).child(url_note)),
         );
         let api_seg = |id: &'static str,
                        label: &'static str,
@@ -618,10 +630,10 @@ impl SettingsForm {
         };
         let api_note = match p.api {
             ProviderApi::Responses => {
-                "OpenAI's current API, and the only one Codex models take; not every server has it."
+                "OpenAI's current API, and the only one Codex models take. A model or server without it gets Chat Completions."
             }
             ProviderApi::ChatCompletions => {
-                "What most compatible servers speak: DeepSeek, Ollama, vLLM, LM Studio."
+                "What most compatible servers speak: DeepSeek, Ollama, vLLM, LM Studio. A model that takes only the Responses API gets it."
             }
         };
         let api = field_row(t, "API", false).child(

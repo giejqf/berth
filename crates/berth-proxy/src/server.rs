@@ -28,7 +28,7 @@ use crate::request::{Outgoing, estimate_request, translate};
 use crate::response;
 use crate::shape::Shape;
 use crate::stream::{Event, SseLines, Translator, events_for};
-use crate::{Api, Upstream};
+use crate::{Api, Effort, Upstream};
 
 type Body = UnsyncBoxBody<Bytes, Infallible>;
 
@@ -38,6 +38,17 @@ const PING_EVERY: Duration = Duration::from_secs(10);
 
 /// The largest request Claude Code sends (images included).
 const MAX_BODY: usize = 64 << 20;
+
+/// How many times a request goes again in a shape the model takes.
+const ATTEMPTS: usize = 8;
+
+/// What one of Berth's sessions asks of its requests (ADR 0037).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionPrefs {
+    /// The slot's effort, as the model's reasoning effort; `None` leaves it
+    /// to the provider.
+    pub effort: Option<Effort>,
+}
 
 /// The server, for as long as this value lives.
 pub struct Proxy {
@@ -52,6 +63,8 @@ struct State {
     client: reqwest::Client,
     /// Each upstream model's shape, as learned ([`Shape`]).
     shapes: Mutex<HashMap<String, Shape>>,
+    /// Each session's wishes, by the id its token ends with.
+    sessions: RwLock<HashMap<String, SessionPrefs>>,
 }
 
 impl State {
@@ -100,6 +113,7 @@ impl Proxy {
             upstream: RwLock::new(None),
             client,
             shapes: Mutex::default(),
+            sessions: RwLock::default(),
         });
         let serving = state.clone();
         let task = tokio::spawn(async move {
@@ -144,6 +158,32 @@ impl Proxy {
         &self.state.token
     }
 
+    /// The token for one of Berth's sessions, `id`: its requests carry
+    /// `prefs`, which [`Self::set_session`] changes mid-session.
+    #[must_use]
+    pub fn session_token(&self, id: &str, prefs: SessionPrefs) -> String {
+        self.set_session(id, prefs);
+        format!("{}.{id}", self.state.token)
+    }
+
+    /// What session `id` asks of its requests from the next one on.
+    pub fn set_session(&self, id: &str, prefs: SessionPrefs) {
+        self.state
+            .sessions
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(id.to_owned(), prefs);
+    }
+
+    /// Session `id` is over.
+    pub fn end_session(&self, id: &str) {
+        self.state
+            .sessions
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(id);
+    }
+
     /// The upstream from the next request on; `None` refuses them. A new
     /// server forgets what the old one's models refused.
     pub fn configure(&self, upstream: Option<Upstream>) {
@@ -172,19 +212,32 @@ impl Drop for Proxy {
 
 async fn handle(state: Arc<State>, req: Request<Incoming>) -> Response<Body> {
     let path = req.uri().path().to_owned();
-    if matches!(*req.method(), Method::GET | Method::HEAD) && path == "/" {
+    // Claude Code's look at whether its API is up.
+    if matches!(*req.method(), Method::GET | Method::HEAD)
+        && matches!(path.as_str(), "/" | "/api/hello")
+    {
         return json_response(200, &json!({}));
     }
-    if !authorized(&state.token, &req) {
+    let Some(session) = authorized(&state.token, &req) else {
         return error_response(&ApiError::new(
             401,
             "authentication_error",
             "This is Berth's model provider proxy: only Berth's agents can use it.",
         ));
-    }
+    };
+    let prefs = session
+        .and_then(|id| {
+            state
+                .sessions
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&id)
+                .cloned()
+        })
+        .unwrap_or_default();
     let upstream = state.upstream().unwrap_or_default();
     match (req.method().clone(), path.as_str()) {
-        (Method::POST, "/v1/messages") => messages(&state, req).await,
+        (Method::POST, "/v1/messages") => messages(&state, req, &prefs).await,
         (Method::POST, "/v1/messages/count_tokens") => match read_json(req).await {
             Ok(body) => json_response(200, &json!({ "input_tokens": estimate_request(&body) })),
             Err(e) => error_response(&e),
@@ -205,10 +258,19 @@ async fn handle(state: Arc<State>, req: Request<Incoming>) -> Response<Body> {
     }
 }
 
-fn authorized(token: &str, req: &Request<Incoming>) -> bool {
+/// Whether the request carries the token (`Some`), and the session it
+/// names (`token.<session>`), if any.
+fn authorized(token: &str, req: &Request<Incoming>) -> Option<Option<String>> {
     let header = |name: &str| req.headers().get(name).and_then(|v| v.to_str().ok());
-    header("x-api-key") == Some(token)
-        || header("authorization").and_then(|a| a.strip_prefix("Bearer ")) == Some(token)
+    let given = header("x-api-key")
+        .or_else(|| header("authorization").and_then(|a| a.strip_prefix("Bearer ")))?;
+    let rest = given.strip_prefix(token)?;
+    if rest.is_empty() {
+        return Some(None);
+    }
+    rest.strip_prefix('.')
+        .filter(|id| !id.is_empty())
+        .map(|id| Some(id.to_owned()))
 }
 
 async fn read_json(req: Request<Incoming>) -> Result<Value, ApiError> {
@@ -221,7 +283,7 @@ async fn read_json(req: Request<Incoming>) -> Result<Value, ApiError> {
         .map_err(|e| ApiError::new(400, "invalid_request_error", format!("not JSON: {e}")))
 }
 
-async fn messages(state: &State, req: Request<Incoming>) -> Response<Body> {
+async fn messages(state: &State, req: Request<Incoming>, prefs: &SessionPrefs) -> Response<Body> {
     let body = match read_json(req).await {
         Ok(v) => v,
         Err(e) => return error_response(&e),
@@ -248,13 +310,12 @@ async fn messages(state: &State, req: Request<Incoming>) -> Response<Body> {
     } else {
         requested
     };
-    let out = translate(&body, &model, up.api);
-    tracing::debug!(%model, stream = out.stream, "proxy request");
     let host = up.host();
-    let resp = match send(state, &up, &model, &out).await {
+    let (resp, out, api) = match send(state, &up, &model, &body, prefs).await {
         Ok(r) => r,
         Err(e) => return error_response(&e),
     };
+    tracing::debug!(%model, ?api, stream = out.stream, "proxy request");
     let streamed = resp
         .headers()
         .get(CONTENT_TYPE)
@@ -263,7 +324,7 @@ async fn messages(state: &State, req: Request<Incoming>) -> Response<Body> {
     if out.stream && streamed {
         return stream_response(
             resp,
-            Translator::new(up.api, echoed, out.names, out.estimate),
+            Translator::new(api, echoed, out.names, out.estimate),
             host,
         );
     }
@@ -284,7 +345,7 @@ async fn messages(state: &State, req: Request<Incoming>) -> Response<Body> {
     if let (Some(err), None) = (err, v.get("choices")) {
         return error_response(&ApiError::in_stream(err));
     }
-    let message = response::message(&v, up.api, echoed, &out.names, out.estimate);
+    let message = response::message(&v, api, echoed, &out.names, out.estimate);
     if out.stream {
         sse_response(&events_for(&message))
     } else {
@@ -292,47 +353,64 @@ async fn messages(state: &State, req: Request<Incoming>) -> Response<Body> {
     }
 }
 
-/// The request upstream, sent again in the shape the model takes when it
-/// refuses one (at most a few times).
+/// The request upstream in the API and shape the model takes, sent again
+/// in another when it refuses one (a few times). What was learned is kept
+/// for the model's next requests once a request in it went through.
 async fn send(
     state: &State,
     up: &Upstream,
     model: &str,
-    out: &Outgoing,
-) -> Result<reqwest::Response, ApiError> {
+    req: &Value,
+    prefs: &SessionPrefs,
+) -> Result<(reqwest::Response, Outgoing, Api), ApiError> {
     let host = up.host();
-    let mut shape = state.shape(model);
+    let known = state.shape(model);
+    let mut shape = known.clone();
     let window = up.window(model);
     // A smaller max_tokens for this request alone: what the model's window
     // leaves after the prompt, as far as it is known.
-    let mut budget = window.and_then(|w| fit(out.max_tokens?, out.estimate, w));
-    for _ in 0..4 {
+    let mut budget = None;
+    let mut fitted = false;
+    for _ in 0..ATTEMPTS {
+        let api = shape.api.unwrap_or(up.api);
+        let out = translate(req, model, api, &shape);
+        if !fitted {
+            budget = window.and_then(|w| fit(out.max_tokens?, out.estimate, w));
+            fitted = true;
+        }
+        // The slot's effort, for a request Claude Code asks the model to
+        // think in; others are left to the provider.
+        let effort = prefs.effort.filter(|_| out.thinking);
         let max_tokens = budget.or(out.max_tokens);
         let mut body = out.body.clone();
-        shape.apply(&mut body, max_tokens, up.api);
-        let mut req = state.client.post(up.endpoint(up.api.path())).json(&body);
-        if let Some(key) = up.api_key.as_deref().filter(|k| !k.is_empty()) {
-            req = req.bearer_auth(key);
-        }
-        let resp = req
+        shape.apply(&mut body, max_tokens, api, effort);
+        let request = up.authorize(state.client.post(up.endpoint(api.path())).json(&body));
+        let resp = request
             .send()
             .await
             .map_err(|e| ApiError::unreachable(&host, &describe(&e)))?;
         let status = resp.status().as_u16();
         if (200..300).contains(&status) {
-            return Ok(resp);
+            if shape != known {
+                state.remember(model, &shape);
+            }
+            return Ok((resp, out, api));
         }
+        let retry_after = ["retry-after", "retry-after-ms"]
+            .iter()
+            .find_map(|h| resp.headers().get(*h))
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
         let text = resp.text().await.unwrap_or_default();
-        if matches!(status, 400 | 422) {
-            let (message, param) = upstream_message(&text);
+        let (message, param) = upstream_message(&text);
+        if matches!(status, 400 | 404 | 422) && !filtered(&text) {
             let sent = max_tokens.map(|k| shape.max_tokens.map_or(k, |cap| k.min(cap)));
-            if let Some(next) = shape.adjust(&message, param.as_deref(), sent) {
+            if let Some(next) = shape.adjust(&message, param.as_deref(), sent, api) {
                 tracing::info!(
                     model,
                     ?next,
                     "the model refused the request's shape; sending it again"
                 );
-                state.remember(model, &next);
                 shape = next;
                 continue;
             }
@@ -344,34 +422,41 @@ async fn send(
                 continue;
             }
         }
-        tracing::warn!(model, status, "the provider refused a request");
-        if up.api == Api::Responses && matches!(status, 404 | 405) {
-            let (message, _) = upstream_message(&text);
-            // "The model `x` does not exist" is about the model, not the API.
-            if !message.to_ascii_lowercase().contains("model") {
-                return Err(ApiError::new(
-                    404,
-                    "not_found_error",
-                    format!(
-                        "{host} has no Responses API ({}): choose Chat Completions in Berth's Settings › Model provider.",
-                        up.endpoint(up.api.path())
-                    ),
-                ));
-            }
+        tracing::warn!(model, status, ?api, "the provider refused a request");
+        if status == 404 && text.contains("DeploymentNotFound") {
+            return Err(ApiError::new(
+                404,
+                "not_found_error",
+                format!(
+                    "{host} has no deployment named \u{201c}{model}\u{201d}. On Azure a model is its deployment's name: add that name in Berth's Settings › Model provider."
+                ),
+            ));
         }
-        return Err(ApiError::from_upstream(
-            status,
-            &text,
-            &host,
-            out.estimate,
-            window,
-        ));
+        // A server with no Responses API (404 for the path, not the model):
+        // this model goes by Chat Completions, as the next request will.
+        if api == Api::Responses
+            && matches!(status, 404 | 405)
+            && !message.to_ascii_lowercase().contains("model")
+            && shape.api.is_none()
+        {
+            tracing::info!(model, "no Responses API there; Chat Completions instead");
+            shape.api = Some(Api::ChatCompletions);
+            continue;
+        }
+        let mut e = ApiError::from_upstream(status, &text, &host, estimate_request(req), window);
+        e.retry_after = retry_after;
+        return Err(e);
     }
     Err(ApiError::new(
         400,
         "invalid_request_error",
         format!("{host} kept refusing the request"),
     ))
+}
+
+/// Azure's content filter refused the prompt: nothing about its shape.
+fn filtered(body: &str) -> bool {
+    body.contains("content_filter") || body.contains("content management policy")
 }
 
 /// An output budget that leaves the prompt room in the model's `window`: the
@@ -485,7 +570,15 @@ fn json_response(status: u16, v: &Value) -> Response<Body> {
 }
 
 fn error_response(e: &ApiError) -> Response<Body> {
-    json_response(e.status, &e.body())
+    let mut resp = json_response(e.status, &e.body());
+    if let Some(wait) = e
+        .retry_after
+        .as_deref()
+        .and_then(|w| hyper::header::HeaderValue::from_str(w).ok())
+    {
+        resp.headers_mut().insert("retry-after", wait);
+    }
+    resp
 }
 
 /// A client error with what lies under it ("Connection refused"), which

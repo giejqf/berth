@@ -53,7 +53,9 @@ and Berth's protocol stay Claude Code's. Only the model behind it changes.
    so a conversation can go back to Claude without blocks Anthropic would
    refuse. Text streams as it comes; tool calls are sent whole once the
    answer ends (providers split them every which way). A ping goes out after
-   10 s of nothing, so a reasoning model's silence never looks stalled.
+   10 s of nothing, so a reasoning model's silence never looks stalled. (Amended by ADR 0037: the model's reasoning comes back as thinking
+   Berth signs, which Claude Code drops before a conversation goes on with
+   Claude.)
 4. **Errors read as Anthropic's.** 401, 403, 404, 429 and 5xx map to their
    Messages API types (503 to `overloaded_error`), each message naming the
    host. A context window overflow, in any provider's wording, becomes
@@ -76,12 +78,14 @@ and Berth's protocol stay Claude Code's. Only the model behind it changes.
    `inside` slots sign their agent in themselves (§6.1) and are not routed:
    the proxy listens on the host's loopback.
 7. **Models per slot, per provider.** The picker (⌘⇧M) and Settings' default
-   offer the provider's models under it; they take no effort. A slot keeps
+   offer the provider's models under it; they take no effort. (Amended by
+   ADR 0037: the effort is the model's reasoning effort.) A slot keeps
    the model it was given under each provider and runs on the other's
    default meanwhile (`Provider::slot_model`): switching back finds it.
 8. **Switching** restarts host sessions as an account switch does (ADR 0017):
    each once it is quiet; the next prompt resumes the conversation by id on
-   the other provider. Claude Code's plan limits and account are hidden under
+   the other provider. (Amended by ADR 0037: the proxy keeps serving a round
+   that started on the API until it ends.) Claude Code's plan limits and account are hidden under
    the provider, and its sessions' reports of them, and of Claude's models,
    are ignored. The "Claude Code" row in Settings, the footer and Welcome say
    what agents run on ("via openrouter.ai"); without a URL or a model, agents

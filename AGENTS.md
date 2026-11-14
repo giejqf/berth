@@ -191,7 +191,7 @@ berth/
 | Terminal | `alacritty_terminal` (Apache-2.0) for the PTY, the parser and the grid; Berth draws it | One shell per terminal on a PTY thread; the view only paints cells and sends bytes (ADR 0005). |
 | Visual system | Gruvbox tokens in `theme.rs` (dark and light), IBM Plex Sans 13/18 and JetBrains Mono 12, bundled (SIL OFL 1.1: fonts are data, compatible with MIT) | Sizes follow the design *as rendered* (its CSS adds padding/borders to stated widths). Text renders without CoreGraphics stroke dilation: Berth sets `AppleFontSmoothing = 0` in its own defaults domain at launch (ADR 0003). |
 | GitHub | `gh` CLI with `--json`, reusing the user's auth | No GitHub API client crate. |
-| Model provider | Claude Code's account, or an OpenAI-compatible API through `berth-proxy` (hyper server, reqwest client with rustls and the Mac's certificates and proxy settings), in its Responses API or Chat Completions | The proxy listens on `127.0.0.1` with a per-launch token; the API key stays in the Keychain and the app (ADR 0023, ADR 0025). |
+| Model provider | Claude Code's account, or an OpenAI-compatible API through `berth-proxy` (hyper server, reqwest client with rustls and the Mac's certificates and proxy settings), in its Responses API or Chat Completions | The proxy listens on `127.0.0.1` with a per-launch token (one per session, which carries its effort); the API key stays in the Keychain and the app (ADR 0023, ADR 0025, ADR 0037). |
 | Secrets | macOS Keychain via `security-framework` | Never written to SQLite or disk. |
 | Sidecar runtime | Node 22+, pnpm, `tsx` in dev, bundled with `esbuild` for release | Bundle shipped inside the app at `Contents/Resources/sidecar/` without the SDK, run from its copy in `~/Library/Application Support/Berth/sidecar/` (`BERTH_SIDECAR_BUNDLE`), where the app installs the SDK beside it and Claude Code in `claude-code/<version>/`: that exact version from npm, checked against the lockfile's SHA-512, at launch and before any sidecar runs (`backend/agent_sdk.rs`; Settings and Welcome show the download; ADR 0029). Claude binary: `$BERTH_CLAUDE_PATH` (host sidecars get the installed one), else the SDK's own (dev). Node: `node` on the login shell's `PATH` (`shell_env.rs`: read at launch, 3 s at most, while the main thread sets the font default; a shell that takes longer is stopped with what it started, and Berth goes on with the `PATH` it was given), else where Homebrew, MacPorts, Volta, mise, asdf, nodenv, n, nvm or fnm put it (`backend/launch.rs`; nvm's setup in `~/.zshrc` never reaches a login shell), looked up for each sidecar; without it, or older than 22, host agents don't start and the UI says so. TypeScript 6 (typescript-eslint does not support 7 yet), zod 4. |
 | Dev overrides | `BERTH_HOME` (app data), `BERTH_CONFIG_DIR` (slots/connectors), `BERTH_LOG_DIR`, `BERTH_SECRETS=memory`, `BERTH_SIDECAR` (command line), `BERTH_THEME=light\|dark`, `BERTH_UPDATE_URL` (the releases list update reminders read, ADR 0036), `BERTH_DEV_SEED=<scenario>` (devtools) | Never needed in normal use. |
@@ -1072,26 +1072,46 @@ settles nothing (ADR 0013).
   **Stop all**. A stopped task says "Stopping…" until Claude Code reports it gone.
   Interrupt (⌘.) ends only the turn: Berth declares `perTaskStopAffordance`, so
   background tasks go on until stopped here.
-- **Model provider** (ADR 0023; `crates/berth-proxy`, `backend/provider.rs`,
+- **Model provider** (ADR 0023, ADR 0037; `crates/berth-proxy`, `backend/provider.rs`,
   `berth_core::provider`): Settings › Model provider switches agents on this Mac
-  between Claude Code's account and an OpenAI-compatible API: its base URL, which API
+  between Claude Code's account and an OpenAI-compatible API: its base URL (an Azure
+  OpenAI resource's as the portal gives it: Berth speaks its v1 API, `…/openai/v1`,
+  the key as `api-key` too, models by deployment name), which API
   it speaks (Responses, the default, or Chat Completions; ADR 0025), an API key
   (Keychain, `com.berth.provider.openai`; a local server may need none), the models on
   offer (searched in its `/models` list, or typed), each one's context window (as set
   beside it, else as the provider lists it), and the one for Claude Code's quick
   requests (titles, summaries, suggestions; else the agent's model). The first
-  host session to need it starts the proxy; each gets `ANTHROPIC_BASE_URL`, the
-  proxy's token, Claude's model names mapped to its model and the model's window
+  host session to need it starts the proxy; each gets `ANTHROPIC_BASE_URL`, a
+  token of its own (`<token>.<workflow id>`: the proxy reads the session's effort by
+  it), Claude's model names mapped to its model and the model's window
   (`CLAUDE_CODE_MAX_CONTEXT_TOKENS`), and loses keys that would win over the proxy.
   The proxy translates both ways (text streams, tool calls whole, images, tool
-  results; no thinking or server tools), cuts the output budget to what the window
-  leaves the prompt, reads providers' errors as Anthropic's (a full window is "prompt
-  is too long", so Claude Code compacts), and learns what each model refuses
-  (`max_completion_tokens`, an output cap, a parameter) by sending again. The usage
-  ring's share is of the window Claude Code reports (`session.context.max_tokens`). The picker
-  and Settings' default offer the provider's models; a slot keeps its model per
-  provider. Switching restarts host sessions as an account switch does (ADR 0017);
-  plan limits and the account hide under the provider, and the Claude Code row says
+  results, system messages mid-conversation as reminders in the user turn; no
+  server tools, and Claude's thinking stays out), cuts the output budget to what the
+  window leaves the prompt, reads providers' errors as Anthropic's (a full window is
+  "prompt is too long", so Claude Code compacts; a rate limit's `retry-after` goes
+  through; Azure's content filter says what it caught), and learns what each model
+  refuses by sending again, up to eight tries, keeping it once a request went through:
+  `max_completion_tokens`, an output cap, a parameter, the other API (Codex takes only
+  Responses, most of Azure's other models only Chat Completions), the efforts it
+  takes, reasoning it can't give or take back, images, a cap on tool descriptions
+  (cut, and given whole in the system prompt). **Reasoning** (ADR 0037): the slot's
+  effort is the model's reasoning effort for requests Claude Code asks to think in
+  (the picker offers Default, Low, Medium, High, Extra high; Max is `xhigh`; Default
+  sends none). The model's reasoning (Responses summaries with their encrypted
+  reasoning, Chat Completions' `reasoning_content`, `<think>` text) comes back as
+  thinking blocks Berth signs (`berth-reasoning:`), shown in Details and sent back to
+  the model within the tool loop under way; Claude Code drops them when the
+  conversation goes on with another model, so they never reach Anthropic. The usage
+  ring's share is of the window Claude Code reports (`session.context.max_tokens`).
+  The picker and Settings' default offer the provider's models; a slot keeps its
+  model per provider. Switching restarts host sessions as an account switch does
+  (ADR 0017): a round running on the API finishes there (the proxy keeps serving
+  it), then the session goes on with Claude. A change to the models or their windows
+  restarts each session whose model or window it changes, once it is quiet; a model
+  taken out of Settings runs on the default meanwhile. Plan limits and the account
+  hide under the provider, and the Claude Code row says
   what agents run on ("via openrouter.ai"), or blocks them with Settings… until the
   API has a URL and a model. `inside` slots sign in by themselves, as before.
 - **Pi** (ADR 0033; `sidecar/src/pi.ts`, `backend/pi_install.rs`): under an
@@ -1271,7 +1291,8 @@ settles nothing (ADR 0013).
   no button down, and a trailing `cmd` on any of them holds ⌘. `provider <base url>
   <key|-> <model>…` runs agents on an OpenAI-compatible API (`provider claude` goes
   back); with a scripted server standing in for the model, a real session runs
-  without spending tokens (ADR 0023).
+  without spending tokens (ADR 0023). `provider_context <model> <tokens>` sets a
+  model's window as Settings does.
 
 
 ### 11.1 Terminals
@@ -1410,5 +1431,6 @@ owns it? what node type does it produce?
   background.
 - `inside` slots' agents on the model provider (the proxy listens on the host's
   loopback, and Pi runs only on the host); model APIs other than OpenAI's Responses and Chat Completions (Gemini's
-  own); passing reasoning items back to a provider across turns.
+  own); passing reasoning back to a provider beyond the tool loop under way
+  (ADR 0037).
 

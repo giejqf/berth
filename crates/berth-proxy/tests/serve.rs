@@ -6,7 +6,7 @@
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 
-use berth_proxy::{Api, Proxy, Upstream, list_models};
+use berth_proxy::{Api, Effort, Proxy, SessionPrefs, Upstream, list_models};
 use bytes::Bytes;
 use http_body_util::{BodyExt as _, Full};
 use hyper::body::Incoming;
@@ -46,14 +46,17 @@ async fn fake_upstream() -> (String, Seen) {
 }
 
 async fn answer(req: Request<Incoming>, log: &Seen) -> Response<Full<Bytes>> {
-    let path = req.uri().path().to_owned();
+    let full = req.uri().path().to_owned();
+    // Under `/chatonly`: a server with no Responses API.
+    let chat_only = full.starts_with("/chatonly");
+    let path = full.trim_start_matches("/chatonly").to_owned();
     let auth = req
         .headers()
         .get("authorization")
         .map(|v| v.to_str().unwrap().to_owned());
     let bytes = req.into_body().collect().await.unwrap().to_bytes();
     let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    log.lock().unwrap().push((path.clone(), body.clone()));
+    log.lock().unwrap().push((full.clone(), body.clone()));
     let respond = |status: u16, ty: &str, text: String| {
         Response::builder()
             .status(status)
@@ -68,6 +71,16 @@ async fn answer(req: Request<Incoming>, log: &Seen) -> Response<Full<Bytes>> {
             json!({ "error": { "message": "Incorrect API key" } }).to_string(),
         );
     }
+    if body["model"] == "busy-model" {
+        return Response::builder()
+            .status(429)
+            .header("retry-after", "7")
+            .body(Full::new(Bytes::from(
+                json!({ "error": { "code": "429", "message": "Please retry after 7 seconds." } })
+                    .to_string(),
+            )))
+            .unwrap();
+    }
     if path == "/v1/models" {
         return respond(
             200,
@@ -75,7 +88,7 @@ async fn answer(req: Request<Incoming>, log: &Seen) -> Response<Full<Bytes>> {
             json!({ "data": [{ "id": "fake-coder", "context_length": 65536 }] }).to_string(),
         );
     }
-    if path == "/v1/responses" {
+    if path == "/v1/responses" && !chat_only {
         return responses(&body, respond);
     }
     if path != "/v1/chat/completions" {
@@ -319,6 +332,31 @@ async fn only_the_token_gets_in_and_errors_read_as_anthropic_s() {
 }
 
 #[tokio::test]
+async fn a_rate_limit_passes_on_how_long_to_wait() {
+    let (base, _) = fake_upstream().await;
+    let proxy = proxy(&base).await;
+    let mut req = request(false);
+    req["model"] = json!("busy-model");
+    proxy.configure(Some(Upstream {
+        base_url: base.clone(),
+        api_key: Some("sk-test".to_owned()),
+        model: "fake-coder".to_owned(),
+        models: vec!["fake-coder".to_owned(), "busy-model".to_owned()],
+        api: Api::ChatCompletions,
+        ..Upstream::default()
+    }));
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/messages", proxy.base_url()))
+        .header("x-api-key", proxy.token())
+        .json(&req)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 429);
+    assert_eq!(resp.headers()["retry-after"], "7");
+}
+
+#[tokio::test]
 async fn models_list_with_their_windows() {
     let (base, _) = fake_upstream().await;
     let up = Upstream {
@@ -407,9 +445,9 @@ async fn a_whole_responses_api_answer_is_an_answer() {
 }
 
 #[tokio::test]
-async fn a_server_without_the_responses_api_says_which_to_choose() {
-    let (base, _) = fake_upstream().await;
-    let proxy = proxy_on(&format!("{base}/other"), Api::Responses, None).await;
+async fn a_server_without_the_responses_api_gets_chat_completions() {
+    let (base, seen) = fake_upstream().await;
+    let proxy = proxy_on(&format!("{base}/chatonly/v1"), Api::Responses, None).await;
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/messages", proxy.base_url()))
         .header("x-api-key", proxy.token())
@@ -417,11 +455,104 @@ async fn a_server_without_the_responses_api_says_which_to_choose() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 404);
+    assert_eq!(resp.status(), 200);
     let v: Value = resp.json().await.unwrap();
-    let message = v["error"]["message"].as_str().unwrap();
+    assert_eq!(v["content"][0]["text"], "Hello.");
+    let paths: Vec<String> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(p, _)| p.clone())
+        .collect();
+    assert_eq!(paths[0], "/chatonly/v1/responses");
     assert!(
-        message.contains("no Responses API") && message.contains("Chat Completions"),
-        "{message}"
+        paths[1..]
+            .iter()
+            .all(|p| p == "/chatonly/v1/chat/completions")
     );
+}
+
+#[tokio::test]
+async fn a_session_s_effort_reaches_the_model_when_it_is_asked_to_think() {
+    let (base, seen) = fake_upstream().await;
+    let proxy = proxy_on(&base, Api::Responses, None).await;
+    let token = proxy.session_token(
+        "wf-1",
+        SessionPrefs {
+            effort: Some(Effort::High),
+        },
+    );
+    let client = reqwest::Client::new();
+    let mut thinking = request(false);
+    thinking["thinking"] = json!({ "type": "adaptive" });
+    for (req, token) in [
+        (thinking.clone(), token.clone()),
+        (request(false), token.clone()),
+        (thinking, proxy.token().to_owned()),
+    ] {
+        let resp = client
+            .post(format!("{}/v1/messages", proxy.base_url()))
+            .header("x-api-key", token)
+            .json(&req)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+    // Mid-session, the slot's effort changes.
+    proxy.set_session(
+        "wf-1",
+        SessionPrefs {
+            effort: Some(Effort::Low),
+        },
+    );
+    let mut again = request(false);
+    again["thinking"] = json!({ "type": "adaptive" });
+    client
+        .post(format!("{}/v1/messages", proxy.base_url()))
+        .header("x-api-key", &token)
+        .json(&again)
+        .send()
+        .await
+        .unwrap();
+    let efforts: Vec<Value> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, b)| {
+            b["max_output_tokens"].as_u64() == Some(8192) || b["max_output_tokens"].is_null()
+        })
+        .map(|(_, b)| b["reasoning"]["effort"].clone())
+        .collect();
+    assert_eq!(efforts.last().cloned(), Some(json!("low")), "{efforts:?}");
+    let all: Vec<Value> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, b)| b["reasoning"]["effort"].clone())
+        .collect();
+    assert!(all.contains(&json!("high")));
+    // Without thinking asked, or without a session's effort: the provider's own.
+    assert!(all.iter().filter(|e| e.is_null()).count() >= 2, "{all:?}");
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .all(|(_, b)| b["include"] == json!(["reasoning.encrypted_content"]))
+    );
+    // Another token is no session's.
+    let denied = client
+        .post(format!("{}/v1/messages", proxy.base_url()))
+        .header("x-api-key", format!("{}x.wf-1", proxy.token()))
+        .json(&request(false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), 401);
+    let hello = client
+        .head(format!("{}/api/hello", proxy.base_url()))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(hello.status(), 200);
 }

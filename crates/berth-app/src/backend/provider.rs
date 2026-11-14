@@ -10,7 +10,7 @@ use std::sync::Arc;
 use anyhow::{Context as _, Result};
 use berth_core::provider::KEY_SERVICE;
 use berth_core::{Provider, ProviderApi, ProviderModel};
-use berth_proxy::{Api, Proxy, Upstream};
+use berth_proxy::{Api, Proxy, SessionPrefs, Upstream};
 
 use super::types::{ProviderCheck, ProviderEdit, ProviderInfo, ToolState, ToolStatus, UiEvent};
 use super::{Shared, lock};
@@ -30,6 +30,27 @@ pub(super) const DISPLACED_ENV: [&str; 10] = [
     "CLAUDE_CODE_USE_GATEWAY",
 ];
 
+/// What a session going through the proxy started with. When Settings
+/// changes either for it, it restarts on the new ones once it is quiet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ProxySession {
+    pub model: String,
+    /// Its model's context window (`CLAUDE_CODE_MAX_CONTEXT_TOKENS`).
+    pub window: Option<u64>,
+}
+
+/// The slot's effort as the provider's reasoning effort: Max is its most,
+/// `xhigh` (a model that takes less gets the most it takes; ADR 0037).
+pub(super) fn reasoning_effort(e: Option<berth_protocol::Effort>) -> Option<berth_proxy::Effort> {
+    use berth_protocol::Effort as E;
+    Some(match e? {
+        E::Low => berth_proxy::Effort::Low,
+        E::Medium => berth_proxy::Effort::Medium,
+        E::High => berth_proxy::Effort::High,
+        E::Xhigh | E::Max => berth_proxy::Effort::XHigh,
+    })
+}
+
 impl Shared {
     pub(super) fn provider(&self) -> Provider {
         Provider::load(&self.core().store).unwrap_or_default()
@@ -44,9 +65,11 @@ impl Shared {
             .filter(|k| !k.trim().is_empty())
     }
 
-    /// The proxy's upstream for `p`; `None` when nothing should go through.
+    /// The proxy's upstream for `p`; `None` when it isn't set up. It stays
+    /// while agents switch back to Claude Code's account: a session that
+    /// started on the API finishes its round there, then restarts (ADR 0037).
     fn upstream(&self, p: &Provider) -> Option<Upstream> {
-        if !p.is_openai() || p.not_ready().is_some() {
+        if p.base_url.trim().is_empty() || p.models.is_empty() {
             return None;
         }
         Some(Upstream {
@@ -75,9 +98,15 @@ impl Shared {
     }
 
     /// What a host session's environment needs to run on `model` through
-    /// the proxy: where to send requests, the proxy's token, Claude Code's
-    /// own model names mapped to the provider's, and the model's window.
-    pub(super) async fn provider_env(&self, model: &str) -> Result<BTreeMap<String, String>> {
+    /// the proxy: where to send requests, its own token (which carries its
+    /// effort), Claude Code's own model names mapped to the provider's, and
+    /// the model's window. With what it starts on, for a later change.
+    pub(super) async fn provider_env(
+        &self,
+        workflow_id: &str,
+        model: &str,
+        effort: Option<berth_protocol::Effort>,
+    ) -> Result<(BTreeMap<String, String>, ProxySession)> {
         let proxy = self
             .proxy
             .get_or_try_init(|| async { Proxy::start().await })
@@ -90,21 +119,93 @@ impl Shared {
             .clone()
             .filter(|m| p.offers(m))
             .unwrap_or_else(|| model.to_owned());
+        let token = proxy.session_token(
+            workflow_id,
+            SessionPrefs {
+                effort: reasoning_effort(effort),
+            },
+        );
         let mut env = BTreeMap::new();
         env.insert("ANTHROPIC_BASE_URL".to_owned(), proxy.base_url());
-        env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), proxy.token().to_owned());
+        env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), token);
         for alias in ["OPUS", "SONNET", "FABLE"] {
             env.insert(format!("ANTHROPIC_DEFAULT_{alias}_MODEL"), model.to_owned());
         }
         env.insert("ANTHROPIC_DEFAULT_HAIKU_MODEL".to_owned(), fast.clone());
         env.insert("ANTHROPIC_SMALL_FAST_MODEL".to_owned(), fast);
-        if let Some(window) = p.context_of(model) {
+        let window = p.context_of(model);
+        if let Some(window) = window {
             env.insert(
                 "CLAUDE_CODE_MAX_CONTEXT_TOKENS".to_owned(),
                 window.to_string(),
             );
         }
-        Ok(env)
+        Ok((
+            env,
+            ProxySession {
+                model: model.to_owned(),
+                window,
+            },
+        ))
+    }
+
+    /// The slot's effort changed: the session's next request takes it.
+    pub(super) fn set_proxy_effort(
+        &self,
+        workflow_id: &str,
+        effort: Option<berth_protocol::Effort>,
+    ) {
+        if let Some(proxy) = self.proxy.get() {
+            proxy.set_session(
+                workflow_id,
+                SessionPrefs {
+                    effort: reasoning_effort(effort),
+                },
+            );
+        }
+    }
+
+    pub(super) fn end_proxy_session(&self, workflow_id: &str) {
+        if let Some(proxy) = self.proxy.get() {
+            proxy.end_session(workflow_id);
+        }
+    }
+
+    /// What a session through the proxy would start with now, for its
+    /// slot's model.
+    fn proxy_session_now(&self, p: &Provider, workflow_id: &str) -> Option<ProxySession> {
+        let slot_model = {
+            let core = self.core();
+            let wf = core.store.workflow(workflow_id).ok()?;
+            core.store.slot(&wf.slot_id).ok()?.model
+        };
+        let model = p.agent_model(slot_model.as_deref())?;
+        let window = p.context_of(&model);
+        Some(ProxySession { model, window })
+    }
+
+    /// Settings changed the provider's models or windows: each session that
+    /// started on another model or window than its slot's now restarts on
+    /// it once it is quiet, as an account switch does (ADR 0017), so Claude
+    /// Code's model and window are the ones Settings says.
+    fn restart_for_models(self: &Arc<Self>) {
+        let p = self.provider();
+        if !p.is_openai() {
+            return;
+        }
+        let started: Vec<(String, ProxySession)> = lock(&self.via_proxy)
+            .iter()
+            .map(|(id, s)| (id.clone(), s.clone()))
+            .collect();
+        for (workflow_id, was) in started {
+            if self
+                .proxy_session_now(&p, &workflow_id)
+                .is_some_and(|now| now != was)
+            {
+                tracing::info!(workflow_id, "the session's model or window changed");
+                self.restart_when_quiet(&workflow_id);
+            }
+        }
     }
 
     pub(super) fn emit_provider(&self) {
@@ -120,7 +221,9 @@ impl Shared {
     pub(super) async fn edit_provider(self: &Arc<Self>, edit: ProviderEdit) -> Result<()> {
         let (before, p, recheck) = self.apply_edit(edit)?;
         self.configure_proxy();
-        if before.kind != p.kind {
+        if before.kind == p.kind {
+            self.restart_for_models();
+        } else {
             tracing::info!(openai = p.is_openai(), "agents switch model provider");
             // Sessions on this Mac go on with the other provider, each once
             // it is quiet (as for an account switch, ADR 0017).

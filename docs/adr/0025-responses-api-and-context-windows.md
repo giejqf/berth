@@ -33,7 +33,10 @@ window read as 56%.
    calls gather by output index and go out whole, `response.completed` and
    `.incomplete` end the answer (`max_output_tokens` → `max_tokens`). Reasoning
    items stay out, as thinking does (ADR 0023). A server with no
-   `/responses` (404) says to choose Chat Completions.
+   `/responses` (404) says to choose Chat Completions. (Amended by ADR 0037:
+   reasoning items are kept and go back within the tool loop; a server or
+   model without the Responses API gets Chat Completions, and one with only
+   it, the Responses API.)
 2. **A context window per model**, set in Settings beside it ("128k", "1m";
    `settings.openai_contexts`), over what the provider lists, which shows as
    the field's placeholder. Sessions get it as

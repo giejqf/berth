@@ -19,6 +19,7 @@
 //! term_type ls -la            # type into the selected slot's terminal (`keys enter` runs it)
 //! fake_node Title             # append a just-recorded decision to the flow (view only)
 //! fake_artifact /a.png | Title # append an artifact, the file used in place (view only)
+//! provider_context gpt-5 100k # a provider model's context window, as set in Settings
 //! window 1                    # later commands act on the 2nd repo window (in opening order)
 //! window update               # … on the update reminder's window (ADR 0036)
 //! window about                # … on About Berth's
@@ -153,13 +154,21 @@ pub fn start(cx: &mut App) {
                     )));
                 }),
                 // `agent pi|claude`: what new conversations run on under the
-                // OpenAI-compatible API; `provider_api chat|responses` (ADR 0033).
-                "agent" | "provider_api" => cx.update(|cx| {
+                // OpenAI-compatible API; `provider_api chat|responses` (ADR 0033);
+                // `provider_context <model> <tokens>`: its context window.
+                "agent" | "provider_api" | "provider_context" => cx.update(|cx| {
                     let Some(state) = ui::first_repo_state(cx) else {
                         return;
                     };
                     let edit = match (cmd, arg.trim()) {
                         ("agent", a) => ProviderEdit::Agent(berth_protocol::Agent::parse(a)),
+                        ("provider_context", a) => {
+                            let (model, tokens) = a.split_once(' ').unwrap_or((a, ""));
+                            ProviderEdit::Context(
+                                model.to_owned(),
+                                berth_core::provider::parse_tokens(tokens),
+                            )
+                        }
                         (_, "chat") => ProviderEdit::Api(berth_core::ProviderApi::ChatCompletions),
                         _ => ProviderEdit::Api(berth_core::ProviderApi::Responses),
                     };

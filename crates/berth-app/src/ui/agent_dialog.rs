@@ -89,8 +89,13 @@ fn claude_models(cx: &App) -> Vec<ModelChoice> {
     }
 }
 
+/// The efforts a provider's model is offered: its reasoning effort, Low to
+/// Extra high (ADR 0037). Max would be Extra high again.
+const PROVIDER_EFFORTS: [Effort; 4] = [Effort::Low, Effort::Medium, Effort::High, Effort::Xhigh];
+
 /// The models offered from the OpenAI-compatible API, as the provider names
-/// them, with their context windows where it says. None takes an effort.
+/// them, with their context windows where it says. Each takes a reasoning
+/// effort; one that doesn't reason ignores it (the proxy learns so).
 fn provider_models(p: &berth_core::Provider) -> Vec<ModelChoice> {
     p.models
         .iter()
@@ -98,7 +103,7 @@ fn provider_models(p: &berth_core::Provider) -> Vec<ModelChoice> {
             value: id.clone(),
             display_name: p.name_of(id),
             description: p.context_of(id).map(context_note).unwrap_or_default(),
-            efforts: Vec::new(),
+            efforts: PROVIDER_EFFORTS.to_vec(),
         })
         .collect()
 }
@@ -198,6 +203,9 @@ pub struct AgentDialog {
     models: Vec<ModelChoice>,
     model: Option<String>,
     effort: Option<Effort>,
+    /// The models are the OpenAI-compatible API's: effort is how hard they
+    /// reason.
+    reasoning: bool,
     backend: BackendHandle,
     focus: FocusHandle,
 }
@@ -232,6 +240,7 @@ impl AgentDialog {
             models,
             model,
             effort: entry.slot.effort,
+            reasoning: through_proxy(entry, cx),
             backend,
             focus: cx.focus_handle(),
         }
@@ -414,7 +423,19 @@ impl Render for AgentDialog {
                     })),
                 );
             }
-            div().flex().child(segs)
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(div().flex().child(segs))
+                .when(self.reasoning, |d| {
+                    d.child(
+                        div()
+                            .ty(ty::META)
+                            .text_color(t.text3)
+                            .child("How hard the model reasons. Default leaves it to the provider; a model that doesn't reason ignores it."),
+                    )
+                })
         };
 
         let this = cx.entity().downgrade();

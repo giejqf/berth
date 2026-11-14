@@ -101,8 +101,9 @@ pub(crate) struct Shared {
     /// Held while the provider's setup is read, changed and saved: commands
     /// run at once, and two edits must not each save over the other.
     provider_edit: Mutex<()>,
-    /// Workflows whose session's requests go through the proxy.
-    via_proxy: Mutex<HashSet<String>>,
+    /// Workflows whose session's requests go through the proxy, and what
+    /// each started with.
+    via_proxy: Mutex<HashMap<String, provider::ProxySession>>,
     /// Update reminders (ADR 0036).
     updater: update::Updater,
 }

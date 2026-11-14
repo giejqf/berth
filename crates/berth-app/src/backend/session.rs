@@ -130,11 +130,14 @@ impl Shared {
         }
 
         let mut env: BTreeMap<String, String> = script.env.vars().into_iter().collect();
+        let mut proxy_session = None;
         if through_proxy {
             let model = model
                 .as_deref()
                 .ok_or_else(|| anyhow!("No model is chosen for the OpenAI-compatible API."))?;
-            env.extend(self.provider_env(model).await?);
+            let (provider_env, started) = self.provider_env(&wf.id, model, slot.effort).await?;
+            env.extend(provider_env);
+            proxy_session = Some(started);
         }
         if host {
             let base = std::env::var("PATH").unwrap_or_default();
@@ -221,7 +224,13 @@ impl Shared {
             max_subagents: limits.max_subagents,
             agent,
             pi: pi.then(|| PiProvider {
-                base_url: provider.base_url.clone(),
+                // As the proxy goes: `/v1` for a bare host, an Azure
+                // resource's v1 API.
+                base_url: berth_proxy::Upstream {
+                    base_url: provider.base_url.clone(),
+                    ..berth_proxy::Upstream::default()
+                }
+                .endpoint(""),
                 api: match provider.api {
                     berth_core::ProviderApi::Responses => PiApi::Responses,
                     berth_core::ProviderApi::ChatCompletions => PiApi::Chat,
@@ -258,8 +267,8 @@ impl Shared {
         self.core().engine.session_started(&wf.id);
         session.send(msg)?;
         lock(&self.sessions).insert(wf.id.clone(), session.clone());
-        if through_proxy {
-            lock(&self.via_proxy).insert(wf.id.clone());
+        if let Some(started) = proxy_session {
+            lock(&self.via_proxy).insert(wf.id.clone(), started);
         }
         lock(&self.session_limits).insert(wf.id.clone(), limits);
         tokio::spawn(self.clone().pump(wf.id.clone(), session.clone(), events));
@@ -285,7 +294,9 @@ impl Shared {
     pub(super) fn take_session(&self, workflow_id: &str) -> Option<Arc<Session>> {
         lock(&self.restart_after_round).remove(workflow_id);
         lock(&self.tasks).remove(workflow_id);
-        lock(&self.via_proxy).remove(workflow_id);
+        if lock(&self.via_proxy).remove(workflow_id).is_some() {
+            self.end_proxy_session(workflow_id);
+        }
         lock(&self.session_limits).remove(workflow_id);
         self.keep_awake();
         let taken = lock(&self.sessions).remove(workflow_id);
@@ -312,8 +323,7 @@ impl Shared {
                     .is_ok_and(|slot| slot.placement != Placement::Inside.as_str())
             };
             if host {
-                lock(&self.restart_after_round).insert(workflow_id.clone());
-                self.restart_if_due(&workflow_id);
+                self.restart_when_quiet(&workflow_id);
             }
         }
     }
@@ -340,9 +350,15 @@ impl Shared {
             .map(|(id, _)| id.clone())
             .collect();
         for workflow_id in stale {
-            lock(&self.restart_after_round).insert(workflow_id.clone());
-            self.restart_if_due(&workflow_id);
+            self.restart_when_quiet(&workflow_id);
         }
+    }
+
+    /// Restart the workflow's session once it is quiet: at once if it is
+    /// already, else when its round ends (ADR 0017).
+    pub(super) fn restart_when_quiet(self: &Arc<Self>, workflow_id: &str) {
+        lock(&self.restart_after_round).insert(workflow_id.to_owned());
+        self.restart_if_due(workflow_id);
     }
 
     /// Restart the workflow's session if it waits for that and is quiet now:
@@ -656,7 +672,7 @@ impl Shared {
                         berth_protocol::SidecarToApp::SessionModels(_)
                         | berth_protocol::SidecarToApp::SessionQuota(_)
                         | berth_protocol::SidecarToApp::SessionAccount(_)
-                            if lock(&self.via_proxy).contains(&workflow_id) => {}
+                            if lock(&self.via_proxy).contains_key(&workflow_id) => {}
                         berth_protocol::SidecarToApp::SessionModels(m) => {
                             self.remember_models(&m.models);
                         }
@@ -908,7 +924,7 @@ impl Shared {
     /// Save a slot's model and effort; its live session, if any, switches from
     /// the agent's next request on (mid-round too).
     pub(super) fn set_slot_agent(
-        &self,
+        self: &Arc<Self>,
         slot_id: &str,
         model: Option<String>,
         effort: Option<berth_protocol::Effort>,
@@ -923,14 +939,32 @@ impl Shared {
             (slot, live)
         };
         let session = live.and_then(|wf| {
-            let through_proxy = lock(&self.via_proxy).contains(&wf);
+            let started = lock(&self.via_proxy).get(&wf).cloned();
             lock(&self.sessions)
                 .get(&wf)
                 .cloned()
-                .map(|s| (s, through_proxy))
+                .map(|s| (wf, s, started))
         });
-        if let Some((session, through_proxy)) = session {
-            let model = self.session_model(&self.provider(), model.as_deref(), through_proxy)?;
+        if let Some((wf, session, started)) = session {
+            let provider = self.provider();
+            let model = self.session_model(&provider, model.as_deref(), started.is_some())?;
+            if let Some(started) = started {
+                // Through the proxy, the effort is the provider's reasoning
+                // effort (ADR 0037); a model with another window restarts
+                // the session on it once it is quiet (Claude Code compacts
+                // by the window it started with).
+                self.set_proxy_effort(&wf, effort);
+                if let Some(m) = &model {
+                    let window = provider.context_of(m);
+                    if window == started.window {
+                        if let Some(s) = lock(&self.via_proxy).get_mut(&wf) {
+                            s.model = m.clone();
+                        }
+                    } else {
+                        self.restart_when_quiet(&wf);
+                    }
+                }
+            }
             session.send(AppToSidecar::SessionConfigure(
                 berth_protocol::SessionConfigure { model, effort },
             ))?;

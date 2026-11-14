@@ -9,6 +9,9 @@ pub(crate) struct ApiError {
     pub status: u16,
     pub kind: &'static str,
     pub message: String,
+    /// The provider's `retry-after`, passed on: Claude Code waits that long
+    /// before it tries again (Azure's rate limits say how long).
+    pub retry_after: Option<String>,
 }
 
 impl ApiError {
@@ -17,6 +20,7 @@ impl ApiError {
             status,
             kind,
             message: message.into(),
+            retry_after: None,
         }
     }
 
@@ -48,6 +52,15 @@ impl ApiError {
                 ..o
             };
             return Self::new(400, "invalid_request_error", o.too_long(estimate));
+        }
+        if let Some(why) = filtered(body) {
+            return Self::new(
+                400,
+                "invalid_request_error",
+                format!(
+                    "{host}'s content filter stopped this request{why}. On Azure, a deployment's filter is set in Azure AI Foundry; rewording the message may get past it."
+                ),
+            );
         }
         let message = format!("{host}: {message}");
         match status {
@@ -81,6 +94,33 @@ impl ApiError {
     pub(crate) fn unreachable(host: &str, detail: &str) -> Self {
         Self::new(502, "api_error", format!("Couldn't reach {host}: {detail}"))
     }
+}
+
+/// Azure's content filter refused the prompt: " (jailbreak)", the
+/// categories it caught, or "" when it doesn't say. `None` for any other
+/// error.
+fn filtered(body: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(body).ok()?;
+    let err = v.get("error").unwrap_or(&v);
+    if err.get("code").and_then(Value::as_str) != Some("content_filter") {
+        return None;
+    }
+    let caught: Vec<&str> = err
+        .pointer("/innererror/content_filter_result")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter(|(_, r)| {
+            r.get("filtered") == Some(&Value::Bool(true))
+                || r.get("detected") == Some(&Value::Bool(true))
+        })
+        .map(|(k, _)| k.as_str())
+        .collect();
+    Some(if caught.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", caught.join(", ").replace('_', " "))
+    })
 }
 
 /// The message in a provider's error body, and the parameter it names:
@@ -308,6 +348,19 @@ mod tests {
         // The prompt alone overflows: no budget helps.
         let msg = "maximum context length is 32768 tokens. However, you requested 70000 tokens (38000 in the messages, 32000 in the completion).";
         assert_eq!(Overflow::read(msg).and_then(|o| o.budget(32000)), None);
+    }
+
+    #[test]
+    fn azure_s_content_filter_says_what_it_caught() {
+        let body = r#"{"error":{"message":"The response was filtered due to the prompt triggering Azure OpenAI's content management policy.","type":null,"param":"prompt","code":"content_filter","status":400,"innererror":{"code":"ResponsibleAIPolicyViolation","content_filter_result":{"hate":{"filtered":false,"severity":"safe"},"jailbreak":{"filtered":true,"detected":true},"self_harm":{"filtered":false,"severity":"safe"}}}}}"#;
+        let e = ApiError::from_upstream(400, body, "contoso.openai.azure.com", 0, None);
+        assert!(
+            e.message.starts_with(
+                "contoso.openai.azure.com's content filter stopped this request (jailbreak)."
+            ),
+            "{}",
+            e.message
+        );
     }
 
     #[test]

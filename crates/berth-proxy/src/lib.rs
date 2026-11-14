@@ -11,6 +11,7 @@
 
 mod errors;
 mod models;
+mod reasoning;
 mod request;
 mod response;
 mod server;
@@ -18,7 +19,7 @@ mod shape;
 mod stream;
 
 pub use models::{CatalogModel, list_models};
-pub use server::Proxy;
+pub use server::{Proxy, SessionPrefs};
 
 use std::collections::HashMap;
 use std::fmt;
@@ -42,6 +43,37 @@ impl Api {
             Self::Responses => "/responses",
             Self::ChatCompletions => "/chat/completions",
         }
+    }
+}
+
+/// How hard a reasoning model thinks: Berth's effort, as OpenAI's
+/// `reasoning.effort` takes it (ADR 0037). A model that takes less, or none,
+/// is learned from what it refuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Effort {
+    Low,
+    Medium,
+    High,
+    /// OpenAI's `xhigh`; Berth's Max too.
+    XHigh,
+}
+
+impl Effort {
+    pub const ALL: [Self; 4] = [Self::Low, Self::Medium, Self::High, Self::XHigh];
+
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::XHigh => "xhigh",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|e| e.as_str() == s)
     }
 }
 
@@ -81,15 +113,64 @@ impl fmt::Debug for Upstream {
 }
 
 impl Upstream {
-    /// `path` (`/responses`) under the base URL.
+    /// `path` (`/responses`) under the base URL, before its query
+    /// (`?api-version=…`), which stays. An Azure OpenAI resource's URL, as
+    /// the portal gives it (the resource, a deployment's "Target URI"),
+    /// becomes its v1 API: `https://x.openai.azure.com/openai/v1`.
     #[must_use]
     pub fn endpoint(&self, path: &str) -> String {
-        let base = self.base_url.trim().trim_end_matches('/');
-        let after_scheme = base.split_once("://").map_or(base, |(_, rest)| rest);
-        if after_scheme.contains('/') {
-            format!("{base}{path}")
+        let url = self.base_url.trim();
+        let (url, query) = url
+            .split_once('?')
+            .map_or((url, None), |(u, q)| (u, Some(q)));
+        let url = url.trim_end_matches('/');
+        let (scheme, rest) = url.split_once("://").unwrap_or(("https", url));
+        let (host, base_path) = rest.split_once('/').map_or((rest, ""), |(h, p)| (h, p));
+        let base_path = base_path.trim_end_matches('/');
+        if is_azure_openai(host) {
+            // Everything from `/openai` on is the API's; v1 takes no api-version.
+            let segments: Vec<&str> = base_path.split('/').filter(|s| !s.is_empty()).collect();
+            let at = segments.iter().position(|s| *s == "openai");
+            if segments.is_empty() || at.is_some() {
+                let prefix: String = segments[..at.unwrap_or(0)]
+                    .iter()
+                    .map(|s| format!("/{s}"))
+                    .collect();
+                return format!("{scheme}://{host}{prefix}/openai/v1{path}");
+            }
+        }
+        let base_path = if base_path.is_empty() {
+            "/v1".to_owned()
         } else {
-            format!("{base}/v1{path}")
+            format!("/{base_path}")
+        };
+        match query.filter(|q| !q.is_empty()) {
+            Some(q) => format!("{scheme}://{host}{base_path}{path}?{q}"),
+            None => format!("{scheme}://{host}{base_path}{path}"),
+        }
+    }
+
+    /// Azure's servers take the key as `api-key`, its classic APIs only so.
+    #[must_use]
+    pub fn is_azure(&self) -> bool {
+        let host = self.host();
+        let host = host.split(':').next().unwrap_or(&host).to_ascii_lowercase();
+        [".azure.com", ".azure.us", ".azure.cn", ".azure-api.net"]
+            .iter()
+            .any(|d| host.ends_with(d))
+    }
+
+    /// The request with the API key: as a bearer token, and to Azure as
+    /// `api-key` too.
+    pub(crate) fn authorize(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let Some(key) = self.api_key.as_deref().filter(|k| !k.is_empty()) else {
+            return req;
+        };
+        let req = req.bearer_auth(key);
+        if self.is_azure() {
+            req.header("api-key", key)
+        } else {
+            req
         }
     }
 
@@ -107,7 +188,9 @@ impl Upstream {
 
     /// The upstream model a request for `requested` runs on. Claude Code's
     /// own names (a session started before, a subagent's `haiku`) map to the
-    /// configured models; anything else is the provider's id, as it is.
+    /// configured models, and so does a model no longer on offer (a session
+    /// started before it was taken out of Settings); one on offer is the
+    /// provider's id, as it is.
     #[must_use]
     pub fn resolve(&self, requested: &str) -> String {
         let id = requested.trim();
@@ -118,7 +201,8 @@ impl Upstream {
                 lower.as_str(),
                 "" | "default" | "best" | "opus" | "sonnet" | "haiku" | "fable" | "opusplan"
             );
-        if !claude {
+        let offered = self.models.is_empty() || self.models.iter().any(|m| m == id);
+        if !claude && offered {
             return id.to_owned();
         }
         match &self.fast_model {
@@ -126,6 +210,21 @@ impl Upstream {
             _ => self.model.clone(),
         }
     }
+}
+
+/// An Azure OpenAI resource (or Azure AI Foundry's), whose OpenAI API is
+/// under `/openai/v1`.
+fn is_azure_openai(host: &str) -> bool {
+    let host = host.split(':').next().unwrap_or(host).to_ascii_lowercase();
+    [
+        ".openai.azure.com",
+        ".cognitiveservices.azure.com",
+        ".services.ai.azure.com",
+        ".openai.azure.us",
+        ".openai.azure.cn",
+    ]
+    .iter()
+    .any(|d| host.ends_with(d))
 }
 
 /// `openrouter.ai` for `https://openrouter.ai/api/v1`.
@@ -185,6 +284,76 @@ mod tests {
             "openrouter.ai"
         );
         assert_eq!(host_of("http://user@127.0.0.1:8000/v1"), "127.0.0.1:8000");
+    }
+
+    #[test]
+    fn azure_urls_as_the_portal_gives_them_become_its_v1_api() {
+        for url in [
+            "https://contoso.openai.azure.com",
+            "https://contoso.openai.azure.com/",
+            "https://contoso.openai.azure.com/openai",
+            "https://contoso.openai.azure.com/openai/v1/",
+            "https://contoso.openai.azure.com/openai/deployments/gpt-5/chat/completions?api-version=2025-01-01-preview",
+            "https://contoso.openai.azure.com/openai/responses?api-version=2025-04-01-preview",
+        ] {
+            assert_eq!(
+                upstream(url).endpoint("/responses"),
+                "https://contoso.openai.azure.com/openai/v1/responses",
+                "{url}"
+            );
+        }
+        assert_eq!(
+            upstream("https://contoso.cognitiveservices.azure.com/openai/v1").endpoint("/models"),
+            "https://contoso.cognitiveservices.azure.com/openai/v1/models"
+        );
+        // Another Azure API, and any other server, keep their path and query.
+        assert_eq!(
+            upstream("https://contoso.services.ai.azure.com/models?api-version=2024-05-01-preview")
+                .endpoint("/chat/completions"),
+            "https://contoso.services.ai.azure.com/models/chat/completions?api-version=2024-05-01-preview"
+        );
+        assert_eq!(
+            upstream("https://gw.example.com/llm?key=1").endpoint("/chat/completions"),
+            "https://gw.example.com/llm/chat/completions?key=1"
+        );
+        assert!(upstream("https://contoso.openai.azure.com").is_azure());
+        assert!(upstream("https://apim.azure-api.net/openai").is_azure());
+        assert!(!upstream("https://api.openai.com/v1").is_azure());
+    }
+
+    #[test]
+    fn azure_gets_the_key_as_api_key_too() {
+        let client = reqwest::Client::new();
+        let header = |base: &str| {
+            let u = Upstream {
+                api_key: Some("k".to_owned()),
+                ..upstream(base)
+            };
+            u.authorize(client.post(u.endpoint("/responses")))
+                .build()
+                .ok()
+                .map(|r| {
+                    (
+                        r.headers().get("api-key").is_some(),
+                        r.headers().get("authorization").is_some(),
+                    )
+                })
+        };
+        assert_eq!(
+            header("https://contoso.openai.azure.com"),
+            Some((true, true))
+        );
+        assert_eq!(header("https://api.openai.com/v1"), Some((false, true)));
+    }
+
+    #[test]
+    fn a_model_no_longer_on_offer_runs_on_the_default() {
+        let u = Upstream {
+            models: vec!["deepseek-chat".into(), "small".into()],
+            ..upstream("https://api.deepseek.com")
+        };
+        assert_eq!(u.resolve("small"), "small");
+        assert_eq!(u.resolve("removed-model"), "deepseek-chat");
     }
 
     #[test]
